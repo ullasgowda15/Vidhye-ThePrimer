@@ -98,6 +98,8 @@ make help
 | `superuser` | Create an admin login |
 | `hello-beat` | Generate one validated story Beat |
 | `smoke` | Live AI smoke test — real calls, asserted. Never in CI |
+| `smoke-media` | Live media smoke test — real Cloudflare + ElevenLabs calls. Never in CI |
+| `render-companion` | Render a companion's reference set + 3 scenes |
 | `ping` | Round-trip a task through Celery |
 
 ## Verifying the pieces
@@ -201,6 +203,51 @@ provider would reject the request.
 (default — try strict, degrade if the model can't), `strict` (never degrade; error
 instead, so a silent drop to unenforced JSON can't pass unnoticed in production),
 or `json_object` (skip straight to the repair path).
+
+## Smoke-testing the media path
+
+```bash
+make smoke-media
+```
+
+Needs `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`, `ELEVENLABS_API_KEY` +
+`ELEVENLABS_VOICE_ID`, and `IMAGE_PROVIDER=cloudflare` / `TTS_PROVIDER=elevenlabs`.
+Anything missing is named exactly, and nothing prints a key value.
+
+The unit suite proves the *pipeline* against the deterministic offline adapter,
+which is precisely the kind of test that cannot notice that the pictures are
+placeholder SVGs or that nothing was ever spoken. This closes that gap.
+
+| Check | What it proves |
+|---|---|
+| **A** real image | A real render came back: a raster type (`image/png`/`jpeg`/`webp`), above a 5KB floor, `provider=cloudflare`. **Fails explicitly on `image/svg+xml`** — that is the placeholder adapter's signature. |
+| **B** real audio | The greeting is real audio above a 2KB floor from the `elevenlabs` adapter, and reports which voice the companion's voice key resolved to. |
+| **C** cache hit | The same `(style, character, scene)` costs **one** provider call, then zero — asserted with a call counter, not inferred from timing. |
+| **D** reference set | Portrait + the 5 canonical expressions + the greeting, `assets_status=ready`, exactly 7 `reference_asset_ids`, every URL servable and non-SVG. |
+| **E** safety scan | Every `Media` row carries a real `safety_status` — nothing reached storage unscanned. |
+
+Exit codes: **0** all passed · **1** a check failed · **2** not set up yet.
+
+**Then open the contact sheet.** The run prints its path
+(`backend/media/smoke/contact-sheet.html`). It is one page with every companion
+image in a grid and a player for the greeting, because two things cannot be
+asserted by a script:
+
+- **Consistency** — is it recognisably the *same character* across the scenes?
+  Expect some drift; free `flux-1-schnell` is text-only, so judge "good enough
+  for dev", not perfect.
+- **Voice** — does the greeting sound warm and right for a small child? If not,
+  change `ELEVENLABS_VOICE_ID` and re-run with `SMOKE_ARGS=--fresh`.
+
+**Credit-frugal.** It owns a dedicated fixture (`smoke-media@primer.invalid` /
+"Smokey") and reuses its reference set, so a repeat run costs **one** image — the
+cache probe, which has to miss to prove anything. `SMOKE_ARGS=--fresh` drops the
+fixture and pays for the whole set again; `SMOKE_ARGS="--child <uuid>"` runs
+against a real companion instead (read-only — `--fresh` is refused there).
+
+**Not in CI and not in `make test`.** It makes real, metered calls; `make test`
+stays hermetic. Run it by hand after any change to the adapters, the art
+direction, or the cache keys.
 
 ## The parent path
 
