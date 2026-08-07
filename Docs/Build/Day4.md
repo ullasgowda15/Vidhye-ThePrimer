@@ -11,6 +11,8 @@
 ## 1. Yesterday's expected end state
 Companions have a persistent identity (descriptor + portrait + 5 expressions + voice). A cache‑first media pipeline (image + TTS adapters, style tokens, `build_illustration_prompt`, safety‑scan seam, object storage/CDN, hash cache) is live. A "meet your companion" greeting scene works. **No** story loop, memory, or runtime safety hardening.
 
+> **Carried over from Day 2 — read before §4.5.** Day 2 shipped auth with **both tokens held in memory only** (`frontend/src/store/auth.ts`), which was correct while the parent surface was the only authenticated one. Today it stops being correct: per §18.2 the child experience runs under a parent session, so a PWA cold start — morning, tab eviction, reboot — would drop a 3‑7 year old at a login form they cannot pass. That is a fail state (§14.5), not an inconvenience. **§4.6 is therefore in scope today and blocks acceptance criterion 8.**
+
 ## 2. Today's goal (one sentence)
 Generate and **stream the first beat of a personalized adventure**: persist an `Adventure` + its `plan`, generate a schema‑valid first `Beat` (narration + illustration + interaction), render its image via the media pipeline and its voice via TTS **in parallel**, and stream it to the child UI over **SSE under ASGI** with no visible spinner.
 
@@ -87,6 +89,22 @@ data: {"status":"awaiting_choice"}
 - `src/routes/child/StoryPage.tsx`: render **narration first**, then swap in illustration + play audio as their URLs arrive (progressive). While the first beat renders, show the **companion "thinking"/idle animation** — never a spinner (§4.9).
 - `src/lib/sse.ts`: an `EventSource`/fetch‑stream client that consumes `event: beat`/`done`. Start an adventure from `ChildHome`.
 
+### 4.6 Auth — move the refresh token to an httpOnly cookie (carried over from Day 2)
+The child needs a session that survives a cold start, and the child cannot log in. Persist it, but **not** in `localStorage` — we control the backend, so there is no reason to pick the option any script on the origin can read.
+
+**Backend (`apps/accounts/views.py`):**
+- `signup`/`login`/`refresh` set the refresh token as a cookie: `httpOnly`, `Secure` (prod), `SameSite=Lax`, `Path=/api/v1/auth`, `Max-Age` = the refresh lifetime. The response body returns **only** `access`.
+- `refresh` reads the cookie rather than the request body; rotation sets the new cookie. `logout` blacklists from the cookie and deletes it.
+- Path‑scoping matters: the cookie is then attached to the two endpoints that need it, not to every API call.
+
+**Frontend (`frontend/src/store/auth.ts`):**
+- Delete `refreshToken` from the store entirely. `refresh()` becomes a `credentials: 'include'` POST that returns an access token.
+- On app load, attempt exactly one refresh — that *is* session restore.
+- **Add a third auth state.** Without `status: 'loading' | 'anonymous' | 'authenticated'`, `ProtectedRoute` flashes the login screen on every load before the bootstrap refresh resolves. This is the part that gets built wrong.
+- **Leave the parent gate exactly as it is:** in memory, 15‑minute TTL, not restored by the cookie. The child cold‑starts straight into their story; an adult challenge still stands between them and billing. That composition is the point.
+
+**Notes:** `SameSite=Lax` is the load‑bearing CSRF control here — state that in the code, don't assume it. It requires the API and the app to be same‑site in production (`api.theprimer.app` / `theprimer.app`); add a line to `DEPLOY.md`. `CORS_ALLOW_CREDENTIALS` is already `True`, and the Vite proxy already makes dev same‑origin.
+
 ## 5. Key stubs
 - `estimatedBeats` from the plan skeleton length (~5–7).
 - `running_summary` starts empty (compaction is Day 5).
@@ -103,9 +121,12 @@ data: {"status":"awaiting_choice"}
 5. `StoryPage` renders narration immediately, then swaps in image + audio as ready; **no spinner** appears at any point (companion idle animation covers the gap).
 6. A forced malformed generation triggers the **repair** path; persistent failure does not crash the stream (it ends gracefully).
 7. `make lint && make test` + **CI green**; at least one test consumes the SSE stream and asserts a valid beat.
+8. **Session survives a reload** (§4.6): after logging in, a hard refresh lands back on the parent dashboard without re‑authenticating, and the login screen never flashes on the way. `document.cookie` does **not** contain the refresh token. The parent gate is *not* restored — reaching `/parent` still requires answering the adult challenge again.
 
 ## 8. Founder manual test
 From the child home, start an adventure → after a moment of the companion "thinking," the first illustrated, voiced scene appears, personalized to your test child's loves. Confirm (via devtools/network) the stream arrives incrementally and no spinner ever showed.
 
+Then reload the tab mid‑story: the child lands back in their story, not at a login form. Open devtools → Application → Cookies and confirm the refresh cookie is flagged `HttpOnly` and `SameSite=Lax`; confirm `document.cookie` in the console does not show it.
+
 ## 9. End state to hand to Day 5
-`Adventure`/`Beat`/`Choice` models exist; the orchestrator generates + persists a plan and streams a schema‑valid, personalized **first beat** (illustration + voice, generated in parallel) over **SSE under ASGI**, with validate‑repair. `StoryPage` renders progressively with no spinner. Still single‑beat: **no** choices, consequence loop, memory, or safety hardening.
+`Adventure`/`Beat`/`Choice` models exist; the orchestrator generates + persists a plan and streams a schema‑valid, personalized **first beat** (illustration + voice, generated in parallel) over **SSE under ASGI**, with validate‑repair. `StoryPage` renders progressively with no spinner. The parent session survives a cold start via an httpOnly refresh cookie, while the parent gate stays in‑memory and short‑lived. Still single‑beat: **no** choices, consequence loop, memory, or safety hardening.
