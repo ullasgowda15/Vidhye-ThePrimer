@@ -1,0 +1,29 @@
+# Normalize line endings to LF everywhere.
+#
+# Without this, a Windows clone gets CRLF working-copy files and
+# `prettier --check` fails locally while passing in Linux CI — a difference
+# between machines that has nothing to do with the code.
+* text=auto eol=lf
+
+# Shell scripts and Docker entrypoints must be LF or they won't execute in a
+# Linux container.
+*.sh text eol=lf
+Dockerfile* text eol=lf
+Makefile text eol=lf
+
+# Binary — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.mp3 binary
+*.mp4 binary
+*.pdf binary
+
+# Generated: keep out of diffs and language stats.
+frontend/openapi.json linguist-generated=true
+frontend/src/lib/api/schema.ts linguist-generated=true
+frontend/package-lock.json linguist-generated=true

@@ -1,0 +1,32 @@
+@import './design/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-text);
+    font-size: var(--font-size-2);
+    line-height: var(--line-height-base);
+    -webkit-font-smoothing: antialiased;
+    /* Tablet-first: the child holds the device, so no rubber-band scroll. */
+    overscroll-behavior: none;
+  }
+
+  /* A visible focus ring is non-negotiable (§14.6). */
+  :focus-visible {
+    outline: 3px solid var(--primary);
+    outline-offset: 3px;
+    border-radius: var(--radius-sm);
+  }
+}

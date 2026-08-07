@@ -26,11 +26,13 @@ develop-eggs/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
-parts/
+# NOTE: anchored to backend/ on purpose. A bare `lib/` would also match
+# frontend/src/lib/ (the generated API client) and silently untrack it.
+/backend/lib/
+/backend/lib64/
+/backend/parts/
 sdist/
-var/
+/backend/var/
 wheels/
 *.egg-info/
 .installed.cfg
@@ -49,11 +51,12 @@ ENV/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
-media/
-staticfiles/
-static_root/
+# NOTE: user-uploaded media is anchored too — a bare `media/` would match the
+# backend/apps/media/ Django app and untrack real source code.
 /backend/media/
 /backend/staticfiles/
+staticfiles/
+static_root/
 
 # Django migrations: KEEP these in git (they are source of truth for the schema).
 # Do NOT ignore migrations/*.py — they must be committed.

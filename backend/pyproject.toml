@@ -1,0 +1,45 @@
+[project]
+name = "primer-backend"
+version = "0.1.0"
+description = "The Primer — AI-generated living storybook (backend)"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["**/migrations/*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "DJ", "RUF"]
+ignore = [
+    "B008",   # function call in default arg — common in DRF/Django idioms
+    "RUF012", # mutable class attrs need ClassVar — noisy on Django Meta/admin
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["config", "apps"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["mypy_django_plugin.main"]
+ignore_missing_imports = true
+# Loose on Day 1 — tightened as the codebase grows.
+check_untyped_defs = true
+warn_unused_ignores = false
+exclude = ["migrations/"]
+
+[tool.django-stubs]
+django_settings_module = "config.settings.dev"
+
+[[tool.mypy.overrides]]
+module = ["*.migrations.*"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.dev"
+python_files = ["test_*.py", "*_test.py"]
+testpaths = ["tests"]
+addopts = "-q"

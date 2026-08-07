@@ -1,0 +1,137 @@
+/*
+ * Design tokens (PRODUCT.md §15).
+ *
+ * Three layers: primitives (raw values) -> semantics (--bg, --primary,
+ * --space-4) -> themes. Components only ever read the semantic layer, which is
+ * what lets Storyland, Calm, per-world palettes, night mode, and future
+ * accessibility modes be config rather than rewrites (§15.11).
+ *
+ * `:root` carries Storyland (the child theme) because the child experience is
+ * the product; Calm is applied by putting [data-theme="calm"] on a wrapper.
+ */
+
+:root {
+  /* --- Primitives: Storyland ------------------------------------------- */
+  --primitive-cream: #fdf6e9;
+  --primitive-warm-white: #fffdf8;
+  --primitive-violet: #6d4aad;
+  --primitive-amber: #e8a33d;
+  --primitive-leaf: #4f9d5d;
+  --primitive-cocoa: #4a3524;
+
+  /* --- Primitives: Calm ------------------------------------------------ */
+  --primitive-off-white: #f7f8fa;
+  --primitive-white: #ffffff;
+  --primitive-indigo: #3f4fa8;
+  --primitive-teal: #1f8a80;
+  --primitive-green: #2f8a4f;
+  --primitive-slate: #2c3444;
+
+  /* --- Primitives: night / calm-evening palette (§15.1) ----------------- */
+  --primitive-night-bg: #1e2138;
+  --primitive-night-surface: #2a2e4a;
+  --primitive-night-text: #e8e4f2;
+
+  /* --- Semantic colour: Storyland (child) is the default ---------------- */
+  --bg: var(--primitive-cream);
+  --surface: var(--primitive-warm-white);
+  --primary: var(--primitive-violet);
+  --accent: var(--primitive-amber);
+  --success: var(--primitive-leaf);
+  --text: var(--primitive-cocoa);
+  --text-muted: #7a6552;
+  --border: #eadfc9;
+
+  --calm-night-bg: var(--primitive-night-bg);
+  --calm-night-surface: var(--primitive-night-surface);
+  --calm-night-text: var(--primitive-night-text);
+
+  /* --- Spacing: 8pt grid (§15.3) --------------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+
+  /* --- Type scale (§15.2) ---------------------------------------------- */
+  --font-size-1: 0.875rem; /* 14 */
+  --font-size-2: 1rem; /* 16 */
+  --font-size-3: 1.125rem; /* 18 */
+  --font-size-4: 1.5rem; /* 24 — the child UI floor */
+  --font-size-5: 2rem; /* 32 */
+  --font-size-6: 2.5rem; /* 40 */
+  --font-size-7: 3.25rem; /* 52 */
+  --font-size-8: 4rem; /* 64 */
+
+  --font-display: 'Baloo 2', 'Fredoka', 'Nunito', system-ui, sans-serif;
+  --font-text: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --line-height-tight: 1.25;
+  --line-height-base: 1.6;
+
+  /* --- Motion (§15.8) --------------------------------------------------- */
+  --motion-fast: 120ms;
+  --motion-base: 240ms;
+  --motion-slow: 480ms;
+  --motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* --- Shape ------------------------------------------------------------ */
+  --radius-sm: 8px;
+  --radius-md: 16px;
+  --radius-lg: 28px;
+  --radius-full: 999px;
+  --shadow-card: 0 8px 28px rgb(74 53 36 / 12%);
+
+  /* Child targets are ~64px minimum; small fingers, no fine motor control (§15.4). */
+  --target-min: 64px;
+}
+
+/* --- Calm (parent) theme ---------------------------------------------- */
+[data-theme='calm'] {
+  --bg: var(--primitive-off-white);
+  --surface: var(--primitive-white);
+  --primary: var(--primitive-indigo);
+  --accent: var(--primitive-teal);
+  --success: var(--primitive-green);
+  --text: var(--primitive-slate);
+  --text-muted: #64708a;
+  --border: #dfe3ec;
+
+  --shadow-card: 0 2px 10px rgb(44 52 68 / 8%);
+  --radius-lg: 16px;
+
+  /* The parent surface is a scanning surface, not a storybook: tighter type,
+     standard targets. */
+  --font-display: var(--font-text);
+  --target-min: 44px;
+}
+
+/* --- Night / bedtime, suggested for evening sessions (§15.1) ----------- */
+[data-theme='night'] {
+  --bg: var(--calm-night-bg);
+  --surface: var(--calm-night-surface);
+  --text: var(--calm-night-text);
+  --text-muted: #a9a2c4;
+  --border: #3a3f63;
+}
+
+/* Motion is decoration, never information (§15.8, §14.6). */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

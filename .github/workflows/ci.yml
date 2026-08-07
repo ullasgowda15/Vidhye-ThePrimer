@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    services:
+      # Same image as local dev so the pgvector extension exists in CI too.
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: primer
+          POSTGRES_PASSWORD: primer
+          POSTGRES_DB: primer
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U primer -d primer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      SECRET_KEY: ci-secret-not-used-in-production
+      DEBUG: '1'
+      DATABASE_URL: postgres://primer:primer@localhost:5432/primer
+      REDIS_URL: redis://localhost:6379/0
+      # Deliberately empty: CI must never call a real provider. The hello_beat
+      # tests stub the provider out.
+      ANTHROPIC_API_KEY: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Lint (ruff)
+        working-directory: backend
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Type check (mypy)
+        working-directory: backend
+        # Non-blocking on Day 1 while annotations are still being added.
+        continue-on-error: true
+        run: mypy .
+
+      - name: Check for missing migrations
+        working-directory: backend
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Migrate
+        working-directory: backend
+        run: python manage.py migrate
+
+      - name: Test (pytest)
+        working-directory: backend
+        run: pytest
+
+      - name: Export OpenAPI schema
+        working-directory: backend
+        run: python manage.py spectacular --format openapi-json --file ../frontend/openapi.json
+
+      - name: Fail if the committed OpenAPI schema is stale
+        # The generated TS client is only trustworthy if the committed schema
+        # matches the code that produced it.
+        run: git diff --exit-code -- frontend/openapi.json
+
+      - name: Smoke-test the ASGI app
+        working-directory: backend
+        run: |
+          python -m uvicorn config.asgi:application --port 8000 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8000/api/health/ && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/api/health/ | tee /dev/stderr | grep -q '"status":"ok"'
+          curl -fsS -o /dev/null http://127.0.0.1:8000/api/schema/
+          curl -fsS -o /dev/null http://127.0.0.1:8000/api/docs/
+
+      - name: Smoke-test the Celery worker
+        working-directory: backend
+        run: |
+          celery -A config worker -l warning --detach --pidfile=/tmp/celery.pid --logfile=/tmp/celery.log
+          sleep 10
+          python manage.py shell -c "from apps.common.tasks import ping; assert ping.delay().get(timeout=30) == 'pong'"
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint (eslint + prettier)
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Type check (tsc)
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Fail if the generated API client is stale
+        working-directory: frontend
+        run: |
+          npm run client
+          git diff --exit-code -- src/lib/api/schema.ts
+
+      - name: Test (vitest)
+        working-directory: frontend
+        run: npm run test
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  docker:
+    name: Backend image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the backend image
+        run: docker build -f infra/Dockerfile.backend -t primer-backend:ci .

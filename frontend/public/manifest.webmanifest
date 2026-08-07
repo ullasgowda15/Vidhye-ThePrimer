@@ -1,0 +1,26 @@
+{
+  "name": "The Primer",
+  "short_name": "Primer",
+  "description": "A living storybook that grows with your child.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#fdf6e9",
+  "theme_color": "#fdf6e9",
+  "lang": "en-US",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

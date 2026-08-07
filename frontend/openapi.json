@@ -1,0 +1,55 @@
+{
+    "openapi": "3.0.3",
+    "info": {
+        "title": "The Primer API",
+        "version": "0.1.0",
+        "description": "The Primer — an AI-generated living storybook and lifelong learning companion for children aged 3-7."
+    },
+    "paths": {
+        "/api/health/": {
+            "get": {
+                "operationId": "health",
+                "description": "Returns 200 while the API process is serving requests.",
+                "summary": "Liveness probe",
+                "tags": [
+                    "health"
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Health"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Health": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string"
+                    },
+                    "service": {
+                        "type": "string"
+                    },
+                    "version": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "service",
+                    "status",
+                    "version"
+                ]
+            }
+        }
+    }
+}
