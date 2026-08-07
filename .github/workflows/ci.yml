@@ -47,9 +47,11 @@ jobs:
       DEBUG: '1'
       DATABASE_URL: postgres://primer:primer@localhost:5432/primer
       REDIS_URL: redis://localhost:6379/0
-      # Deliberately empty: CI must never call a real provider. The hello_beat
-      # tests stub the provider out.
+      # Deliberately empty: CI must never call a real provider. Every AI test stubs
+      # the provider out, so an empty key here is also a guard — if a test ever tries
+      # to make a live call, it fails on configuration instead of spending money.
       ANTHROPIC_API_KEY: ''
+      OPENROUTER_API_KEY: ''
 
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +73,9 @@ jobs:
 
       - name: Type check (mypy)
         working-directory: backend
-        # Non-blocking on Day 1 while annotations are still being added.
+        # Non-blocking while annotations are still being added, so a type regression
+        # will NOT fail the build — read the step's output, don't trust the green tick.
+        # Flip to blocking once the codebase has been clean for a few days running.
         continue-on-error: true
         run: mypy .
 
@@ -112,7 +116,14 @@ jobs:
         working-directory: backend
         run: |
           celery -A config worker -l warning --detach --pidfile=/tmp/celery.pid --logfile=/tmp/celery.log
-          sleep 10
+          # Wait for the worker to actually answer, rather than guessing with a fixed
+          # sleep — a slow runner turns that into a flaky failure that looks like a
+          # broken worker. `inspect ping` exits non-zero until someone replies.
+          for _ in $(seq 1 30); do
+            celery -A config inspect ping --timeout 2 >/dev/null 2>&1 && break
+            sleep 1
+          done
+          celery -A config inspect ping --timeout 5 || { cat /tmp/celery.log; exit 1; }
           python manage.py shell -c "from apps.common.tasks import ping; assert ping.delay().get(timeout=30) == 'pong'"
 
   frontend:

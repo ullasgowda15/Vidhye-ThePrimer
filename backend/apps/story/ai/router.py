@@ -2,8 +2,12 @@
 
 Why a router at all: portability (no provider lock-in), cost control (the right
 model per call-type), and resilience (a provider outage must not be a product
-outage). Claude is primary; OpenAI and Google are declared here as typed seams
-so Day 15's fallback work is wiring, not redesign.
+outage). Claude is the configured primary; OpenRouter is a real, selectable
+provider so the pipeline can be exercised on a free model; OpenAI and Google are
+declared as typed seams so Day 15's fallback work is wiring, not redesign.
+
+Which provider runs is decided entirely by `AI_PROVIDER_ORDER` in the environment
+— no code changes to switch.
 
 Every provider call is wrapped by validate-and-repair. A generation that fails
 the `Beat` schema gets exactly **one** repair attempt and then raises. The
@@ -124,6 +128,121 @@ class AnthropicProvider:
         raise ProviderError("Claude returned no text content.")
 
 
+class OpenRouterProvider:
+    """OpenRouter — an OpenAI-API-compatible gateway in front of many models.
+
+    Why it exists on Day 1: it lets the whole AI path be exercised end to end on a
+    free model, without an Anthropic key. Anthropic stays the configured primary;
+    this is selected purely by `AI_PROVIDER_ORDER` in `.env`, so switching back is
+    a config change, not a code change.
+
+    The model is never hardcoded — free-model availability on OpenRouter changes
+    week to week, so it comes from `AI_BEAT_MODEL`.
+    """
+
+    name = "openrouter"
+
+    #: Sent to OpenRouter for attribution. Neither is required, and neither
+    #: identifies a child — this is the app's own name.
+    _ATTRIBUTION_TITLE = "The Primer"
+
+    # Many free models don't implement strict `json_schema` response formats. We
+    # start strict and degrade to plain JSON mode on rejection (§19.6), remembering
+    # the downgrade so a repair attempt doesn't pay for the same rejection twice.
+    _STRICT = "json_schema"
+    _JSON_MODE = "json_object"
+
+    def __init__(self, api_key: str = "", model: str = "", base_url: str = "") -> None:
+        self._api_key = api_key or settings.OPENROUTER_API_KEY
+        self._model = model or settings.AI_BEAT_MODEL
+        self._base_url = base_url or settings.OPENROUTER_BASE_URL
+        self._mode = self._STRICT
+
+    def is_configured(self) -> bool:
+        return bool(self._api_key)
+
+    def generate_json(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        schema: dict[str, Any],
+    ) -> str:
+        from openai import BadRequestError, OpenAI
+
+        client = OpenAI(
+            api_key=self._api_key,
+            base_url=self._base_url,
+            default_headers={
+                "HTTP-Referer": settings.OPENROUTER_SITE_URL,
+                "X-Title": self._ATTRIBUTION_TITLE,
+            },
+        )
+        payload: list[dict[str, Any]] = [{"role": "system", "content": system}, *messages]
+
+        if self._mode == self._STRICT:
+            try:
+                return self._complete(
+                    client,
+                    payload,
+                    {
+                        "type": "json_schema",
+                        "json_schema": {"name": "beat", "strict": True, "schema": schema},
+                    },
+                )
+            except BadRequestError:
+                logger.warning(
+                    "Model %s rejected a strict json_schema response format; "
+                    "falling back to JSON mode + validate-and-repair.",
+                    self._model,
+                )
+                self._mode = self._JSON_MODE
+
+        # JSON mode constrains syntax but not shape, so the schema has to travel in
+        # the prompt. ("json" appearing in the messages is also what OpenAI-compatible
+        # APIs require before they will honour `json_object` at all.)
+        payload[0] = {
+            "role": "system",
+            "content": (
+                f"{system}\n\n"
+                "Return only a single JSON object conforming exactly to this JSON Schema. "
+                "No prose, no markdown fences.\n\n"
+                f"{json.dumps(schema)}"
+            ),
+        }
+        return self._complete(client, payload, {"type": self._JSON_MODE})
+
+    def _complete(
+        self,
+        client: Any,
+        messages: list[dict[str, Any]],
+        response_format: dict[str, Any],
+    ) -> str:
+        response = client.chat.completions.create(
+            model=self._model,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            messages=messages,
+            response_format=response_format,
+        )
+
+        if not response.choices:
+            raise ProviderError(f"OpenRouter returned no choices for model '{self._model}'.")
+
+        choice = response.choices[0]
+        if getattr(choice.message, "refusal", None):
+            raise ProviderError(f"Model '{self._model}' declined the request.")
+
+        content = choice.message.content
+        if not content:
+            # A truncated generation surfaces here as empty/partial content rather
+            # than as an error, so name the likely cause instead of "no text".
+            raise ProviderError(
+                f"Model '{self._model}' returned no content "
+                f"(finish_reason: {choice.finish_reason})."
+            )
+        return content
+
+
 class _UnimplementedProvider:
     """Typed seam for a fallback provider that is declared but not yet built.
 
@@ -161,6 +280,7 @@ class GoogleProvider(_UnimplementedProvider):
 
 PROVIDERS: dict[str, type] = {
     AnthropicProvider.name: AnthropicProvider,
+    OpenRouterProvider.name: OpenRouterProvider,
     OpenAIProvider.name: OpenAIProvider,
     GoogleProvider.name: GoogleProvider,
 }
@@ -192,7 +312,10 @@ class ModelRouter:
                 return provider
         configured = ", ".join(p.name for p in self.providers) or "(none)"
         raise AIConfigurationError(
-            "No AI provider is configured. Set ANTHROPIC_API_KEY in your .env "
+            # Plain ASCII on purpose: this prints to a terminal, and the Windows
+            # console mangles anything that isn't.
+            "No AI provider is configured. Set ANTHROPIC_API_KEY in your .env, or "
+            "OPENROUTER_API_KEY with AI_PROVIDER_ORDER=openrouter,anthropic "
             f"(providers tried: {configured})."
         )
 

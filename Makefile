@@ -66,7 +66,7 @@ worker: ## Start the Celery worker
 superuser: ## Create an admin login
 	cd backend && $(ABS_PY) manage.py createsuperuser
 
-hello-beat: ## Generate one validated story Beat via Claude (needs ANTHROPIC_API_KEY)
+hello-beat: ## Generate one validated story Beat (needs an ANTHROPIC_API_KEY or OPENROUTER_API_KEY)
 	cd backend && $(ABS_PY) manage.py hello_beat
 
 ping: ## Round-trip a task through Celery to prove the worker is live

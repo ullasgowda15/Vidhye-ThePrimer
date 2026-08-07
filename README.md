@@ -18,7 +18,7 @@ An AI-generated living storybook — a personalized lifelong learning companion 
 | Jobs | Celery + Redis |
 | Database | PostgreSQL 16 + pgvector |
 | Frontend | React + Vite + Tailwind (PWA). Node is a build tool only — there is no Node server |
-| AI | Anthropic Claude primary, with OpenAI/Google fallback seams |
+| AI | Anthropic Claude primary; OpenRouter selectable for dev, with OpenAI/Google fallback seams |
 
 The backend runs under ASGI rather than WSGI because story beats stream to the client
 over SSE from async views (PRODUCT.md §16.4). Don't swap `make run` for a WSGI server.
@@ -48,7 +48,7 @@ module boundaries are drawn as if they were network boundaries from the start.
 ## First run
 
 ```bash
-cp .env.example .env          # then set ANTHROPIC_API_KEY if you want hello-beat
+cp .env.example .env          # then set a provider key if you want hello-beat
 make venv                     # optional — creates .venv, which make prefers
 make install                  # backend + frontend dependencies
 make up                       # Postgres (pgvector) + Redis
@@ -104,7 +104,7 @@ make help
 make ping      # -> pong
 ```
 
-**The AI layer** — needs `ANTHROPIC_API_KEY` in `.env`:
+**The AI layer** — needs a provider key in `.env`:
 
 ```bash
 make hello-beat
@@ -112,6 +112,28 @@ make hello-beat
 
 Prints a schema-valid story `Beat` as JSON. Without a key it exits non-zero with an
 instruction, not a stack trace.
+
+### Choosing a provider
+
+`AI_PROVIDER_ORDER` decides which provider runs; the first one with credentials
+wins. Nothing in the code changes when you switch.
+
+| `.env` | Result |
+|---|---|
+| `AI_PROVIDER_ORDER=anthropic` + `ANTHROPIC_API_KEY` | Claude — the configured primary |
+| `AI_PROVIDER_ORDER=openrouter,anthropic` + `OPENROUTER_API_KEY` | OpenRouter, falling back to Claude if its key is missing |
+
+OpenRouter exists so the whole pipeline can be exercised on a **free** model without
+an Anthropic key. Two things to know:
+
+- `AI_BEAT_MODEL` is provider-relative — a Claude model id for `anthropic`, an
+  OpenRouter model slug for `openrouter`. Free-model availability there changes over
+  time, so pick one that is currently listed and supports JSON/tool output.
+- Many free models don't support strict `json_schema` output. The provider asks for
+  one, and on rejection degrades to JSON mode plus the router's validate-and-repair
+  pass — so a beat still arrives, just less cheaply.
+
+OpenRouter is LLM-only: images and TTS (Day 3) have their own providers.
 
 ## The API contract
 
@@ -136,6 +158,34 @@ variables); `tokens.ts` is a typed mirror for code that can't read CSS, and
 Two themes ship today: **Storyland** (child, `:root`) and **Calm** (parent, applied
 with `data-theme="calm"` on a wrapper). A night palette is defined for the evening
 mode that lands later. See PRODUCT.md §15.
+
+## Enable CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every PR, but a workflow
+can't run until the repo has a remote. This is a one-time founder step:
+
+```bash
+gh repo create <owner>/primer --private --source=. --remote=origin   # or create it in the UI
+git remote add origin git@github.com:<owner>/primer.git              # if you made it in the UI
+git push -u origin main
+```
+
+Then confirm the run is green — `gh run watch`, or the **Actions** tab.
+
+No secrets are needed. CI passes `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` as
+**empty** strings on purpose: it must never call a real provider, and every AI test
+stubs the provider out. Adding a real key to repo secrets would let a bad test spend
+money silently — don't.
+
+Two things to know about the pipeline itself:
+
+- **`mypy` is `continue-on-error: true`.** Type regressions will not fail the build
+  while annotations are still being filled in. Read the step's output rather than
+  trusting the green tick; flip it to blocking once it has been clean for a few days.
+- **The three jobs** (`Backend`, `Frontend`, `Backend image`) run in parallel and
+  include real smoke tests — ASGI over HTTP, a Celery `ping` round trip, and staleness
+  gates on both generated artifacts (`frontend/openapi.json`, `src/lib/api/schema.ts`).
+  A red staleness gate means you changed the API and didn't run `make client`.
 
 ## Deployment
 

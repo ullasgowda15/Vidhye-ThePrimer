@@ -13,9 +13,30 @@ that silently omits `interaction.expected` is a bug we want to catch here, not
 three layers downstream.
 """
 
-from typing import Any
+from enum import StrEnum
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# JSON-Schema keywords that the structured-output subset does not accept. Pydantic
+# emits them from ordinary field constraints (`Field(ge=…)` becomes `minimum`), and
+# a provider will 400 on the whole request rather than ignore them. We keep the
+# constraints on the model — they still validate what comes *back* — and strip them
+# from the schema we send. See `strip_unsupported_keywords`.
+_UNSUPPORTED_SCHEMA_KEYWORDS = frozenset(
+    {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+    }
+)
 
 
 class _Strict(BaseModel):
@@ -34,10 +55,25 @@ class Scene(_Strict):
     )
 
 
+# A closed set rather than free text: `enum` *is* in the structured-output subset,
+# so the provider is constrained at generation time instead of being asked nicely in
+# the prompt, and Day 4's client dispatch can be exhaustive. Adding a member is the
+# deliberate act of teaching the client a new interaction — it should never arrive as
+# a surprise string. The docstring is one line on purpose: it ships in the schema.
+class InteractionType(StrEnum):
+    """What the child is asked to do."""
+
+    COUNT = "count"
+    CHOOSE = "choose"
+    SAY = "say"
+    TAP = "tap"
+    NONE = "none"
+
+
 class Interaction(_Strict):
-    type: str = Field(
-        description="What the child is asked to do: count, choose, say, tap, none.",
-    )
+    # No Field(...) here: extra metadata would make Pydantic emit siblings next to
+    # the `$ref`, which strict schema validators are inconsistent about accepting.
+    type: InteractionType
     prompt_audio: str | None = Field(
         description="What the companion says aloud to invite the interaction; null if none.",
     )
@@ -51,6 +87,9 @@ class Interaction(_Strict):
 
 class Learning(_Strict):
     objective_id: str = Field(description="Objective catalog code, e.g. 'count_to_5'.")
+    # ge/le validate the *returned* beat. They render as `minimum`/`maximum`,
+    # which the structured-output subset rejects, so `beat_json_schema()` strips
+    # them before the schema reaches a provider.
     difficulty: float = Field(
         ge=0.0,
         le=1.0,
@@ -80,6 +119,30 @@ class Beat(_Strict):
     )
 
 
+def strip_unsupported_keywords(node: Any) -> Any:
+    """Recursively drop keywords the structured-output subset rejects.
+
+    Providers validate the schema strictly, so one stray `minimum` deep inside a
+    `$defs` entry fails the whole request. Walking the tree — rather than popping
+    known offenders by path — means a constraint added to any future field is
+    handled without anyone remembering this file exists.
+    """
+    if isinstance(node, dict):
+        return {
+            key: strip_unsupported_keywords(value)
+            for key, value in node.items()
+            if key not in _UNSUPPORTED_SCHEMA_KEYWORDS
+        }
+    if isinstance(node, list):
+        return [strip_unsupported_keywords(item) for item in node]
+    return node
+
+
 def beat_json_schema() -> dict[str, Any]:
-    """JSON Schema for `Beat`, shaped for provider structured-output APIs."""
-    return Beat.model_json_schema()
+    """JSON Schema for `Beat`, shaped for provider structured-output APIs.
+
+    The returned schema is deliberately *looser* than the Pydantic model: the
+    0-1 bound on `difficulty` is enforced when the response is validated
+    (`Beat.model_validate`), not asked of the provider.
+    """
+    return cast("dict[str, Any]", strip_unsupported_keywords(Beat.model_json_schema()))

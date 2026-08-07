@@ -19,6 +19,10 @@ Day 1 ships a spine, not a product. Deployable means:
 There is no auth, no story loop, and no billing yet, so **staging must not be
 publicly linked** until the safety layer lands (Day 7).
 
+CI must be green before any of this is worth doing, and CI cannot run until the repo
+has a remote — see **[Enable CI](README.md#enable-ci)** in the README for that
+one-time step.
+
 ## Architecture on a host
 
 Three processes and two managed services:
@@ -48,6 +52,8 @@ Three processes and two managed services:
 | `ALLOWED_HOSTS` | Your staging hostname(s), comma-separated |
 | `CORS_ALLOWED_ORIGINS` | The PWA's origin, comma-separated |
 | `ANTHROPIC_API_KEY` | From the Anthropic console |
+| `AI_PROVIDER_ORDER` | `anthropic` on staging. OpenRouter is a dev convenience; don't ship a free model to a child. |
+| `AI_BEAT_MODEL` | Optional — defaults to the Claude model in `base.py` |
 | `SECURE_SSL_REDIRECT` | `1` unless the platform already redirects |
 
 `config/settings/prod.py` turns on HSTS, secure cookies, and

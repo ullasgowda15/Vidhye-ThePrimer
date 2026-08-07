@@ -36,7 +36,12 @@ class Command(BaseCommand):
             # The common case: no API key. Say exactly what to do, don't traceback.
             raise CommandError(
                 f"{exc}\n\n"
-                "Copy .env.example to .env and set ANTHROPIC_API_KEY, then re-run:\n"
+                "Copy .env.example to .env and set one of:\n"
+                "    ANTHROPIC_API_KEY=...                      (the configured primary)\n"
+                "    OPENROUTER_API_KEY=...                     (a free model in dev)\n"
+                "      + AI_PROVIDER_ORDER=openrouter,anthropic\n"
+                "      + AI_BEAT_MODEL=<a current OpenRouter free model slug>\n\n"
+                "then re-run:\n"
                 "    python manage.py hello_beat"
             ) from exc
         except BeatValidationError as exc:

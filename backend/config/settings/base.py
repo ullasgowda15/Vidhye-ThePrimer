@@ -141,6 +141,9 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
     ],
+    # TODO(Day 2): flip to IsAuthenticated and put @permission_classes([AllowAny])
+    # on the health view. Correct today (health is the only endpoint), but this is
+    # exactly the kind of default that silently outlives its justification.
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",
     ],
@@ -183,6 +186,17 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 # AI layer (PRODUCT.md §19.3)
 # ---------------------------------------------------------------------------
 ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+
+# OpenRouter is OpenAI-API-compatible and fronts many models, including free ones.
+# It is an *option*, not the default: selecting it is purely a matter of putting it
+# first in AI_PROVIDER_ORDER.
+OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
+OPENROUTER_BASE_URL = env("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
+# Optional OpenRouter attribution header. Not a secret, not child data.
+OPENROUTER_SITE_URL = env("OPENROUTER_SITE_URL", default="http://localhost:5173")
+
 # Claude is primary; OpenAI/Google are the fallback seam (not implemented yet).
+# AI_BEAT_MODEL is provider-relative: a Claude model id for `anthropic`, an
+# OpenRouter model slug (e.g. `vendor/model:free`) for `openrouter`.
 AI_BEAT_MODEL = env("AI_BEAT_MODEL", default="claude-opus-5")
 AI_PROVIDER_ORDER = env.list("AI_PROVIDER_ORDER", default=["anthropic"])
