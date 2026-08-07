@@ -11,8 +11,16 @@ SHELL := /bin/sh
 # Prefer the repo-local venv when it exists (Windows uses Scripts/, POSIX bin/).
 ifeq ($(OS),Windows_NT)
   VENV_PY := .venv/Scripts/python.exe
+  # Node ships three `npm` entry points on Windows. Make's own PATH search finds
+  # the extensionless Unix shell script first and tries to run it through `bash`,
+  # which on a default Windows PATH is C:\Windows\System32\bash.exe — the WSL
+  # launcher, not Git Bash. With no WSL distro installed that fails with
+  # "execvpe(/bin/bash) failed", and `make front` dies before Vite ever starts.
+  # Naming npm.cmd explicitly keeps make out of that search entirely.
+  NPM := npm.cmd
 else
   VENV_PY := .venv/bin/python
+  NPM := npm
 endif
 PY ?= $(if $(wildcard $(VENV_PY)),$(VENV_PY),python)
 ABS_PY := $(abspath $(PY))
@@ -36,7 +44,7 @@ venv: ## Create the local virtualenv
 install: ## Install backend + frontend dependencies
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -r backend/requirements-dev.txt
-	cd frontend && npm install
+	cd frontend && $(NPM) install
 
 # --- infrastructure --------------------------------------------------------
 
@@ -79,10 +87,10 @@ ping: ## Round-trip a task through Celery to prove the worker is live
 # --- frontend --------------------------------------------------------------
 
 front: ## Start the Vite dev server
-	cd frontend && npm run dev
+	cd frontend && $(NPM) run dev
 
 build: ## Production build of the PWA
-	cd frontend && npm run build
+	cd frontend && $(NPM) run build
 
 # --- API contract ----------------------------------------------------------
 
@@ -90,7 +98,7 @@ schema: ## Export the OpenAPI schema from Django
 	cd backend && $(ABS_PY) manage.py spectacular --format openapi-json --file ../frontend/openapi.json
 
 client: schema ## Regenerate the typed TS client from the schema
-	cd frontend && npm run client
+	cd frontend && $(NPM) run client
 
 # --- quality ---------------------------------------------------------------
 
@@ -100,7 +108,7 @@ test-backend:
 	cd backend && $(ABS_PY) -m pytest
 
 test-frontend:
-	cd frontend && npm run test
+	cd frontend && $(NPM) run test
 
 lint: lint-backend lint-frontend ## Lint + format-check everything
 
@@ -109,16 +117,16 @@ lint-backend:
 	cd backend && $(ABS_PY) -m ruff format --check .
 
 lint-frontend:
-	cd frontend && npm run lint
+	cd frontend && $(NPM) run lint
 
 typecheck: ## Type-check both sides
 	cd backend && $(ABS_PY) -m mypy .
-	cd frontend && npm run typecheck
+	cd frontend && $(NPM) run typecheck
 
 format: ## Autoformat everything
 	cd backend && $(ABS_PY) -m ruff format .
 	cd backend && $(ABS_PY) -m ruff check --fix .
-	cd frontend && npm run format
+	cd frontend && $(NPM) run format
 
 clean: ## Remove build artifacts and caches
 	rm -rf frontend/dist backend/staticfiles
