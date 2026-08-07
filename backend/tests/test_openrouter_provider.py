@@ -20,6 +20,7 @@ import openai
 import pytest
 
 from apps.story.ai.router import (
+    AIConfigurationError,
     AnthropicProvider,
     ModelRouter,
     OpenRouterProvider,
@@ -78,6 +79,9 @@ def openrouter_settings(settings) -> None:
     settings.AI_BEAT_MODEL = "vendor/some-free-model:free"
     settings.OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
     settings.OPENROUTER_SITE_URL = "http://localhost:5173"
+    # Pinned so these tests describe the shipping default rather than whatever
+    # happens to be in the developer's .env.
+    settings.AI_STRUCTURED_OUTPUT_MODE = "auto"
 
 
 pytestmark = pytest.mark.usefixtures("openrouter_settings")
@@ -143,6 +147,61 @@ def test_remembers_the_downgrade_for_the_repair_attempt(fake_openai) -> None:
     assert fake_openai.calls[2]["response_format"] == {"type": "json_object"}
 
 
+def test_auto_is_the_default_policy(settings) -> None:
+    # The shipping default must be the self-healing one. If this flips, every
+    # deployment that never set the knob changes behaviour silently.
+    assert settings.AI_STRUCTURED_OUTPUT_MODE == "auto"
+    assert OpenRouterProvider().output_mode == "json_schema"
+
+
+def test_json_object_mode_skips_the_strict_attempt(settings, fake_openai) -> None:
+    # Straight to the fallback: no wasted round trip on a model already known not
+    # to support strict schemas. This is the switch `smoke_ai` Check B flips.
+    settings.AI_STRUCTURED_OUTPUT_MODE = "json_object"
+    fake_openai.outcomes = [completion(json.dumps(VALID_BEAT))]
+
+    provider = OpenRouterProvider()
+    provider.generate_json(system="be warm", messages=[], schema=SCHEMA)
+
+    (call,) = fake_openai.calls
+    assert call["response_format"] == {"type": "json_object"}
+    assert json.dumps(SCHEMA) in call["messages"][0]["content"]
+    assert provider.output_mode == "json_object"
+
+
+def test_strict_mode_refuses_to_degrade(settings, fake_openai) -> None:
+    # An operator who asked for enforced structure gets an error, not a quietly
+    # weaker guarantee — that is the whole point of choosing `strict` over `auto`.
+    settings.AI_STRUCTURED_OUTPUT_MODE = "strict"
+    fake_openai.outcomes = [bad_request()]
+
+    provider = OpenRouterProvider()
+    with pytest.raises(openai.BadRequestError):
+        provider.generate_json(system="be warm", messages=[], schema=SCHEMA)
+
+    assert len(fake_openai.calls) == 1  # no fallback attempt
+    assert provider.output_mode == "json_schema"
+
+
+def test_auto_mode_degrades_where_strict_would_raise(settings, fake_openai) -> None:
+    settings.AI_STRUCTURED_OUTPUT_MODE = "auto"
+    fake_openai.outcomes = [bad_request(), completion(json.dumps(VALID_BEAT))]
+
+    provider = OpenRouterProvider()
+    provider.generate_json(system="be warm", messages=[], schema=SCHEMA)
+
+    assert provider.output_mode == "json_object"
+
+
+def test_an_unknown_mode_fails_at_construction(settings) -> None:
+    # Fail on a typo when the provider is built, not on the first beat a child is
+    # waiting for.
+    settings.AI_STRUCTURED_OUTPUT_MODE = "jsonobject"
+
+    with pytest.raises(AIConfigurationError, match="AI_STRUCTURED_OUTPUT_MODE"):
+        OpenRouterProvider()
+
+
 def test_reports_a_refusal_as_a_provider_error(fake_openai) -> None:
     fake_openai.outcomes = [completion(None, refusal="I can't help with that.")]
 
@@ -173,7 +232,7 @@ def test_env_alone_switches_the_router_to_openrouter(settings, fake_openai) -> N
     beat = router.generate_beat(CONTEXT)
 
     assert [p.name for p in router.providers] == ["openrouter", "anthropic"]
-    assert isinstance(router._select(), OpenRouterProvider)
+    assert isinstance(router.select_provider(), OpenRouterProvider)
     assert beat.beat_id == "b1"
 
 
@@ -185,7 +244,7 @@ def test_env_alone_switches_the_router_back_to_anthropic(settings) -> None:
     router = ModelRouter.from_settings()
 
     assert [p.name for p in router.providers] == ["anthropic"]
-    assert isinstance(router._select(), AnthropicProvider)
+    assert isinstance(router.select_provider(), AnthropicProvider)
 
 
 def test_openrouter_is_skipped_when_it_has_no_key(settings) -> None:
@@ -193,4 +252,4 @@ def test_openrouter_is_skipped_when_it_has_no_key(settings) -> None:
     settings.ANTHROPIC_API_KEY = "test-anthropic-key"
     settings.AI_PROVIDER_ORDER = ["openrouter", "anthropic"]
 
-    assert isinstance(ModelRouter.from_settings()._select(), AnthropicProvider)
+    assert isinstance(ModelRouter.from_settings().select_provider(), AnthropicProvider)

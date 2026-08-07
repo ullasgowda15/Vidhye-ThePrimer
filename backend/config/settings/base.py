@@ -200,3 +200,8 @@ OPENROUTER_SITE_URL = env("OPENROUTER_SITE_URL", default="http://localhost:5173"
 # OpenRouter model slug (e.g. `vendor/model:free`) for `openrouter`.
 AI_BEAT_MODEL = env("AI_BEAT_MODEL", default="claude-opus-5")
 AI_PROVIDER_ORDER = env.list("AI_PROVIDER_ORDER", default=["anthropic"])
+
+# How hard to insist on provider-enforced structured output: auto | strict |
+# json_object. `auto` (try strict, degrade if the model can't) is the shipping
+# behaviour. Applies to OpenAI-compatible providers; Anthropic enforces natively.
+AI_STRUCTURED_OUTPUT_MODE = env("AI_STRUCTURED_OUTPUT_MODE", default="auto")

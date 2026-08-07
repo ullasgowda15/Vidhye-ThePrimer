@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from django.conf import settings
@@ -36,6 +37,24 @@ logger = logging.getLogger(__name__)
 # How many tokens a single beat may cost. A beat is a few hundred words; the
 # headroom is for adaptive thinking, which is on by default on Claude Opus 5.
 MAX_OUTPUT_TOKENS = 8000
+
+
+class StructuredOutputMode(StrEnum):
+    """How hard to insist on provider-enforced structured output (§19.6).
+
+    Applies to OpenAI-compatible providers, where support varies by model.
+    Anthropic enforces the schema natively and ignores this.
+
+    `AUTO` is the shipping default and the only self-healing option. The other two
+    exist because "it degraded silently" and "it failed loudly" are both things you
+    sometimes need to be sure of: `STRICT` in production, where a model quietly
+    dropping to unenforced JSON is a regression worth a page rather than a shrug;
+    `JSON_OBJECT` to exercise the repair path deliberately.
+    """
+
+    AUTO = "auto"
+    STRICT = "strict"
+    JSON_OBJECT = "json_object"
 
 
 class AIError(Exception):
@@ -79,6 +98,10 @@ class AnthropicProvider:
     """Claude — the primary provider for beat generation (PRODUCT.md §16.1)."""
 
     name = "anthropic"
+    credential_env_var = "ANTHROPIC_API_KEY"
+
+    #: Claude enforces the schema natively — there is no degraded mode to report.
+    output_mode = "json_schema"
 
     def __init__(self, api_key: str = "", model: str = "") -> None:
         self._api_key = api_key or settings.ANTHROPIC_API_KEY
@@ -141,22 +164,52 @@ class OpenRouterProvider:
     """
 
     name = "openrouter"
+    credential_env_var = "OPENROUTER_API_KEY"
 
     #: Sent to OpenRouter for attribution. Neither is required, and neither
     #: identifies a child — this is the app's own name.
     _ATTRIBUTION_TITLE = "The Primer"
 
-    # Many free models don't implement strict `json_schema` response formats. We
-    # start strict and degrade to plain JSON mode on rejection (§19.6), remembering
-    # the downgrade so a repair attempt doesn't pay for the same rejection twice.
+    # The two wire-level response formats, as OpenAI-compatible APIs name them.
     _STRICT = "json_schema"
     _JSON_MODE = "json_object"
 
-    def __init__(self, api_key: str = "", model: str = "", base_url: str = "") -> None:
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = "",
+        base_url: str = "",
+        mode: str = "",
+    ) -> None:
         self._api_key = api_key or settings.OPENROUTER_API_KEY
         self._model = model or settings.AI_BEAT_MODEL
         self._base_url = base_url or settings.OPENROUTER_BASE_URL
-        self._mode = self._STRICT
+
+        configured = mode or settings.AI_STRUCTURED_OUTPUT_MODE
+        try:
+            self._policy = StructuredOutputMode(configured)
+        except ValueError:
+            raise AIConfigurationError(
+                f"Unknown AI_STRUCTURED_OUTPUT_MODE '{configured}'. "
+                f"Expected one of: {', '.join(m.value for m in StructuredOutputMode)}."
+            ) from None
+
+        # Many free models don't implement strict `json_schema` response formats,
+        # so under AUTO we start strict and degrade on rejection, remembering the
+        # downgrade so a repair attempt doesn't pay for the same rejection twice.
+        self._mode = (
+            self._JSON_MODE if self._policy is StructuredOutputMode.JSON_OBJECT else self._STRICT
+        )
+
+    @property
+    def output_mode(self) -> str:
+        """The response format last used — `json_schema` or `json_object`.
+
+        Worth surfacing: a beat produced under `json_object` was validated by us
+        rather than enforced by the provider, which is a materially weaker
+        guarantee. `manage.py smoke_ai` reports it for exactly that reason.
+        """
+        return self._mode
 
     def is_configured(self) -> bool:
         return bool(self._api_key)
@@ -191,6 +244,10 @@ class OpenRouterProvider:
                     },
                 )
             except BadRequestError:
+                if self._policy is StructuredOutputMode.STRICT:
+                    # The operator asked for enforced structure. Degrading here
+                    # would hand back a weaker guarantee than they configured.
+                    raise
                 logger.warning(
                     "Model %s rejected a strict json_schema response format; "
                     "falling back to JSON mode + validate-and-repair.",
@@ -252,6 +309,8 @@ class _UnimplementedProvider:
     """
 
     name = "unimplemented"
+    credential_env_var = ""
+    output_mode = "n/a"
 
     def is_configured(self) -> bool:
         return False
@@ -306,7 +365,13 @@ class ModelRouter:
             providers.append(factory())
         return cls(providers=providers)
 
-    def _select(self) -> BeatProvider:
+    def select_provider(self) -> BeatProvider:
+        """The first provider in `AI_PROVIDER_ORDER` that has credentials.
+
+        Public because callers legitimately need to know *who* answered before or
+        after a generation — `manage.py smoke_ai` reports it, and Day 15's fallback
+        work will log it. Selection is pure, so calling it twice is free.
+        """
         for provider in self.providers:
             if provider.is_configured():
                 return provider
@@ -335,7 +400,7 @@ class ModelRouter:
         if not system or not user:
             raise AIConfigurationError("context must contain non-empty 'system' and 'user' keys.")
 
-        provider = self._select()
+        provider = self.select_provider()
         schema = beat_json_schema()
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
 

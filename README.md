@@ -93,7 +93,8 @@ make help
 | `schema` / `client` | Export OpenAPI, regenerate the typed TS client |
 | `test` / `lint` / `typecheck` / `format` | Quality gates (both sides) |
 | `superuser` | Create an admin login |
-| `hello-beat` | Generate one validated story Beat via Claude |
+| `hello-beat` | Generate one validated story Beat |
+| `smoke` | Live AI smoke test — real calls, asserted. Never in CI |
 | `ping` | Round-trip a task through Celery |
 
 ## Verifying the pieces
@@ -134,6 +135,41 @@ an Anthropic key. Two things to know:
   pass — so a beat still arrives, just less cheaply.
 
 OpenRouter is LLM-only: images and TTS (Day 3) have their own providers.
+
+## Smoke-testing the AI path
+
+`make hello-beat` prints a beat for a human to read. `make smoke` **asserts** it:
+
+```bash
+make smoke                              # uses AI_BEAT_MODEL from .env
+make smoke SMOKE_ARGS=--pick-free-model # or let it choose a free model for you
+```
+
+It runs against whichever provider is first in `AI_PROVIDER_ORDER`, so to smoke-test
+on OpenRouter put `AI_PROVIDER_ORDER=openrouter,anthropic` in `.env` first —
+otherwise it correctly reports that `ANTHROPIC_API_KEY` is unset and stops.
+
+It exits 0 only if all three checks pass, so it also works as a gate in a script.
+
+| Check | What it proves |
+|---|---|
+| **A** happy path | A real call returns a beat that validates against the §8.1 schema, with `difficulty` in range and no empty required fields. Reports whether the provider *enforced* the schema (`mode=json_schema`) or we merely validated it (`mode=json_object`). |
+| **B** forced fallback | With `AI_STRUCTURED_OUTPUT_MODE=json_object`, a schema-valid beat still comes back through JSON mode + validate-and-repair. This is the path most free models actually take, so it is proven rather than assumed. |
+| **C** Anthropic routing | With `AI_PROVIDER_ORDER=anthropic` and no key, the path fails *cleanly* — documented message, exit 1, no traceback. Proves switching providers is config-only. Needs no Anthropic key. |
+
+Exit codes: **0** all passed · **1** a check failed · **2** not set up yet (missing
+key or model — the message names the variable to set).
+
+**This is deliberately not in CI and not in `make test`.** It costs real calls and
+needs a real key; `make test` stays hermetic and makes zero live calls. Run `make
+smoke` by hand after any change to the router, the prompts, or the `Beat` schema —
+it is the fastest way to catch the class of bug where output still parses but the
+provider would reject the request.
+
+`AI_STRUCTURED_OUTPUT_MODE` is a real setting, not a test-only switch: `auto`
+(default — try strict, degrade if the model can't), `strict` (never degrade; error
+instead, so a silent drop to unenforced JSON can't pass unnoticed in production),
+or `json_object` (skip straight to the repair path).
 
 ## The API contract
 

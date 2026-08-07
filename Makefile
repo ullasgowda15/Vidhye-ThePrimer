@@ -22,7 +22,7 @@ COMPOSE := docker compose -f infra/docker-compose.yml
 .DEFAULT_GOAL := help
 .PHONY: help venv install up down logs migrate migrations run worker front build \
         test test-backend test-frontend lint lint-backend lint-frontend format \
-        typecheck schema client superuser hello-beat ping clean
+        typecheck schema client superuser hello-beat smoke ping clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -68,6 +68,9 @@ superuser: ## Create an admin login
 
 hello-beat: ## Generate one validated story Beat (needs an ANTHROPIC_API_KEY or OPENROUTER_API_KEY)
 	cd backend && $(ABS_PY) manage.py hello_beat
+
+smoke: ## Live AI smoke test — real provider calls (needs OPENROUTER_API_KEY). Never in CI.
+	cd backend && $(ABS_PY) manage.py smoke_ai $(SMOKE_ARGS)
 
 ping: ## Round-trip a task through Celery to prove the worker is live
 	cd backend && $(ABS_PY) manage.py shell -c \
