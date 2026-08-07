@@ -1,0 +1,70 @@
+# Build — Day 5: Beat Loop, Choices & Consequences (Milestone M1)
+
+> **Session type:** BUILD. Read this whole file first. Build everything in scope, self‑review, then stop — do **not** start Day 6.
+>
+> **Source of truth:** `docs/PRODUCT.md` — §8.5 (choices/consequences), §8.6 (continuity), §8.8 (emotion/warm close), §4.9 (beat anatomy), §18.6 (choice API), §14.4–14.5 (child interaction rules).
+>
+> **If handed `docs/Review/reports/Day5-report.md`:** fix its punch‑list first (P0→P1), then re‑verify.
+
+---
+
+## 1. Yesterday's expected end state
+The orchestrator generates + persists a plan and streams a schema‑valid, personalized **first beat** (parallel illustration + voice) over SSE under ASGI, with validate‑repair. `StoryPage` renders progressively with no spinner. Single‑beat only: no choices, consequence loop, memory, or safety hardening.
+
+## 2. Today's goal (one sentence)
+Close the loop: **2–3 meaningful illustrated choices per decision point, real remembered consequences, and a full multi‑beat adventure that plays start → warm finish** — reaching **Milestone M1 (a real, if generic, story a child can play end to end).**
+
+## 3. Why this scope
+Agency is engagement — "I did that" (§8.5). A choice must change something the child can *perceive*, be **remembered**, and there are **no losing choices** — failure states shame young children and violate emotional safety (§8.5). Continuity must hold across beats while the live prompt stays small via a running summary (§8.6).
+
+## 4. Tasks by workstream
+
+### 4.1 Backend — choice endpoint & consequence (§18.6)
+```
+POST /api/v1/adventures/{id}/choice  {beatId, choiceKey, value?, latencyMs, retries} -> 202
+     # then the SSE stream resumes with the consequence beat
+POST /api/v1/adventures/{id}/end                                                       -> {status}
+```
+- Persist a `Choice` row (options, chosen_key, consequence_summary, latency_ms, retries, assisted) **synchronously** on receipt (STM for Day 8; learning evidence for Day 10).
+- Orchestrator: `generate_beat(adventure, prev_choice=choice)` produces the next beat conditioned on the choice's consequence; then **update `running_summary`** (compact — see 4.3). Loop until the plan's resolution → a **warm close beat**.
+- `end` sets `Adventure.status=completed`, `completed_at`, and finalizes the `PlaySession` (duration, ended_reason).
+
+### 4.2 AI — consequence coherence & no‑fail
+- Next‑beat prompt includes the chosen consequence + running summary; world/companion react **specifically** to the choice (name the consequence). Enforce **no losing choices** — a "struggle" leads to *scaffolding* ("Let's try together"), never a fail/game‑over.
+- The **final beat is always warm/safe** and plants a tomorrow hook (§8.8): "Pip yawns. 'Come back tomorrow — I found a map to somewhere new.'"
+
+### 4.3 Backend — running‑summary compaction (§8.6)
+```python
+def compact_summary(adventure) -> str:
+    # after N beats, replace the oldest beats in the live prompt with a compacted summary string,
+    # so prompt token size stays roughly FLAT across a long adventure.
+```
+Store on `Adventure.running_summary`; the orchestrator sends summary + last k beats, not the whole history.
+
+### 4.4 Frontend — illustrated choices + warm close
+- `ChoiceCard` component: **pictures, not text lists** (pre‑readers, §14.4); 2–3 large, spaced, forgiving targets; immediate feedback (motion + sound + companion reaction) within ~100ms.
+- On choice: POST, then continue consuming the SSE stream for the consequence beat. **Prefetch** the next beat + media during the current beat (§4.9).
+- Warm close screen: big voiced options ("play again" / "all done / see my world") — no scores, no timers, no red X's.
+
+## 5. Key stubs
+- Choice payload records `latencyMs`/`retries`/`assisted` on **every** interaction — Day 10 consumes these as learning evidence.
+- `assisted=True` when the companion scaffolds (child needed help) — set it when the scaffold path fires.
+
+## 6. Do NOT do today
+- ❌ No memory write/consolidation (Day 8). ❌ No learning engine (Day 10). ❌ No new safety layer (Day 7). ❌ Do NOT introduce any fail/"game over" state. ❌ No child‑visible scores/timers/streaks. ❌ Don't let the prompt grow linearly with beats — compaction is required.
+
+## 7. Acceptance criteria (done when ALL true)
+1. A decision beat offers **2–3 illustrated choices**; choosing streams a consequence beat that **specifically** reflects the choice (not a generic continuation).
+2. A full adventure (**≥4 beats**) plays start → warm close; `end` finalizes `Adventure` + `PlaySession`.
+3. Each choice is persisted with `latency_ms`/`retries`/`assisted` and a `consequence_summary`.
+4. Running‑summary compaction keeps the live prompt bounded (evidence: token count stays roughly flat across beats, not linear).
+5. **No fail states anywhere**; a "wrong" interaction yields gentle scaffolding (`assisted=True`), not failure.
+6. The final beat is always warm/safe and plants a tomorrow hook.
+7. Next beat/media prefetch during the current beat; still **no spinner**.
+8. `make lint && make test` + **CI green**, including a test that plays a scripted multi‑beat adventure to completion making ≥2 different choices. **M1 reached.**
+
+## 8. Founder manual test
+Play a full adventure twice, making **different** choices — the story should genuinely diverge and react to you by name/consequence. Reach a warm ending that invites you back tomorrow. Confirm there was never a "wrong/lose" moment and never a spinner; deliberately "fail" a task and confirm the companion gently helps.
+
+## 9. End state to hand to Day 6
+Full branching story loop works end to end: 2–3 illustrated choices, specific remembered consequences, bounded‑prompt continuity via running‑summary compaction, no fail states (scaffolding instead), warm close with a hook, prefetch + no spinner. **Milestone M1 complete.** Still generic‑ish visuals; no memory, safety hardening, or learning engine.
