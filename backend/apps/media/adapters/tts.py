@@ -41,6 +41,15 @@ class TTSProvider(Protocol):
 
     def is_configured(self) -> bool: ...
 
+    def resolve_voice(self, voice_id: str) -> str:
+        """The vendor voice a semantic key will actually be spoken in.
+
+        Part of the contract because it is part of the *cache key*: two
+        companions whose keys resolve to one vendor voice share a recording, and
+        editing the map must invalidate the recordings it changes.
+        """
+        ...
+
     def synthesize(self, text: str, voice_id: str) -> bytes:
         """Speak `text` in `voice_id` and return the raw audio bytes."""
         ...
@@ -126,6 +135,10 @@ class LocalToneTTSProvider:
     def is_configured(self) -> bool:
         return True
 
+    def resolve_voice(self, voice_id: str) -> str:
+        """The chime has no vendor voices — the semantic key is the voice."""
+        return voice_id
+
     def synthesize(self, text: str, voice_id: str) -> bytes:
         # sha256, not `hash()`: Python's string hashing is salted per process, so
         # the same voice would chime differently after a restart and the cached
@@ -165,6 +178,9 @@ class _UnimplementedTTSProvider:
     def is_configured(self) -> bool:
         return False
 
+    def resolve_voice(self, voice_id: str) -> str:
+        return voice_id
+
     def synthesize(self, text: str, voice_id: str) -> bytes:
         raise NotImplementedError(f"TTS provider '{self.name}' is not implemented yet.")
 
@@ -191,6 +207,30 @@ TTS_PROVIDERS: dict[str, type] = {
 
 def provider_label(provider: TTSProvider) -> str:
     return getattr(provider, "provider_label", provider.name)
+
+
+def configured_voice(voice_id: str, provider: TTSProvider | None = None) -> str:
+    """What `voice_id` resolves to on the configured vendor — for the cache key.
+
+    The semantic key alone is not enough to identify a recording: every
+    unmapped key currently resolves to `ELEVENLABS_VOICE_ID`, so editing that
+    variable (or `ELEVENLABS_VOICE_MAP`) would otherwise leave every companion
+    speaking in the old vendor voice forever.
+
+    Deliberately total and credential-free. This is called *before* the cache
+    lookup, on the path that serves a child their companion's greeting: an
+    unknown provider name or a resolver that cannot answer falls back to the
+    semantic key rather than raising. A real misconfiguration is still reported
+    by `select_tts_provider`, on the cache miss that actually needs a key.
+    """
+    if provider is None:
+        factory = TTS_PROVIDERS.get(settings.TTS_PROVIDER)
+        if factory is None:
+            return voice_id
+        provider = factory()
+    # `getattr`, because a caller may inject a test double that only synthesises.
+    resolve = getattr(provider, "resolve_voice", None)
+    return str(resolve(voice_id)) if resolve else voice_id
 
 
 def select_tts_provider() -> TTSProvider:

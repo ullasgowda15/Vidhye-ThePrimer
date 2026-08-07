@@ -48,15 +48,16 @@ from apps.companion.service import (
     create_companion,
     greeting_line,
     illustrate,
+    illustration_prompt,
 )
 from apps.media import service as media_service
 from apps.media.adapters.tts import ElevenLabsTTSProvider
 from apps.media.hashing import hashes_for
 from apps.media.models import Media, MediaType, SafetyStatus
-from apps.media.prompts import character_signature
+from apps.media.prompts import REFERENCES_LABEL, character_signature
 from apps.media.safety import sniff_content_type
 from apps.media.storage import media_storage
-from apps.media.style import style_tokens
+from apps.media.style import NEGATIVE_TERMS, style_signature
 from apps.profiles.models import Child
 
 # Exit codes, matching `smoke_ai`: 2 means "you have not set this up yet" and 1
@@ -391,9 +392,14 @@ class Command(BaseCommand):
         )
 
         if fresh:
-            deleted, _ = Media.objects.filter(child=child).delete()
+            # Through the real deletion path (§17.5), so a repeated --fresh does
+            # not quietly grow a bucket of art nothing points at any more.
+            deleted, objects = media_service.delete_child_media(child)
             Companion.objects.filter(child=child).delete()
-            self.stdout.write(f"  --fresh: dropped the smoke companion and {deleted} media rows")
+            self.stdout.write(
+                f"  --fresh: dropped the smoke companion, {deleted} media rows "
+                f"and {objects} stored objects"
+            )
 
         companion = Companion.objects.filter(child=child).select_related("child").first()
         if companion is None:
@@ -416,11 +422,13 @@ class Command(BaseCommand):
         two checks share one credit rather than each buying their own.
         """
         _, character_hash, scene_hash = hashes_for(
-            style_tokens(),
+            style_signature(),
             character_signature([character_ref(run.companion)]),
             PROBE_SCENE,
         )
-        Media.objects.filter(character_hash=character_hash, scene_hash=scene_hash).delete()
+        media_service.purge_media(
+            Media.objects.filter(character_hash=character_hash, scene_hash=scene_hash)
+        )
 
         media_service.STATS.reset()
         first = illustrate(run.companion, PROBE_SCENE)
@@ -442,7 +450,13 @@ class Command(BaseCommand):
     # --- checks ------------------------------------------------------------
 
     def _check_a(self, run: Run) -> str:
-        """A real raster image came back from Cloudflare, not placeholder SVG."""
+        """A real raster image came back from Cloudflare, not placeholder SVG.
+
+        Plus the regression guard for what Day 3's review caught: the *outgoing
+        prompt* must not contain the things we were trying to keep out of the
+        picture. A diffusion model reads "no text" as *text*, and it painted the
+        companion's name into a render to prove it.
+        """
         media = run.probe.media
         if media is None:
             raise SmokeFailure("the cache probe produced no image")
@@ -455,10 +469,44 @@ class Command(BaseCommand):
             raise SmokeFailure(
                 f"the image was produced by '{media.provider}', not the cloudflare adapter"
             )
+
+        self.assert_clean_prompt(illustration_prompt(run.companion, PROBE_SCENE))
         return (
             f"{asset.content_type} {asset.size // 1024}KB via {asset.how}, "
-            f"provider={media.provider}, model={settings.IMAGE_MODEL}"
+            f"provider={media.provider}, model={settings.IMAGE_MODEL}, "
+            f"prompt clean of {len(NEGATIVE_TERMS)} negative terms"
         )
+
+    @staticmethod
+    def assert_clean_prompt(prompt: str) -> None:
+        """Nothing in the positive prompt that we asked not to be drawn.
+
+        Structural and deterministic, unlike looking at the picture: the exact
+        text that goes to the model is right here, so "the negations leaked back
+        in" fails on the next run rather than in a render three weeks later.
+        Cloudflare's flux-1-schnell has neither a negative-prompt parameter nor
+        image conditioning, so both the negatives and any anchor URL must be
+        absent entirely.
+        """
+        lowered = prompt.lower()
+        leaked = [term for term in NEGATIVE_TERMS if term.lower() in lowered]
+        if leaked:
+            raise SmokeFailure(
+                f"the positive prompt contains {len(leaked)} negative term(s) "
+                f"({', '.join(leaked[:3])}) - a text-to-image model draws those "
+                "tokens instead of avoiding them"
+            )
+
+        if f"{REFERENCES_LABEL}:" in prompt:
+            raise SmokeFailure(
+                f"the prompt carries a {REFERENCES_LABEL} block, but flux-1-schnell "
+                "cannot consume a reference image - it would be read as words to draw"
+            )
+        if settings.MEDIA_URL in prompt:
+            raise SmokeFailure(
+                f"the prompt contains a storage path ('{settings.MEDIA_URL}...'), "
+                "which no image provider can fetch"
+            )
 
     def _check_b(self, run: Run) -> str:
         """The greeting is real audio, in the configured ElevenLabs voice."""

@@ -71,6 +71,24 @@ class Media(UUIDModel):
             ),
             models.Index(fields=["child", "type"], name="media_child_type_idx"),
         ]
+        constraints = [
+            # One row per child per cache tuple. Between the cache read and the
+            # row write there is no lock, so two workers illustrating the same
+            # beat would otherwise each write a row — harmless with one
+            # sequential build task, and the moment illustration joins the story
+            # loop it stops being harmless. The database settles it: the loser's
+            # insert raises and the service returns the winner's row.
+            #
+            # `child` is part of the tuple deliberately. Two children *do* both
+            # hold a row for the same picture — that is what makes "delete
+            # everything about my child" a walk over that child's rows (§17.5)
+            # without reaching into another family's storybook. What they share
+            # is the storage object, not the row.
+            models.UniqueConstraint(
+                fields=["child", "type", "style_hash", "character_hash", "scene_hash"],
+                name="media_cache_tuple_uniq",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.type} {self.id} ({self.provider})"

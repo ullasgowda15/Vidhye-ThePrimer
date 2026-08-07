@@ -6,8 +6,12 @@
 Create a companion via API/UI; inspect stored `Media` rows + object storage; **prove the cache** by generating the same scene twice and confirming the provider was called once; eyeball the portrait, the 5 expressions, and 3 sample scene renders for consistency; play the TTS hello.
 
 ```bash
+# First fetch the valid catalogue keys — do NOT guess palette/preset; unknown keys 400 by design.
+curl -s :8000/api/v1/companion-catalog -H "Authorization: Bearer $ACCESS"
+# Then create using real keys, e.g. palette ∈ {ember,moss,tide,dusk,blossom},
+# personality_preset ∈ {warm_guide,brave_spark,calm_anchor,curious_helper}:
 curl -sX POST :8000/api/v1/children/<id>/companion -H "Authorization: Bearer $ACCESS" \
-     -d '{"archetype":"dragon","name":"Pip","palette":"violet","personality_preset":"warm_curious"}'
+     -d '{"archetype":"dragon","name":"Pip","palette":"ember","personality_preset":"brave_spark"}'
 cd backend && python manage.py shell -c "from apps.media.models import Media; print(Media.objects.count())"
 python manage.py render_companion <child_id> --scenes 3      # eyeball consistency
 # cache proof: call get_or_generate_image twice with identical hashes; assert provider hit-count == 1

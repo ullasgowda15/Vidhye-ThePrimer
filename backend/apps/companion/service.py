@@ -34,11 +34,12 @@ from apps.companion.models import (
 )
 from apps.companion.scenes import REFERENCE_ORDER, REFERENCE_SCENES, greeting_text
 from apps.media import service as media_service
+from apps.media.adapters import image as image_adapters
 from apps.media.exceptions import MediaError
 from apps.media.hashing import hashes_for
 from apps.media.models import Media
 from apps.media.prompts import CharacterRef, build_illustration_prompt, character_signature
-from apps.media.style import style_tokens
+from apps.media.style import style_signature
 
 if TYPE_CHECKING:
     from apps.profiles.models import Child
@@ -104,6 +105,32 @@ def ensure_visual_descriptor(companion: Companion, *, force: bool = False) -> st
     return companion.visual_descriptor
 
 
+def illustration_prompt(companion: Companion, scene: str) -> str:
+    """The exact positive prompt `illustrate` sends for this scene.
+
+    Its own function so that a smoke check or a debugging session can inspect
+    what really goes to the model instead of reconstructing it and being wrong
+    about the reconstruction — which is how a `REFERENCES:` block full of local
+    file paths survived a whole build day.
+    """
+    return _prompt_for(character_ref(companion), scene)
+
+
+def _prompt_for(reference: CharacterRef, scene: str) -> str:
+    """Assemble the prompt for an already-resolved character.
+
+    `include_references` is the selected provider's own capability flag and
+    never a constant: an anchor URL reaches a model only if that model can
+    consume one. No implemented provider can, so today this is descriptor-only
+    consistency and the prompt says nothing about a reference at all.
+    """
+    return build_illustration_prompt(
+        scene,
+        [reference],
+        include_references=image_adapters.configured_supports_image_reference(),
+    )
+
+
 def illustrate(companion: Companion, scene: str) -> Media:
     """Render one illustration of this companion in `scene`, cache-first.
 
@@ -113,9 +140,9 @@ def illustrate(companion: Companion, scene: str) -> Media:
     identically every time. That identity is the whole cache.
     """
     reference = character_ref(companion)
-    prompt = build_illustration_prompt(scene, [reference])
+    prompt = _prompt_for(reference, scene)
     style, character, scene_hash = hashes_for(
-        style_tokens(),
+        style_signature(),
         character_signature([reference]),
         scene,
     )

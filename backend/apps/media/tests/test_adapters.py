@@ -8,13 +8,16 @@ from apps.media.adapters.image import (
     LocalPlaceholderImageProvider,
     OpenAIImageProvider,
     TogetherImageProvider,
+    configured_supports_image_reference,
     provider_label,
     select_image_provider,
+    supports,
 )
 from apps.media.adapters.tts import (
     ElevenLabsTTSProvider,
     LocalToneTTSProvider,
     OpenAITTSProvider,
+    configured_voice,
     select_tts_provider,
 )
 from apps.media.exceptions import MediaConfigurationError
@@ -60,6 +63,74 @@ def test_half_configured_credentials_are_an_error_not_a_silent_downgrade(setting
 
     with pytest.raises(MediaConfigurationError, match="no credentials"):
         select_image_provider()
+
+
+def test_the_shipping_image_provider_claims_no_capability_it_lacks() -> None:
+    """flux-1-schnell is text-only, and the code has to say so.
+
+    The Day-3 failure was a `REFERENCES:` block and an `AVOID:` block sent to a
+    model that can act on neither. These flags are what stop that from being
+    rebuilt: if someone flips one, the prompt changes and the smoke check fails.
+    """
+    cloudflare = CloudflareImageProvider(account_id="acct", api_token="token")
+
+    assert cloudflare.supports_image_reference is False
+    assert cloudflare.supports_negative_prompt is False
+    assert cloudflare.supports_seed is False
+    # Same for the offline adapter: it must not exercise a branch the real
+    # provider never takes.
+    assert LocalPlaceholderImageProvider().supports_image_reference is False
+
+
+def test_an_undeclared_capability_is_no_capability() -> None:
+    class Bare:
+        name = "bare"
+
+    # Not an ImageProvider, which is exactly the case under test: something that
+    # never thought about capabilities must not be sent one.
+    assert supports(Bare(), "supports_negative_prompt") is False  # type: ignore[arg-type]
+    assert supports(GoogleImageProvider(), "supports_negative_prompt") is True
+
+
+def test_reference_capability_follows_the_configured_provider(settings) -> None:
+    settings.IMAGE_PROVIDER = "cloudflare"
+    assert configured_supports_image_reference() is False
+
+    # The image-edit seam is the one a real §8.2 mechanism would land on.
+    settings.IMAGE_PROVIDER = "openai"
+    assert configured_supports_image_reference() is True
+
+    # Prompt assembly runs before the cache lookup, so a bad name must not raise
+    # there — `select_image_provider` reports it, on the miss that needs a key.
+    settings.IMAGE_PROVIDER = "stable-unicorn"
+    assert configured_supports_image_reference() is False
+
+
+def test_the_resolved_vendor_voice_is_what_the_cache_key_can_see(settings) -> None:
+    settings.TTS_PROVIDER = "elevenlabs"
+    settings.ELEVENLABS_API_KEY = "key"
+    settings.ELEVENLABS_VOICE_ID = "default-voice"
+    settings.ELEVENLABS_VOICE_MAP = {"warm_low": "mapped-voice"}
+
+    assert configured_voice("warm_low") == "mapped-voice"
+    assert configured_voice("calm_deep") == "default-voice"
+
+    # Editing the map must be visible to the cache, or every companion keeps
+    # speaking in the voice it was first synthesised with.
+    settings.ELEVENLABS_VOICE_MAP = {"warm_low": "another-voice"}
+    assert configured_voice("warm_low") == "another-voice"
+
+
+def test_voice_resolution_never_raises_on_the_greeting_path(settings) -> None:
+    """A cache *hit* must not need a key, or a config slip silences a companion."""
+    settings.TTS_PROVIDER = "not-a-vendor"
+    assert configured_voice("warm_low") == "warm_low"
+
+    class SynthesiseOnly:
+        name = "double"
+
+    # A caller-injected test double need not implement `resolve_voice`.
+    assert configured_voice("warm_low", SynthesiseOnly()) == "warm_low"  # type: ignore[arg-type]
 
 
 def test_a_voice_key_maps_to_a_vendor_voice(settings) -> None:
