@@ -41,5 +41,7 @@ ignore_errors = true
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.dev"
 python_files = ["test_*.py", "*_test.py"]
-testpaths = ["tests"]
+# `tests/` holds cross-cutting API tests; unit tests for a component live beside
+# it under `apps/` so they move with the code they describe.
+testpaths = ["tests", "apps"]
 addopts = "-q"

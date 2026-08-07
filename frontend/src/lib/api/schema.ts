@@ -24,14 +24,411 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Log in
+         * @description Exchange email + password for an access/refresh pair.
+         *
+         *     `TokenViewBase` already sets `permission_classes = ()` and
+         *     `authentication_classes = ()`, which is what a credential endpoint needs;
+         *     re-stating them here would only invite someone to "tidy" them into the
+         *     project defaults and lock the login page behind a login.
+         */
+        post: operations["auth_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Log out
+         * @description Blacklist a refresh token.
+         */
+        post: operations["auth_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate tokens
+         * @description Rotate a refresh token.
+         *
+         *     With `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION` the response
+         *     carries a *new* refresh token and the presented one is blacklisted, so the
+         *     client must replace both halves of the pair, not just the access token.
+         *
+         *     Unauthenticated by inheritance, as in `LoginView` — the refresh token *is*
+         *     the credential.
+         */
+        post: operations["auth_refresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/signup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a parent account
+         * @description Create a parent account and sign them straight in.
+         */
+        post: operations["auth_signup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List this parent's children
+         * @description Narrow a viewset's collection routes to the requesting parent.
+         *
+         *     `parent_lookup` is the ORM path from the model to the owning parent —
+         *     `"parent"` for `Child`, `"child__parent"` for anything hanging off a child.
+         *
+         *     Detail routes deliberately resolve against the *unscoped* queryset so that
+         *     `IsParentOwner` is the thing that rejects them, with a 403. Filtering them
+         *     too would give 404 and hide the existence of the row — marginally better
+         *     against enumeration, but it would also make an ownership bug indistinguish-
+         *     able from a deleted row in the logs, and it is not what the API promises.
+         *     Object IDs are UUIDs, so there is nothing here to enumerate.
+         */
+        get: operations["children_list"];
+        put?: never;
+        /**
+         * Create a child profile
+         * @description Requires an active consent record; returns 403 without one.
+         */
+        post: operations["children_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch a child profile
+         * @description Narrow a viewset's collection routes to the requesting parent.
+         *
+         *     `parent_lookup` is the ORM path from the model to the owning parent —
+         *     `"parent"` for `Child`, `"child__parent"` for anything hanging off a child.
+         *
+         *     Detail routes deliberately resolve against the *unscoped* queryset so that
+         *     `IsParentOwner` is the thing that rejects them, with a 403. Filtering them
+         *     too would give 404 and hide the existence of the row — marginally better
+         *     against enumeration, but it would also make an ownership bug indistinguish-
+         *     able from a deleted row in the logs, and it is not what the API promises.
+         *     Object IDs are UUIDs, so there is nothing here to enumerate.
+         */
+        get: operations["children_retrieve"];
+        /**
+         * Replace a child profile
+         * @description Narrow a viewset's collection routes to the requesting parent.
+         *
+         *     `parent_lookup` is the ORM path from the model to the owning parent —
+         *     `"parent"` for `Child`, `"child__parent"` for anything hanging off a child.
+         *
+         *     Detail routes deliberately resolve against the *unscoped* queryset so that
+         *     `IsParentOwner` is the thing that rejects them, with a 403. Filtering them
+         *     too would give 404 and hide the existence of the row — marginally better
+         *     against enumeration, but it would also make an ownership bug indistinguish-
+         *     able from a deleted row in the logs, and it is not what the API promises.
+         *     Object IDs are UUIDs, so there is nothing here to enumerate.
+         */
+        put: operations["children_update"];
+        post?: never;
+        /**
+         * Delete a child and every row linked to them
+         * @description Every table referencing a child cascades from this row (§17.5), so one delete satisfies 'delete my child's data'.
+         */
+        delete: operations["children_destroy"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a child profile
+         * @description Narrow a viewset's collection routes to the requesting parent.
+         *
+         *     `parent_lookup` is the ORM path from the model to the owning parent —
+         *     `"parent"` for `Child`, `"child__parent"` for anything hanging off a child.
+         *
+         *     Detail routes deliberately resolve against the *unscoped* queryset so that
+         *     `IsParentOwner` is the thing that rejects them, with a 403. Filtering them
+         *     too would give 404 and hide the existence of the row — marginally better
+         *     against enumeration, but it would also make an ownership bug indistinguish-
+         *     able from a deleted row in the logs, and it is not what the API promises.
+         *     Object IDs are UUIDs, so there is nothing here to enumerate.
+         */
+        patch: operations["children_partial_update"];
+        trace?: never;
+    };
+    "/api/v1/consent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record parental consent
+         * @description Record verifiable parental consent (§13.7).
+         *
+         *     Create-only on purpose: consent is an audit trail, so a change of mind is a
+         *     new record (or a revocation), never an edit of the old one.
+         */
+        post: operations["consent_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The signed-in parent
+         * @description The signed-in parent and their children.
+         */
+        get: operations["me"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Child: {
+            /** Format: uuid */
+            readonly id: string;
+            first_name: string;
+            /** Format: date */
+            birthdate: string;
+            locale?: string;
+            pre_reader?: boolean;
+            /** @description Things this child loves, e.g. ['dinosaurs', 'the sea']. */
+            interests?: string[];
+            /** @description Things they are a little scared of. Handled gently, never used as a threat. */
+            fears?: string[];
+            /** @description Topics never to include. Copied verbatim into the safety layer. */
+            avoid_topics?: string[];
+            /** @description 0 = gentlest, 3 = most adventurous. An int, never free text. */
+            intensity_ceiling?: number;
+            /** @description Minutes per sitting before the story starts winding down (§13.6). */
+            session_cap_min?: number;
+            readonly age: number;
+            readonly age_band: string;
+            readonly age_out_of_range: boolean;
+            /** Format: date-time */
+            readonly created_at: string;
+            /** Format: date-time */
+            readonly updated_at: string;
+        };
+        ChildRequest: {
+            first_name: string;
+            /** Format: date */
+            birthdate: string;
+            locale?: string;
+            pre_reader?: boolean;
+            /** @description Things this child loves, e.g. ['dinosaurs', 'the sea']. */
+            interests?: string[];
+            /** @description Things they are a little scared of. Handled gently, never used as a threat. */
+            fears?: string[];
+            /** @description Topics never to include. Copied verbatim into the safety layer. */
+            avoid_topics?: string[];
+            /** @description 0 = gentlest, 3 = most adventurous. An int, never free text. */
+            intensity_ceiling?: number;
+            /** @description Minutes per sitting before the story starts winding down (§13.6). */
+            session_cap_min?: number;
+        };
+        /**
+         * @description Records one verifiable-consent grant.
+         *
+         *     `parent`, `ip` and `granted_at` are all server-set: a consent record whose
+         *     evidence the client could dictate is not evidence.
+         */
+        ConsentRecord: {
+            /** Format: uuid */
+            readonly id: string;
+            /**
+             * Format: uuid
+             * @description Optional child this grant is scoped to. Usually omitted — consent precedes the child.
+             */
+            child_ref?: string | null;
+            /** @default data_collection_v1 */
+            consent_type: components["schemas"]["ConsentTypeEnum"];
+            /** @default checkbox_attestation */
+            method: components["schemas"]["MethodEnum"];
+            /** Format: date-time */
+            readonly granted_at: string;
+            readonly evidence_ref: string;
+            /** Format: date-time */
+            readonly revoked_at: string | null;
+        };
+        /**
+         * @description Records one verifiable-consent grant.
+         *
+         *     `parent`, `ip` and `granted_at` are all server-set: a consent record whose
+         *     evidence the client could dictate is not evidence.
+         */
+        ConsentRecordRequest: {
+            /**
+             * Format: uuid
+             * @description Optional child this grant is scoped to. Usually omitted — consent precedes the child.
+             */
+            child_ref?: string | null;
+            /** @default data_collection_v1 */
+            consent_type: components["schemas"]["ConsentTypeEnum"];
+            /** @default checkbox_attestation */
+            method: components["schemas"]["MethodEnum"];
+        };
+        /**
+         * @description * `data_collection_v1` - Data collection v1
+         * @enum {string}
+         */
+        ConsentTypeEnum: "data_collection_v1";
         Health: {
             status: string;
             service: string;
             version: string;
+        };
+        LogoutRequest: {
+            /** @description The refresh token to blacklist. */
+            refresh: string;
+        };
+        /** @description The parent as the client sees them. No permission or staff flags leak out. */
+        Me: {
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: email */
+            readonly email: string;
+            readonly display_name: string;
+            readonly locale: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            readonly children: components["schemas"]["Child"][];
+        };
+        /**
+         * @description * `checkbox_attestation` - Checkbox attestation
+         * @enum {string}
+         */
+        MethodEnum: "checkbox_attestation";
+        PatchedChildRequest: {
+            first_name?: string;
+            /** Format: date */
+            birthdate?: string;
+            locale?: string;
+            pre_reader?: boolean;
+            /** @description Things this child loves, e.g. ['dinosaurs', 'the sea']. */
+            interests?: string[];
+            /** @description Things they are a little scared of. Handled gently, never used as a threat. */
+            fears?: string[];
+            /** @description Topics never to include. Copied verbatim into the safety layer. */
+            avoid_topics?: string[];
+            /** @description 0 = gentlest, 3 = most adventurous. An int, never free text. */
+            intensity_ceiling?: number;
+            /** @description Minutes per sitting before the story starts winding down (§13.6). */
+            session_cap_min?: number;
+        };
+        SignupRequest: {
+            /** Format: email */
+            email: string;
+            password: string;
+            display_name?: string;
+            locale?: string;
+        };
+        /** @description Response shape for signup — documented for the generated TS client. */
+        SignupResponse: {
+            user: components["schemas"]["User"];
+            access: string;
+            refresh: string;
+        };
+        TokenObtainPair: {
+            readonly access: string;
+            readonly refresh: string;
+        };
+        TokenObtainPairRequest: {
+            email: string;
+            password: string;
+        };
+        TokenRefresh: {
+            readonly access: string;
+            refresh: string;
+        };
+        TokenRefreshRequest: {
+            refresh: string;
+        };
+        /** @description The parent as the client sees them. No permission or staff flags leak out. */
+        User: {
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: email */
+            readonly email: string;
+            readonly display_name: string;
+            readonly locale: string;
+            /** Format: date-time */
+            readonly created_at: string;
         };
     };
     responses: never;
@@ -57,6 +454,292 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
+                };
+            };
+        };
+    };
+    auth_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenObtainPairRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["TokenObtainPairRequest"];
+                "multipart/form-data": components["schemas"]["TokenObtainPairRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenObtainPair"];
+                };
+            };
+        };
+    };
+    auth_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LogoutRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["LogoutRequest"];
+                "multipart/form-data": components["schemas"]["LogoutRequest"];
+            };
+        };
+        responses: {
+            /** @description Refresh token blacklisted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    auth_refresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenRefreshRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["TokenRefreshRequest"];
+                "multipart/form-data": components["schemas"]["TokenRefreshRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenRefresh"];
+                };
+            };
+        };
+    };
+    auth_signup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignupRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["SignupRequest"];
+                "multipart/form-data": components["schemas"]["SignupRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignupResponse"];
+                };
+            };
+        };
+    };
+    children_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Child"][];
+                };
+            };
+        };
+    };
+    children_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChildRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["ChildRequest"];
+                "multipart/form-data": components["schemas"]["ChildRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Child"];
+                };
+            };
+        };
+    };
+    children_retrieve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A UUID string identifying this child. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Child"];
+                };
+            };
+        };
+    };
+    children_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A UUID string identifying this child. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChildRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["ChildRequest"];
+                "multipart/form-data": components["schemas"]["ChildRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Child"];
+                };
+            };
+        };
+    };
+    children_destroy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A UUID string identifying this child. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No response body */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    children_partial_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A UUID string identifying this child. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PatchedChildRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["PatchedChildRequest"];
+                "multipart/form-data": components["schemas"]["PatchedChildRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Child"];
+                };
+            };
+        };
+    };
+    consent_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ConsentRecordRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["ConsentRecordRequest"];
+                "multipart/form-data": components["schemas"]["ConsentRecordRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsentRecord"];
+                };
+            };
+        };
+    };
+    me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
                 };
             };
         };

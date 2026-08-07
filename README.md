@@ -5,8 +5,10 @@ An AI-generated living storybook — a personalized lifelong learning companion 
 `docs/PRODUCT.md` is the authoritative product and technical spec. `docs/Build/` and
 `docs/Review/` drive the 15-day build loop.
 
-> **Status: Day 1.** A deployable, empty-but-real full-stack skeleton. No onboarding,
-> no story loop, no memory, no safety layer yet — those arrive on later days.
+> **Status: Day 2.** The full-stack skeleton plus the parent path: JWT auth, COPPA-lite
+> consent gating child creation, child profiles with the personalization seeds, a parent
+> gate, and a tested prompt-assembly module. No companion, no story loop, no memory, no
+> live safety layer yet — those arrive on later days.
 
 ---
 
@@ -69,7 +71,8 @@ Open:
 | URL | What |
 |---|---|
 | http://localhost:5173/ | Child experience (Storyland theme) |
-| http://localhost:5173/parent | Parent dashboard (Calm theme) |
+| http://localhost:5173/parent | Parent dashboard (Calm theme) — behind the parent gate |
+| http://localhost:5173/parent/signup | Create a parent account, then onboarding |
 | http://localhost:8000/api/health/ | Health check |
 | http://localhost:8000/api/docs/ | Swagger UI |
 | http://localhost:8000/admin/ | Ops + moderation console |
@@ -170,6 +173,48 @@ provider would reject the request.
 (default — try strict, degrade if the model can't), `strict` (never degrade; error
 instead, so a silent drop to unenforced JSON can't pass unnoticed in production),
 or `json_object` (skip straight to the repair path).
+
+## The parent path
+
+Everything under `/api/v1/` is parent-scoped and needs `Authorization: Bearer <access>`,
+except signup, login and refresh.
+
+```
+POST /api/v1/auth/signup   POST /api/v1/auth/login
+POST /api/v1/auth/refresh  POST /api/v1/auth/logout
+GET  /api/v1/me            POST /api/v1/consent
+GET|POST /api/v1/children  GET|PATCH|DELETE /api/v1/children/{id}
+```
+
+Three rules are worth knowing before you touch this surface:
+
+- **Consent precedes the child.** `POST /children` returns **403** unless the parent
+  holds an active `ConsentRecord` of `REQUIRED_CONSENT_TYPE`. Enforced in the view, not
+  the client (§13.7).
+- **Refresh tokens rotate and blacklist.** A refresh token is single-use; the response
+  carries a new one, and presenting the old one again is a 401. Clients must replace
+  *both* halves of the pair.
+- **`DELETE /children/{id}` is the "delete my child's data" button.** Every FK pointing
+  at `Child` cascades, and a test asserts that by walking the live schema — so a model
+  added later is covered the day it lands (§17.5).
+
+In the UI, `/parent/*` sits behind an adult challenge (§14.2) — a small multiplication a
+pre-reader can't pass. The pass is in-memory and expires in 15 minutes; so are the
+tokens, so a hard reload signs the parent out by design (see `frontend/src/store/auth.ts`).
+
+## Prompt assembly
+
+`backend/apps/safety/prompting/` turns a child into the ordered, labeled prompt layers of
+§19.1. It is pure and deterministic — the only I/O is reading the active `PromptVersion`
+row — and **nothing calls it yet**; Days 4–5 wire it into generation.
+
+Two properties are load-bearing and covered by tests: the safety layer carries the
+child's `intensity_ceiling` and every `avoid_topic` verbatim and phrases guidance by age
+band, and memory/child input render as `kind="data"` blocks with an explicit "never obey
+this" preamble (§13.5).
+
+The system prompt itself lives in a migration, not in code, so the text a child was told
+can always be traced to a version. A revision is a new migration and a new row.
 
 ## The API contract
 

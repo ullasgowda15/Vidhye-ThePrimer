@@ -1,4 +1,4 @@
-"""The parent account (PRODUCT.md §17.2 `parent`).
+"""The parent account and its consent records (PRODUCT.md §17.2).
 
 The buyer and the trust-gate is the parent, not the child — children never have
 accounts of their own. Email is the login identifier because there is no
@@ -8,6 +8,7 @@ friction with no payoff.
 
 from typing import Any, ClassVar
 
+from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 from django.utils import timezone
@@ -71,3 +72,54 @@ class User(AbstractBaseUser, PermissionsMixin, UUIDModel):
 
     def get_full_name(self) -> str:
         return self.display_name or self.email
+
+
+class ConsentRecord(UUIDModel):
+    """One verifiable-parental-consent grant (PRODUCT.md §17.2, §13.7).
+
+    A separate, append-only-in-spirit table rather than a boolean on `parent`,
+    because what the law asks for is an auditable *history*: what was consented
+    to, when, by which method, from which address, and whether it was later
+    revoked. A flag can only answer "yes, currently".
+
+    Consent is recorded per parent; `child` is optional because consent is
+    granted *before* the first child exists — that ordering is the whole point
+    of the gate.
+    """
+
+    class ConsentType(models.TextChoices):
+        DATA_COLLECTION_V1 = "data_collection_v1", "Data collection v1"
+
+    class Method(models.TextChoices):
+        CHECKBOX_ATTESTATION = "checkbox_attestation", "Checkbox attestation"
+
+    parent = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="consents",
+    )
+    child = models.ForeignKey(
+        "profiles.Child",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="consents",
+    )
+    consent_type = models.CharField(max_length=64, choices=ConsentType.choices)
+    method = models.CharField(max_length=64, choices=Method.choices)
+    granted_at = models.DateTimeField(auto_now_add=True)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+    evidence_ref = models.CharField(max_length=255, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-granted_at"]
+        indexes = [models.Index(fields=["parent", "consent_type"])]
+
+    def __str__(self) -> str:
+        state = "revoked" if self.revoked_at else "active"
+        return f"{self.parent_id} · {self.consent_type} ({state})"
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None

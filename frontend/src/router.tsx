@@ -1,7 +1,13 @@
 import { createBrowserRouter } from 'react-router-dom';
 
 import ChildHome from './routes/child/ChildHome';
+import AdultGateRoute from './routes/parent/AdultGateRoute';
+import Login from './routes/parent/Login';
+import Onboarding from './routes/parent/Onboarding';
+import ParentGate from './routes/parent/ParentGate';
 import ParentHome from './routes/parent/ParentHome';
+import ProtectedRoute from './routes/parent/ProtectedRoute';
+import Signup from './routes/parent/Signup';
 
 /**
  * Two route trees, deliberately separate (PRODUCT.md §14.2):
@@ -10,14 +16,37 @@ import ParentHome from './routes/parent/ParentHome';
  *
  * They share tokens and primitives but never share a shell; a child must never
  * be one tap from billing, and a parent must never be handed a storybook.
+ *
+ * `/parent` has two nested guards, in this order:
+ *   1. `AdultGateRoute` — the adult challenge (§14.2). Everything under /parent
+ *      is behind it, including login, so a child cannot even reach a form.
+ *   2. `ProtectedRoute` — a signed-in parent. Login, signup and onboarding sit
+ *      outside it, because they are how you become signed in.
  */
 export const router = createBrowserRouter(
   [
     { path: '/', element: <ChildHome /> },
-    { path: '/parent', element: <ParentHome /> },
+    {
+      path: '/parent',
+      children: [
+        { path: 'gate', element: <ParentGate /> },
+        {
+          element: <AdultGateRoute />,
+          children: [
+            { path: 'login', element: <Login /> },
+            { path: 'signup', element: <Signup /> },
+            { path: 'onboarding', element: <Onboarding /> },
+            {
+              element: <ProtectedRoute />,
+              children: [{ index: true, element: <ParentHome /> }],
+            },
+          ],
+        },
+      ],
+    },
   ],
-  // Opt in to the v7 behaviours now, while there are two routes to check
-  // rather than a whole story surface. (`v7_startTransition` is a
+  // Opt in to the v7 behaviours now, while there are a handful of routes to
+  // check rather than a whole story surface. (`v7_startTransition` is a
   // RouterProvider flag, not a router one — it lives in App.tsx.)
   {
     future: {

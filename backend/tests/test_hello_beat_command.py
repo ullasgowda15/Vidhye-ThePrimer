@@ -19,6 +19,19 @@ from apps.story.ai.schemas import Beat
 from tests.test_ai_router import VALID_BEAT
 
 
+@pytest.fixture(autouse=True)
+def _anthropic_only(settings):
+    """Pin the provider order these tests assert about.
+
+    Without this the developer's own `.env` decides which provider the router
+    picks, so a machine configured for OpenRouter runs the "no Anthropic key"
+    test against a *live* provider — passing or failing for reasons that have
+    nothing to do with the code under test. CI never noticed because CI has no
+    `.env`.
+    """
+    settings.AI_PROVIDER_ORDER = ["anthropic"]
+
+
 def test_prints_valid_beat_json(monkeypatch, settings) -> None:
     settings.ANTHROPIC_API_KEY = "test-key"
 

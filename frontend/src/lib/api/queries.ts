@@ -1,9 +1,13 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { api } from './client';
+import { useAuthStore } from '@/store/auth';
+
+import { api, type ChildRequest, type ConsentRecordRequest } from './client';
 
 export const queryKeys = {
   health: ['health'] as const,
+  me: ['me'] as const,
+  children: ['children'] as const,
 };
 
 /**
@@ -18,5 +22,61 @@ export function useHealth() {
   return useQuery({
     queryKey: queryKeys.health,
     queryFn: ({ signal }) => api.health(signal),
+  });
+}
+
+/** The signed-in parent and their children (§18.3 `/me`). */
+export function useMe() {
+  const authenticated = useAuthStore((state) => state.accessToken !== null);
+
+  return useQuery({
+    queryKey: queryKeys.me,
+    queryFn: ({ signal }) => api.me(signal),
+    enabled: authenticated,
+  });
+}
+
+export function useChildren() {
+  const authenticated = useAuthStore((state) => state.accessToken !== null);
+
+  return useQuery({
+    queryKey: queryKeys.children,
+    queryFn: ({ signal }) => api.listChildren(signal),
+    enabled: authenticated,
+  });
+}
+
+export function useRecordConsent() {
+  return useMutation({
+    mutationFn: (payload: ConsentRecordRequest) => api.recordConsent(payload),
+  });
+}
+
+export function useCreateChild() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload: ChildRequest) => api.createChild(payload),
+    onSuccess: async () => {
+      // `/me` embeds the children, so both caches go stale on a write.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.children }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.me }),
+      ]);
+    },
+  });
+}
+
+export function useDeleteChild() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) => api.deleteChild(id),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.children }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.me }),
+      ]);
+    },
   });
 }

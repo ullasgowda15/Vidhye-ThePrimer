@@ -4,6 +4,7 @@ Environment-driven. ``dev.py`` and ``prod.py`` import everything here and then
 override only what differs per environment.
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -46,6 +47,9 @@ DJANGO_APPS = [
 
 THIRD_PARTY_APPS = [
     "rest_framework",
+    # The blacklist app is what makes logout and refresh-rotation real: without
+    # it a "revoked" refresh token stays valid until it expires (§18.8).
+    "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
     "corsheaders",
     "django_celery_results",
@@ -139,14 +143,45 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        # Bearer access tokens are the product's auth (§18.2). Session auth stays
+        # only so the admin and the browsable API remain usable in dev.
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
-    # TODO(Day 2): flip to IsAuthenticated and put @permission_classes([AllowAny])
-    # on the health view. Correct today (health is the only endpoint), but this is
-    # exactly the kind of default that silently outlives its justification.
+    # Deny by default. Every public endpoint (health, signup, login, refresh, the
+    # schema) opts out explicitly, so forgetting to think about auth on a new view
+    # locks it down rather than opening it up.
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.AllowAny",
+        "rest_framework.permissions.IsAuthenticated",
     ],
+    # §18.2: per-parent and per-IP limits. `auth` is the tighter scope applied by
+    # hand to the credential endpoints, which are the ones worth guessing at.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": env("THROTTLE_ANON", default="100/day"),
+        "user": env("THROTTLE_USER", default="1000/day"),
+        "auth": env("THROTTLE_AUTH", default="30/hour"),
+    },
+}
+
+# ---------------------------------------------------------------------------
+# JWT (PRODUCT.md §18.2, §18.8)
+# ---------------------------------------------------------------------------
+# Short access + long rotating refresh: a stolen access token is worthless in
+# minutes, while a family that opens the app once a fortnight stays logged in.
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=14),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    "SIGNING_KEY": SECRET_KEY,
+    "USER_ID_FIELD": "id",
+    "USER_ID_CLAIM": "user_id",
 }
 
 SPECTACULAR_SETTINGS = {
@@ -166,6 +201,15 @@ SPECTACULAR_SETTINGS = {
 # ---------------------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
 CORS_ALLOW_CREDENTIALS = True
+
+# Where the parent-facing app lives, for links we put in email. Day 2 only logs
+# the verification link to the console (a real provider lands later).
+FRONTEND_BASE_URL = env("FRONTEND_BASE_URL", default="http://localhost:5173")
+
+# The consent version a parent must hold before any child data is collected
+# (§13.7). Bumping this string forces every parent to re-consent, which is the
+# point: a materially changed disclosure is a new consent.
+REQUIRED_CONSENT_TYPE = env("REQUIRED_CONSENT_TYPE", default="data_collection_v1")
 
 # ---------------------------------------------------------------------------
 # Celery (PRODUCT.md §16.3)

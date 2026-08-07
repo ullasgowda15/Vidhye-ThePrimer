@@ -23,6 +23,9 @@ class HealthSerializer(serializers.Serializer):
 class HealthView(APIView):
     authentication_classes: list = []
     permission_classes = [AllowAny]
+    # A load balancer probes this every few seconds from one address; the default
+    # per-IP anon throttle would take the service out of rotation by lunchtime.
+    throttle_classes: list = []
 
     @extend_schema(
         operation_id="health",

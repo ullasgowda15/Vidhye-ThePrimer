@@ -33,7 +33,8 @@ describe('child route', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ status: 'ok', service: 'primer', version: '0.1.0' }),
+        status: 200,
+        text: async () => JSON.stringify({ status: 'ok', service: 'primer', version: '0.1.0' }),
       }),
     );
 
@@ -47,7 +48,8 @@ describe('child route', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: async () => ({ status: 'ok', service: 'primer', version: '0.1.0' }),
+        status: 200,
+        text: async () => JSON.stringify({ status: 'ok', service: 'primer', version: '0.1.0' }),
       }),
     );
 
