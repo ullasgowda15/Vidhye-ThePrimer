@@ -31,6 +31,15 @@ export type TokenPair = components['schemas']['TokenObtainPair'];
 export type TokenRefresh = components['schemas']['TokenRefresh'];
 export type ConsentRecord = components['schemas']['ConsentRecord'];
 export type ConsentRecordRequest = components['schemas']['ConsentRecordRequest'];
+export type Companion = components['schemas']['Companion'];
+export type CompanionRequest = components['schemas']['CompanionRequest'];
+export type CompanionCatalog = components['schemas']['CompanionCatalog'];
+export type PaletteColors = components['schemas']['PaletteColors'];
+export type ArchetypeOption = components['schemas']['ArchetypeOption'];
+/** Catalogue keys. Unions of literals, so a typo is a build error. */
+export type ArchetypeKey = components['schemas']['ArchetypeEnum'];
+export type PaletteKey = components['schemas']['PaletteEnum'];
+export type PersonalityPresetKey = components['schemas']['PersonalityPresetEnum'];
 
 export class ApiError extends Error {
   constructor(
@@ -182,4 +191,22 @@ export const api = {
     request<Child>(`${V1}/children/${id}`, { method: 'PATCH', body: payload }),
 
   deleteChild: (id: string) => request<null>(`${V1}/children/${id}`, { method: 'DELETE' }),
+
+  companionCatalog: (signal?: AbortSignal) =>
+    request<CompanionCatalog>(`${V1}/companion-catalog`, { signal }),
+
+  /** The companion, or a 404 while the child has none yet. */
+  companion: (childId: string, signal?: AbortSignal) =>
+    request<Companion>(`${V1}/children/${childId}/companion`, { signal }),
+
+  /**
+   * Create the companion. Returns as soon as the identity is saved — the
+   * portrait, expressions and voice are generated on a worker, so callers poll
+   * until `assets_ready`.
+   */
+  createCompanion: (childId: string, payload: CompanionRequest) =>
+    request<Companion>(`${V1}/children/${childId}/companion`, {
+      method: 'POST',
+      body: payload,
+    }),
 };

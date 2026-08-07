@@ -62,6 +62,10 @@ export default defineConfig({
           });
         },
       },
+      // Generated illustrations and audio, in development only. In staging and
+      // production these are CDN URLs on another host and never touch Vite or
+      // Django (PRODUCT.md §16.6).
+      '/media': { target: API_TARGET, changeOrigin: true },
     },
   },
   test: {

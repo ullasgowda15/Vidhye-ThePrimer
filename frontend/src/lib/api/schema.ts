@@ -150,6 +150,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/children/{child_id}/companion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch this child's companion */
+        get: operations["companion_retrieve"];
+        put?: never;
+        /**
+         * Create this child's companion
+         * @description Returns immediately with the companion's identity. The reference portrait, canonical expressions and spoken greeting are generated on a worker; poll this endpoint and watch `assets_ready`.
+         */
+        post: operations["companion_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/children/{id}": {
         parameters: {
             query?: never;
@@ -212,6 +233,26 @@ export interface paths {
         patch: operations["children_partial_update"];
         trace?: never;
     };
+    "/api/v1/companion-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Archetypes, palettes and personality presets for the picker
+         * @description The picker's options, served rather than duplicated in the client (§14.5).
+         */
+        get: operations["companion_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/consent": {
         parameters: {
             query?: never;
@@ -259,6 +300,30 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description * `dragon` - dragon
+         *     * `fox` - fox
+         *     * `robot` - robot
+         *     * `star` - star
+         *     * `owl` - owl
+         * @enum {string}
+         */
+        ArchetypeEnum: "dragon" | "fox" | "robot" | "star" | "owl";
+        ArchetypeOption: {
+            key: components["schemas"]["ArchetypeEnum"];
+            label: string;
+            blurb: string;
+            default_palette: components["schemas"]["PaletteEnum"];
+            default_personality_preset: components["schemas"]["PersonalityPresetEnum"];
+        };
+        /**
+         * @description * `pending` - Not generated yet
+         *     * `ready` - Complete
+         *     * `partial` - Some assets missing
+         *     * `failed` - Generation failed
+         * @enum {string}
+         */
+        AssetsStatusEnum: "pending" | "ready" | "partial" | "failed";
         Child: {
             /** Format: uuid */
             readonly id: string;
@@ -301,6 +366,55 @@ export interface components {
             intensity_ceiling?: number;
             /** @description Minutes per sitting before the story starts winding down (§13.6). */
             session_cap_min?: number;
+        };
+        Companion: {
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: uuid */
+            readonly child: string;
+            archetype: components["schemas"]["ArchetypeEnum"];
+            name: string;
+            /** @default ember */
+            palette: components["schemas"]["PaletteEnum"];
+            readonly palette_colors: components["schemas"]["PaletteColors"];
+            readonly personality: unknown;
+            readonly voice_id: string | null;
+            readonly visual_descriptor: string;
+            readonly evolution_state: unknown;
+            readonly reference_asset_ids: string[];
+            readonly assets_status: components["schemas"]["AssetsStatusEnum"];
+            readonly assets_ready: boolean;
+            readonly portrait_url: string | null;
+            readonly expressions: {
+                [key: string]: string;
+            };
+            readonly greeting: components["schemas"]["Greeting"];
+            /** Format: date-time */
+            readonly created_at: string;
+            /** Format: date-time */
+            readonly updated_at: string;
+        };
+        /** @description The picker's options (§14.5). Read-only, and the same list the API validates against. */
+        CompanionCatalog: {
+            archetypes: components["schemas"]["ArchetypeOption"][];
+            palettes: components["schemas"]["PaletteColors"][];
+            personality_presets: components["schemas"]["PersonalityPresetOption"][];
+        };
+        CompanionRequest: {
+            archetype: components["schemas"]["ArchetypeEnum"];
+            name: string;
+            /** @default ember */
+            palette: components["schemas"]["PaletteEnum"];
+            /**
+             * @description Catalogue key; expands into the stored personality sheet (§9.2).
+             *
+             *     * `warm_guide` - warm_guide
+             *     * `brave_spark` - brave_spark
+             *     * `calm_anchor` - calm_anchor
+             *     * `curious_helper` - curious_helper
+             * @default warm_guide
+             */
+            personality_preset: components["schemas"]["PersonalityPresetEnum"];
         };
         /**
          * @description Records one verifiable-consent grant.
@@ -348,6 +462,10 @@ export interface components {
          * @enum {string}
          */
         ConsentTypeEnum: "data_collection_v1";
+        Greeting: {
+            text: string;
+            audio_url: string | null;
+        };
         Health: {
             status: string;
             service: string;
@@ -374,6 +492,47 @@ export interface components {
          * @enum {string}
          */
         MethodEnum: "checkbox_attestation";
+        /**
+         * @description The resolved palette.
+         *
+         *     Declared field by field rather than left as free JSON so the generated
+         *     TypeScript client knows a swatch has a `primary` — and so the catalogue keys
+         *     arrive in the picker as unions of literals rather than bare strings, which
+         *     is what makes an invalid choice a build error instead of a 400.
+         */
+        PaletteColors: {
+            key: components["schemas"]["PaletteEnum"];
+            label: string;
+            primary: string;
+            secondary: string;
+            accent: string;
+            description: string;
+        };
+        /**
+         * @description The resolved palette.
+         *
+         *     Declared field by field rather than left as free JSON so the generated
+         *     TypeScript client knows a swatch has a `primary` — and so the catalogue keys
+         *     arrive in the picker as unions of literals rather than bare strings, which
+         *     is what makes an invalid choice a build error instead of a 400.
+         */
+        PaletteColorsRequest: {
+            key: components["schemas"]["PaletteEnum"];
+            label: string;
+            primary: string;
+            secondary: string;
+            accent: string;
+            description: string;
+        };
+        /**
+         * @description * `ember` - ember
+         *     * `moss` - moss
+         *     * `tide` - tide
+         *     * `dusk` - dusk
+         *     * `blossom` - blossom
+         * @enum {string}
+         */
+        PaletteEnum: "ember" | "moss" | "tide" | "dusk" | "blossom";
         PatchedChildRequest: {
             first_name?: string;
             /** Format: date */
@@ -390,6 +549,19 @@ export interface components {
             intensity_ceiling?: number;
             /** @description Minutes per sitting before the story starts winding down (§13.6). */
             session_cap_min?: number;
+        };
+        /**
+         * @description * `warm_guide` - warm_guide
+         *     * `brave_spark` - brave_spark
+         *     * `calm_anchor` - calm_anchor
+         *     * `curious_helper` - curious_helper
+         * @enum {string}
+         */
+        PersonalityPresetEnum: "warm_guide" | "brave_spark" | "calm_anchor" | "curious_helper";
+        PersonalityPresetOption: {
+            key: components["schemas"]["PersonalityPresetEnum"];
+            label: string;
+            traits: string[];
         };
         SignupRequest: {
             /** Format: email */
@@ -601,6 +773,54 @@ export interface operations {
             };
         };
     };
+    companion_retrieve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Companion"];
+                };
+            };
+        };
+    };
+    companion_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompanionRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["CompanionRequest"];
+                "multipart/form-data": components["schemas"]["CompanionRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Companion"];
+                };
+            };
+        };
+    };
     children_retrieve: {
         parameters: {
             query?: never;
@@ -696,6 +916,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Child"];
+                };
+            };
+        };
+    };
+    companion_catalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanionCatalog"];
                 };
             };
         };

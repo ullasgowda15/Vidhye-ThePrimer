@@ -1,5 +1,5 @@
 /**
- * Onboarding (PRODUCT.md §4.2): account → consent → add child.
+ * Onboarding (PRODUCT.md §4.2): account → consent → child → companion → handover.
  *
  * The order is the product's argument in miniature. Consent comes before any
  * child data is typed, because the gate is server-enforced anyway (§13.7) and
@@ -7,19 +7,24 @@
  * have already done. Everything about the child except a name and a birthdate
  * is skippable: a tired parent should be able to finish in a minute and still
  * get a good first story from defaults plus age.
+ *
+ * It ends by handing the tablet over rather than at a dashboard, because the
+ * thing this flow exists to produce is not an account — it is a child meeting
+ * their companion (§4.3).
  */
 
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { errorMessage } from '@/lib/api/client';
+import { errorMessage, type Child } from '@/lib/api/client';
 import { useCreateChild, useRecordConsent } from '@/lib/api/queries';
 import { useAuthStore } from '@/store/auth';
 
 import AccountForm from './AccountForm';
+import CompanionPicker from './CompanionPicker';
 import { Field, Notice, ParentShell, PrimaryButton, QuietButton, TextInput } from './ui';
 
-type Step = 'account' | 'consent' | 'child';
+type Step = 'account' | 'consent' | 'child' | 'companion' | 'handover';
 
 /** Turn "dinosaurs, the sea" into ["dinosaurs", "the sea"]. */
 function toSeeds(value: string): string[] {
@@ -37,23 +42,72 @@ const INTENSITY_LABELS = [
   'Adventurous — bigger obstacles, never scary',
 ];
 
+const STEPS: Step[] = ['account', 'consent', 'child', 'companion', 'handover'];
+
 export default function Onboarding() {
   const navigate = useNavigate();
   const authenticated = useAuthStore((state) => state.accessToken !== null);
 
   const [step, setStep] = useState<Step>(authenticated ? 'consent' : 'account');
+  /** The child the companion is being created for. Set by the child step. */
+  const [child, setChild] = useState<{ id: string; name: string } | null>(null);
 
   return (
     <ParentShell
       title="Set up The Primer"
-      subtitle={`Step ${['account', 'consent', 'child'].indexOf(step) + 1} of 3`}
+      subtitle={
+        step === 'handover' ? undefined : `Step ${STEPS.indexOf(step) + 1} of ${STEPS.length - 1}`
+      }
     >
       {step === 'account' ? <AccountForm onDone={() => setStep('consent')} /> : null}
       {step === 'consent' ? <ConsentStep onDone={() => setStep('child')} /> : null}
       {step === 'child' ? (
-        <ChildStep onDone={() => navigate('/parent', { replace: true })} />
+        <ChildStep
+          onDone={(created) => {
+            // Skipping the child step means there is nobody for a companion to
+            // belong to, so onboarding ends at the dashboard instead.
+            if (!created) return navigate('/parent', { replace: true });
+            setChild({ id: created.id, name: created.first_name });
+            setStep('companion');
+          }}
+        />
       ) : null}
+      {step === 'companion' && child ? (
+        <CompanionPicker
+          childId={child.id}
+          childName={child.name}
+          onDone={() => setStep('handover')}
+        />
+      ) : null}
+      {step === 'handover' && child ? <HandoverStep childId={child.id} name={child.name} /> : null}
     </ParentShell>
+  );
+}
+
+/**
+ * The moment the tablet changes hands (§4.3).
+ *
+ * A separate screen on purpose: the imprint works because the child arrives at
+ * a companion that is already waiting for them, not because they watched a
+ * parent fill in a form and then got handed the result.
+ */
+function HandoverStep({ childId, name }: { childId: string; name: string }) {
+  const navigate = useNavigate();
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-4 font-semibold">Someone is waiting to meet {name}</h2>
+      <p className="text-2 text-text-muted">
+        Their friend is getting ready — it takes a moment to wake up. Hand {name} the tablet and let
+        them say hello. You can come back to this dashboard any time.
+      </p>
+      <PrimaryButton type="button" onClick={() => navigate(`/meet/${childId}`)}>
+        Hand over the tablet
+      </PrimaryButton>
+      <QuietButton type="button" onClick={() => navigate('/parent', { replace: true })}>
+        Not now — go to my dashboard
+      </QuietButton>
+    </div>
   );
 }
 
@@ -120,7 +174,7 @@ function ConsentStep({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ChildStep({ onDone }: { onDone: () => void }) {
+function ChildStep({ onDone }: { onDone: (child: Child | null) => void }) {
   const createChild = useCreateChild();
 
   const [firstName, setFirstName] = useState('');
@@ -136,7 +190,7 @@ function ChildStep({ onDone }: { onDone: () => void }) {
     event.preventDefault();
     setError(null);
     try {
-      await createChild.mutateAsync({
+      const created = await createChild.mutateAsync({
         first_name: firstName,
         birthdate,
         interests: toSeeds(interests),
@@ -147,7 +201,7 @@ function ChildStep({ onDone }: { onDone: () => void }) {
         intensity_ceiling: intensity,
         session_cap_min: sessionCap,
       });
-      onDone();
+      onDone(created);
     } catch (caught) {
       setError(errorMessage(caught, 'We could not save that profile.'));
     }
@@ -242,7 +296,7 @@ function ChildStep({ onDone }: { onDone: () => void }) {
         <PrimaryButton type="submit" disabled={createChild.isPending}>
           {createChild.isPending ? 'Saving…' : 'Finish'}
         </PrimaryButton>
-        <QuietButton type="button" onClick={onDone}>
+        <QuietButton type="button" onClick={() => onDone(null)}>
           Skip for now
         </QuietButton>
       </div>

@@ -1,0 +1,135 @@
+"""Companion endpoints (PRODUCT.md §18.3, §9.1).
+
+    POST /api/v1/children/{id}/companion   create the child's one companion
+    GET  /api/v1/children/{id}/companion   fetch it
+    GET  /api/v1/companion-catalog         the picker's options
+
+Three rules are enforced here, all server-side:
+
+1. **Consent first.** A companion is child data. The same gate that guards child
+   creation guards this (§13.7).
+2. **One companion per child**, enforced by the OneToOne *and* by a clear 409
+   rather than an integrity error, because "already has one" is a normal thing
+   for a client to do twice.
+3. **The parent owns the child.** Ownership is checked against the child before
+   the companion is touched at all.
+"""
+
+import logging
+from typing import Any, cast
+
+from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema, extend_schema_view
+from rest_framework import status
+from rest_framework.exceptions import APIException
+from rest_framework.generics import GenericAPIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+
+from apps.accounts.consent import require_consent
+from apps.accounts.models import User
+from apps.common.permissions import IsParentOwner
+from apps.companion.catalog import catalog
+from apps.companion.models import Companion
+from apps.companion.serializers import CompanionCatalogSerializer, CompanionSerializer
+from apps.companion.tasks import generate_companion_assets
+from apps.profiles.models import Child
+
+logger = logging.getLogger(__name__)
+
+
+class CompanionExists(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "This child already has a companion."
+    default_code = "companion_exists"
+
+
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="companion_retrieve",
+        summary="Fetch this child's companion",
+        responses=CompanionSerializer,
+    ),
+    post=extend_schema(
+        operation_id="companion_create",
+        summary="Create this child's companion",
+        description=(
+            "Returns immediately with the companion's identity. The reference "
+            "portrait, canonical expressions and spoken greeting are generated on "
+            "a worker; poll this endpoint and watch `assets_ready`."
+        ),
+        request=CompanionSerializer,
+        responses={201: CompanionSerializer},
+    ),
+)
+class CompanionView(GenericAPIView):
+    serializer_class = CompanionSerializer
+    permission_classes = [IsAuthenticated, IsParentOwner]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "companion"
+    queryset = Companion.objects.all()
+
+    def get_child(self) -> Child:
+        """The child in the URL, once ownership has been proven."""
+        child = get_object_or_404(Child, pk=self.kwargs["child_id"])
+        # Checked against the *child*, before any companion row is read or
+        # written: a request from the wrong parent must not be able to learn
+        # whether a companion exists.
+        self.check_object_permissions(self.request, child)
+        return child
+
+    def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        child = self.get_child()
+        companion = get_object_or_404(Companion.objects.select_related("child"), child=child)
+        return Response(self.get_serializer(companion).data)
+
+    def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        child = self.get_child()
+        require_consent(cast(User, request.user))
+
+        if Companion.objects.filter(child=child).exists():
+            raise CompanionExists
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        companion = serializer.save(child=child)
+
+        # Identity is saved; the art and the voice follow on a worker (§5.8).
+        # A broker that is down must not cost the family their companion, so the
+        # enqueue failure is logged and the assets are built on the next call to
+        # the dev command — never surfaced to the child.
+        _enqueue_assets(str(companion.id))
+
+        return Response(
+            self.get_serializer(companion).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="companion_catalog",
+        summary="Archetypes, palettes and personality presets for the picker",
+        responses=CompanionCatalogSerializer,
+    )
+)
+class CompanionCatalogView(APIView):
+    """The picker's options, served rather than duplicated in the client (§14.5)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        return Response(CompanionCatalogSerializer(catalog()).data)
+
+
+def _enqueue_assets(companion_id: str) -> None:
+    try:
+        generate_companion_assets.delay(companion_id)
+    except Exception:
+        # Broker unreachable. The companion exists and is coherent; only its art
+        # is missing, and `manage.py render_companion` (or a later retry) will
+        # fill it in. This is exactly the failure that must not reach a child.
+        logger.exception("companion.enqueue_failed companion=%s", companion_id)

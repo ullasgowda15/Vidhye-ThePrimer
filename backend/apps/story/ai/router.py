@@ -22,17 +22,21 @@ import json
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast, runtime_checkable
 
 from django.conf import settings
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from apps.story.ai.schemas import Beat, beat_json_schema
+from apps.story.ai.schemas import Beat, beat_json_schema, strip_unsupported_keywords
 
 if TYPE_CHECKING:
     from anthropic.types import MessageParam, OutputConfigParam
 
 logger = logging.getLogger(__name__)
+
+#: Any typed contract the router can enforce. `Beat` is the one that matters;
+#: the companion's canonical visual descriptor (§8.2) is the second.
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 # How many tokens a single beat may cost. A beat is a few hundred words; the
 # headroom is for adaptive thinking, which is on by default on Claude Opus 5.
@@ -69,12 +73,16 @@ class ProviderError(AIError):
     """A provider was reached but could not produce a usable response."""
 
 
-class BeatValidationError(AIError):
+class StructuredOutputError(AIError):
+    """A response came back but never satisfied the requested schema."""
+
+
+class BeatValidationError(StructuredOutputError):
     """A response came back but never satisfied the Beat schema."""
 
 
 @runtime_checkable
-class BeatProvider(Protocol):
+class StructuredProvider(Protocol):
     """One LLM provider, reduced to the only thing the router needs from it."""
 
     name: str
@@ -347,14 +355,14 @@ PROVIDERS: dict[str, type] = {
 
 @dataclass
 class ModelRouter:
-    """Selects a provider and enforces the Beat contract on whatever comes back."""
+    """Selects a provider and enforces a typed contract on whatever comes back."""
 
-    providers: list[BeatProvider]
+    providers: list[StructuredProvider]
 
     @classmethod
     def from_settings(cls) -> ModelRouter:
         order = list(settings.AI_PROVIDER_ORDER) or [AnthropicProvider.name]
-        providers: list[BeatProvider] = []
+        providers: list[StructuredProvider] = []
         for name in order:
             factory = PROVIDERS.get(name)
             if factory is None:
@@ -365,7 +373,7 @@ class ModelRouter:
             providers.append(factory())
         return cls(providers=providers)
 
-    def select_provider(self) -> BeatProvider:
+    def select_provider(self) -> StructuredProvider:
         """The first provider in `AI_PROVIDER_ORDER` that has credentials.
 
         Public because callers legitimately need to know *who* answered before or
@@ -395,21 +403,47 @@ class ModelRouter:
         profile, memory bundle, and learning objective. Today the caller passes
         it directly.
         """
+        try:
+            return self.generate_structured(context, model=Beat, schema=beat_json_schema())
+        except StructuredOutputError as exc:
+            # The beat path keeps its own error type: Day 7 turns *this* one into
+            # a safe fallback beat for a child, which is a different response
+            # from a failed side-generation like a visual descriptor.
+            raise BeatValidationError(str(exc)) from exc
+
+    def generate_structured(
+        self,
+        context: dict[str, Any],
+        *,
+        model: type[ModelT],
+        schema: dict[str, Any] | None = None,
+    ) -> ModelT:
+        """Generate one response validated against `model`, with one repair.
+
+        The Beat loop is the hot path but not the only caller: the companion's
+        canonical visual descriptor (§8.2) is generated the same way, and so is
+        anything else that needs typed JSON out of a model. Validate-and-repair
+        (§19.6) is a property of the *router*, not of beats, so it lives here
+        once — a caller cannot accidentally opt out of it.
+        """
         system = context.get("system")
         user = context.get("user")
         if not system or not user:
             raise AIConfigurationError("context must contain non-empty 'system' and 'user' keys.")
 
         provider = self.select_provider()
-        schema = beat_json_schema()
+        json_schema = (
+            schema if schema is not None else strip_unsupported_keywords(model.model_json_schema())
+        )
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
 
-        raw = provider.generate_json(system=system, messages=messages, schema=schema)
+        raw = provider.generate_json(system=system, messages=messages, schema=json_schema)
         try:
-            return self._parse(raw)
+            return self._parse(raw, model)
         except (ValidationError, json.JSONDecodeError) as first_error:
             logger.warning(
-                "Beat validation failed on provider %s; attempting one repair.",
+                "%s validation failed on provider %s; attempting one repair.",
+                model.__name__,
                 provider.name,
                 exc_info=first_error,
             )
@@ -421,25 +455,36 @@ class ModelRouter:
             {
                 "role": "user",
                 "content": (
-                    "That response did not satisfy the required beat schema. "
-                    "Return the corrected beat as valid JSON matching the schema "
+                    "That response did not satisfy the required schema. "
+                    "Return the corrected object as valid JSON matching the schema "
                     "exactly. Do not add fields, and do not omit any."
                 ),
             },
         ]
-        repaired = provider.generate_json(system=system, messages=messages, schema=schema)
+        repaired = provider.generate_json(system=system, messages=messages, schema=json_schema)
         try:
-            return self._parse(repaired)
+            return self._parse(repaired, model)
         except (ValidationError, json.JSONDecodeError) as second_error:
-            raise BeatValidationError(
-                f"Provider '{provider.name}' returned an invalid beat twice: {second_error}"
+            raise StructuredOutputError(
+                f"Provider '{provider.name}' returned an invalid "
+                f"{model.__name__} twice: {second_error}"
             ) from second_error
 
     @staticmethod
-    def _parse(raw: str) -> Beat:
-        return Beat.model_validate(json.loads(raw))
+    def _parse(raw: str, model: type[ModelT]) -> ModelT:
+        return model.model_validate(json.loads(raw))
 
 
 def generate_beat(context: dict[str, Any]) -> Beat:
     """Module-level entry point — the seam every caller should use."""
     return ModelRouter.from_settings().generate_beat(context)
+
+
+def generate_structured(
+    context: dict[str, Any],
+    *,
+    model: type[ModelT],
+    schema: dict[str, Any] | None = None,
+) -> ModelT:
+    """Module-level entry point for any non-beat typed generation."""
+    return ModelRouter.from_settings().generate_structured(context, model=model, schema=schema)

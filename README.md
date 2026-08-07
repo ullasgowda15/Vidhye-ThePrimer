@@ -137,7 +137,35 @@ an Anthropic key. Two things to know:
   one, and on rejection degrades to JSON mode plus the router's validate-and-repair
   pass — so a beat still arrives, just less cheaply.
 
-OpenRouter is LLM-only: images and TTS (Day 3) have their own providers.
+OpenRouter is LLM-only. Images and voice have their own adapters, below.
+
+### Illustrations and voice
+
+Two more swappable adapters, each chosen by one name in `.env`:
+
+| Setting | Implemented | Offline alternative |
+|---|---|---|
+| `IMAGE_PROVIDER` | `cloudflare` — FLUX on Workers AI (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`) | `local` — deterministic placeholder art, no key, no spend |
+| `TTS_PROVIDER` | `elevenlabs` (`ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`) | `local` — a short chime |
+
+A named provider with missing credentials is an **error**, not a quiet downgrade
+to placeholder art — that is the kind of failure nobody notices until a child is
+looking at it. `local` is always an explicit choice.
+
+Generated media is written to object storage and served from a CDN
+(`MEDIA_STORAGE=s3`). In development `MEDIA_STORAGE=local` writes to
+`backend/media/` and Django serves it while `DEBUG` is on.
+
+To see whether a companion actually looks like itself across scenes:
+
+```bash
+make render-companion CHILD=<child-uuid>
+```
+
+It builds the reference set if it is missing, renders three ordinary story
+scenes, prints where every file landed, and reports how many provider calls it
+made. Run it twice — the second run should report **0 generated**, because the
+`(style, character, scene)` cache answered everything.
 
 ## Smoke-testing the AI path
 

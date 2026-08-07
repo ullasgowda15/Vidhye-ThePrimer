@@ -1,5 +1,7 @@
 """Production / staging settings."""
 
+from django.core.exceptions import ImproperlyConfigured
+
 from config.settings.base import *  # noqa: F403
 from config.settings.base import env
 
@@ -21,10 +23,18 @@ SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
 
-STORAGES = {
-    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
-    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
-}
+# `STORAGES` (including the `media` alias generated illustrations and audio are
+# written through) is defined once in base.py and driven by MEDIA_STORAGE.
+# Redefining it here is how the media alias silently disappears in production, so
+# it deliberately is not redefined — set MEDIA_STORAGE=s3 in the env.
+if MEDIA_STORAGE != "s3":  # noqa: F405
+    # Local disk is not a deployment target: containers are ephemeral and there is
+    # no CDN in front of them, so a child's illustrations would vanish on restart.
+    raise ImproperlyConfigured(
+        "MEDIA_STORAGE must be 's3' outside development. Set it, plus "
+        "AWS_STORAGE_BUCKET_NAME / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY "
+        "(and AWS_S3_ENDPOINT_URL for a non-AWS S3-compatible bucket)."
+    )
 
 LOGGING = {
     "version": 1,

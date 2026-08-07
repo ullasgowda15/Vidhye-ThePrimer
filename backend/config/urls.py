@@ -6,6 +6,8 @@ OpenAPI surface sit *outside* the version prefix on purpose — they describe th
 service, not the product API, and must not move when v2 arrives.
 """
 
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
@@ -19,6 +21,7 @@ urlpatterns = [
     path("api/health/", HealthView.as_view(), name="health"),
     path(API_V1, include("apps.accounts.urls")),
     path(API_V1, include("apps.profiles.urls")),
+    path(API_V1, include("apps.companion.urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
         "api/docs/",
@@ -26,3 +29,10 @@ urlpatterns = [
         name="swagger-ui",
     ),
 ]
+
+# Generated illustrations and audio in development only. In staging and
+# production these are objects in a bucket behind a CDN and Django never sees a
+# request for them (§16.6) — serving blobs from the app tier is the thing the
+# media pipeline exists to avoid.
+if settings.DEBUG and settings.MEDIA_STORAGE != "s3":
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

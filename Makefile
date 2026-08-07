@@ -30,7 +30,7 @@ COMPOSE := docker compose -f infra/docker-compose.yml
 .DEFAULT_GOAL := help
 .PHONY: help venv install up down logs migrate migrations run worker front build \
         test test-backend test-frontend lint lint-backend lint-frontend format \
-        typecheck schema client superuser hello-beat smoke ping clean
+        typecheck schema client superuser hello-beat smoke render-companion ping clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -79,6 +79,9 @@ hello-beat: ## Generate one validated story Beat (needs an ANTHROPIC_API_KEY or 
 
 smoke: ## Live AI smoke test — real provider calls (needs OPENROUTER_API_KEY). Never in CI.
 	cd backend && $(ABS_PY) manage.py smoke_ai $(SMOKE_ARGS)
+
+render-companion: ## Render a companion's reference set + 3 scenes: make render-companion CHILD=<uuid>
+	cd backend && $(ABS_PY) manage.py render_companion $(CHILD) --scenes 3
 
 ping: ## Round-trip a task through Celery to prove the worker is live
 	cd backend && $(ABS_PY) manage.py shell -c \

@@ -22,13 +22,21 @@ interface Challenge {
   b: number;
 }
 
-function newChallenge(): Challenge {
+function newChallenge(previous?: Challenge): Challenge {
   // Two digits times one digit: trivial for an adult, out of reach for a
   // pre-reader who cannot yet multiply.
-  return {
-    a: 11 + Math.floor(Math.random() * 9),
-    b: 3 + Math.floor(Math.random() * 6),
-  };
+  //
+  // Re-rolled until it differs from the one just failed. There are only 54
+  // sums, so a random re-roll repeats itself about one time in fifty — and a
+  // gate that re-offers the sum you just got wrong looks broken.
+  let next: Challenge;
+  do {
+    next = {
+      a: 11 + Math.floor(Math.random() * 9),
+      b: 3 + Math.floor(Math.random() * 6),
+    };
+  } while (previous && next.a === previous.a && next.b === previous.b);
+  return next;
 }
 
 export default function ParentGate() {
@@ -36,7 +44,7 @@ export default function ParentGate() {
   const location = useLocation();
   const passParentGate = useAuthStore((state) => state.passParentGate);
 
-  const [challenge, setChallenge] = useState<Challenge>(newChallenge);
+  const [challenge, setChallenge] = useState<Challenge>(() => newChallenge());
   const [answer, setAnswer] = useState('');
   const [failed, setFailed] = useState(false);
 
@@ -53,7 +61,7 @@ export default function ParentGate() {
       // A new sum each time, so a child cannot get in by mashing the last answer.
       setFailed(true);
       setAnswer('');
-      setChallenge(newChallenge());
+      setChallenge(newChallenge(challenge));
     },
     [answer, challenge, destination, navigate, passParentGate],
   );

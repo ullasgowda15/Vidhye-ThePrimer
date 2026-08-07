@@ -138,6 +138,55 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # ---------------------------------------------------------------------------
+# Object storage for generated media (PRODUCT.md §16.6, §5.8)
+# ---------------------------------------------------------------------------
+# Illustrations and narration audio are blobs: they live in object storage and
+# are served by a CDN, never streamed by Django and never stored in Postgres.
+# The `media` alias is what `apps.media.storage` writes through, so swapping
+# S3 for R2/B2/MinIO — or for the local disk in dev — is this block only.
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+# local (dev default, zero setup) | s3 (anything S3-compatible)
+MEDIA_STORAGE = env("MEDIA_STORAGE", default="local")
+
+AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default="")
+AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default="")
+AWS_STORAGE_BUCKET_NAME = env("AWS_STORAGE_BUCKET_NAME", default="")
+AWS_S3_ENDPOINT_URL = env("AWS_S3_ENDPOINT_URL", default="") or None
+AWS_S3_REGION_NAME = env("AWS_S3_REGION_NAME", default="auto")
+
+# The public base a child's device actually fetches from. Set this to the CDN
+# hostname in front of the bucket; media URLs are then built by string join and
+# never carry a signature, which is what makes them cacheable at the edge.
+MEDIA_CDN_BASE_URL = env("MEDIA_CDN_BASE_URL", default="").rstrip("/")
+
+_S3_STORAGE = {
+    "BACKEND": "storages.backends.s3.S3Storage",
+    "OPTIONS": {
+        "bucket_name": AWS_STORAGE_BUCKET_NAME,
+        "endpoint_url": AWS_S3_ENDPOINT_URL,
+        "region_name": AWS_S3_REGION_NAME,
+        "default_acl": None,
+        # Generated media is immutable and content-addressed, so a long
+        # max-age is free: the key changes whenever the bytes do.
+        "object_parameters": {"CacheControl": "public, max-age=31536000, immutable"},
+        "file_overwrite": True,
+        "querystring_auth": False,
+    },
+}
+
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "media": (
+        _S3_STORAGE
+        if MEDIA_STORAGE == "s3"
+        else {"BACKEND": "django.core.files.storage.FileSystemStorage"}
+    ),
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
+
+# ---------------------------------------------------------------------------
 # DRF + OpenAPI (PRODUCT.md §18.1)
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
@@ -164,6 +213,11 @@ REST_FRAMEWORK = {
         "anon": env("THROTTLE_ANON", default="100/day"),
         "user": env("THROTTLE_USER", default="1000/day"),
         "auth": env("THROTTLE_AUTH", default="30/hour"),
+        # Creating a companion fans out into a handful of paid image calls plus a
+        # TTS call (§16.6). A family does it once per child; anything beyond a
+        # couple of attempts an hour is a bug or an attack, and either way it is
+        # spending real money.
+        "companion": env("THROTTLE_COMPANION", default="20/hour"),
     },
 }
 
@@ -194,6 +248,15 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SCHEMA_PATH_PREFIX": "/api",
+    # The companion catalogue's keys appear on several fields (`key`,
+    # `default_palette`, `archetype`). Without these, the generator invents
+    # names like `Key734Enum` from a hash, and the generated TypeScript union
+    # would be renamed by any unrelated change to the catalogue.
+    "ENUM_NAME_OVERRIDES": {
+        "ArchetypeEnum": "apps.companion.catalog.ARCHETYPE_KEYS",
+        "PaletteEnum": "apps.companion.catalog.PALETTE_KEYS",
+        "PersonalityPresetEnum": "apps.companion.catalog.PRESET_KEYS",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -249,3 +312,43 @@ AI_PROVIDER_ORDER = env.list("AI_PROVIDER_ORDER", default=["anthropic"])
 # json_object. `auto` (try strict, degrade if the model can't) is the shipping
 # behaviour. Applies to OpenAI-compatible providers; Anthropic enforces natively.
 AI_STRUCTURED_OUTPUT_MODE = env("AI_STRUCTURED_OUTPUT_MODE", default="auto")
+
+# ---------------------------------------------------------------------------
+# Illustration + voice adapters (PRODUCT.md §16.6, §5.8)
+# ---------------------------------------------------------------------------
+# One name each, chosen by configuration, resolved by the adapter registry. A
+# provider that is named but has no credentials is an error rather than a silent
+# downgrade: quietly serving placeholder art in production would be invisible
+# until a parent noticed their child's storybook looked wrong.
+#
+# `local` is the deliberate offline choice — a deterministic placeholder that
+# draws a flat vector character from the prompt's own character/scene sections
+# and synthesises a short chime. It exists so the *pipeline* (hashing, safety
+# scan, storage, CDN URLs, cache) is exercisable and testable with no key and no
+# spend. Every Media row records the provider that produced it, so placeholder
+# art is never mistaken for the real thing.
+IMAGE_PROVIDER = env("IMAGE_PROVIDER", default="cloudflare")
+TTS_PROVIDER = env("TTS_PROVIDER", default="elevenlabs")
+
+# Cloudflare Workers AI runs FLUX (§5.8's named image models) at the edge.
+CLOUDFLARE_ACCOUNT_ID = env("CLOUDFLARE_ACCOUNT_ID", default="")
+CLOUDFLARE_API_TOKEN = env("CLOUDFLARE_API_TOKEN", default="")
+IMAGE_MODEL = env("IMAGE_MODEL", default="@cf/black-forest-labs/flux-1-schnell")
+# flux-1-schnell is a few-step distilled model; 4 is its default and 8 its ceiling.
+IMAGE_STEPS = env.int("IMAGE_STEPS", default=4)
+
+# ElevenLabs is the companion's voice.
+ELEVENLABS_API_KEY = env("ELEVENLABS_API_KEY", default="")
+ELEVENLABS_VOICE_ID = env("ELEVENLABS_VOICE_ID", default="")
+ELEVENLABS_MODEL_ID = env("ELEVENLABS_MODEL_ID", default="eleven_multilingual_v2")
+# Optional map from a companion's semantic voice key (§9.1, set from its
+# archetype) to a real ElevenLabs voice id, as JSON:
+#   ELEVENLABS_VOICE_MAP={"warm_low":"21m00Tcm...","bright":"AZnzlk1X..."}
+# Unmapped keys fall back to ELEVENLABS_VOICE_ID, so one configured voice is
+# enough to ship and per-archetype voices are a config change later.
+ELEVENLABS_VOICE_MAP = env.json("ELEVENLABS_VOICE_MAP", default={})
+
+# A generated asset that is wildly larger than a storybook illustration is a
+# provider bug or a hostile response, not a picture. The scan rejects it before
+# it reaches storage (§13.8).
+MEDIA_MAX_BYTES = env.int("MEDIA_MAX_BYTES", default=12 * 1024 * 1024)

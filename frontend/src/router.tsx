@@ -1,6 +1,7 @@
 import { createBrowserRouter } from 'react-router-dom';
 
 import ChildHome from './routes/child/ChildHome';
+import MeetCompanion from './routes/child/MeetCompanion';
 import AdultGateRoute from './routes/parent/AdultGateRoute';
 import Login from './routes/parent/Login';
 import Onboarding from './routes/parent/Onboarding';
@@ -26,6 +27,12 @@ import Signup from './routes/parent/Signup';
 export const router = createBrowserRouter(
   [
     { path: '/', element: <ChildHome /> },
+    // The imprint scene sits in the child tree, deliberately outside the parent
+    // guards: the parent hands the tablet over here, and a child must never be
+    // asked an adult challenge to meet their friend. It shows nothing an
+    // unauthenticated request could obtain — without a session it stays a
+    // sleeping companion.
+    { path: '/meet/:childId', element: <MeetCompanion /> },
     {
       path: '/parent',
       children: [

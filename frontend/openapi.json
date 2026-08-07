@@ -278,6 +278,105 @@
                 }
             }
         },
+        "/api/v1/children/{child_id}/companion": {
+            "get": {
+                "operationId": "companion_retrieve",
+                "summary": "Fetch this child's companion",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Companion"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            },
+            "post": {
+                "operationId": "companion_create",
+                "description": "Returns immediately with the companion's identity. The reference portrait, canonical expressions and spoken greeting are generated on a worker; poll this endpoint and watch `assets_ready`.",
+                "summary": "Create this child's companion",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CompanionRequest"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CompanionRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CompanionRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Companion"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
         "/api/v1/children/{id}": {
             "get": {
                 "operationId": "children_retrieve",
@@ -472,6 +571,36 @@
                 }
             }
         },
+        "/api/v1/companion-catalog": {
+            "get": {
+                "operationId": "companion_catalog",
+                "description": "The picker's options, served rather than duplicated in the client (§14.5).",
+                "summary": "Archetypes, palettes and personality presets for the picker",
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CompanionCatalog"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
         "/api/v1/consent": {
             "post": {
                 "operationId": "consent_create",
@@ -554,6 +683,54 @@
     },
     "components": {
         "schemas": {
+            "ArchetypeEnum": {
+                "enum": [
+                    "dragon",
+                    "fox",
+                    "robot",
+                    "star",
+                    "owl"
+                ],
+                "type": "string",
+                "description": "* `dragon` - dragon\n* `fox` - fox\n* `robot` - robot\n* `star` - star\n* `owl` - owl"
+            },
+            "ArchetypeOption": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "$ref": "#/components/schemas/ArchetypeEnum"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "blurb": {
+                        "type": "string"
+                    },
+                    "default_palette": {
+                        "$ref": "#/components/schemas/PaletteEnum"
+                    },
+                    "default_personality_preset": {
+                        "$ref": "#/components/schemas/PersonalityPresetEnum"
+                    }
+                },
+                "required": [
+                    "blurb",
+                    "default_palette",
+                    "default_personality_preset",
+                    "key",
+                    "label"
+                ]
+            },
+            "AssetsStatusEnum": {
+                "enum": [
+                    "pending",
+                    "ready",
+                    "partial",
+                    "failed"
+                ],
+                "type": "string",
+                "description": "* `pending` - Not generated yet\n* `ready` - Complete\n* `partial` - Some assets missing\n* `failed` - Generation failed"
+            },
             "Child": {
                 "type": "object",
                 "properties": {
@@ -715,6 +892,192 @@
                     "first_name"
                 ]
             },
+            "Companion": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "child": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "archetype": {
+                        "$ref": "#/components/schemas/ArchetypeEnum"
+                    },
+                    "name": {
+                        "type": "string",
+                        "maxLength": 40
+                    },
+                    "palette": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/PaletteEnum"
+                            }
+                        ],
+                        "default": "ember"
+                    },
+                    "palette_colors": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/PaletteColors"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "personality": {
+                        "readOnly": true
+                    },
+                    "voice_id": {
+                        "type": "string",
+                        "readOnly": true,
+                        "nullable": true
+                    },
+                    "visual_descriptor": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "evolution_state": {
+                        "readOnly": true
+                    },
+                    "reference_asset_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "readOnly": true
+                    },
+                    "assets_status": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/AssetsStatusEnum"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "assets_ready": {
+                        "type": "boolean",
+                        "readOnly": true
+                    },
+                    "portrait_url": {
+                        "type": "string",
+                        "nullable": true,
+                        "readOnly": true
+                    },
+                    "expressions": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "readOnly": true
+                    },
+                    "greeting": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/Greeting"
+                            }
+                        ],
+                        "readOnly": true
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "archetype",
+                    "assets_ready",
+                    "assets_status",
+                    "child",
+                    "created_at",
+                    "evolution_state",
+                    "expressions",
+                    "greeting",
+                    "id",
+                    "name",
+                    "palette_colors",
+                    "personality",
+                    "portrait_url",
+                    "reference_asset_ids",
+                    "updated_at",
+                    "visual_descriptor",
+                    "voice_id"
+                ]
+            },
+            "CompanionCatalog": {
+                "type": "object",
+                "description": "The picker's options (§14.5). Read-only, and the same list the API validates against.",
+                "properties": {
+                    "archetypes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/ArchetypeOption"
+                        }
+                    },
+                    "palettes": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PaletteColors"
+                        }
+                    },
+                    "personality_presets": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PersonalityPresetOption"
+                        }
+                    }
+                },
+                "required": [
+                    "archetypes",
+                    "palettes",
+                    "personality_presets"
+                ]
+            },
+            "CompanionRequest": {
+                "type": "object",
+                "properties": {
+                    "archetype": {
+                        "$ref": "#/components/schemas/ArchetypeEnum"
+                    },
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 40
+                    },
+                    "palette": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/PaletteEnum"
+                            }
+                        ],
+                        "default": "ember"
+                    },
+                    "personality_preset": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/PersonalityPresetEnum"
+                            }
+                        ],
+                        "writeOnly": true,
+                        "default": "warm_guide",
+                        "description": "Catalogue key; expands into the stored personality sheet (§9.2).\n\n* `warm_guide` - warm_guide\n* `brave_spark` - brave_spark\n* `calm_anchor` - calm_anchor\n* `curious_helper` - curious_helper"
+                    }
+                },
+                "required": [
+                    "archetype",
+                    "name"
+                ]
+            },
             "ConsentRecord": {
                 "type": "object",
                 "description": "Records one verifiable-consent grant.\n\n`parent`, `ip` and `granted_at` are all server-set: a consent record whose\nevidence the client could dictate is not evidence.",
@@ -804,6 +1167,22 @@
                 "type": "string",
                 "description": "* `data_collection_v1` - Data collection v1"
             },
+            "Greeting": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string"
+                    },
+                    "audio_url": {
+                        "type": "string",
+                        "nullable": true
+                    }
+                },
+                "required": [
+                    "audio_url",
+                    "text"
+                ]
+            },
             "Health": {
                 "type": "object",
                 "properties": {
@@ -887,6 +1266,86 @@
                 "type": "string",
                 "description": "* `checkbox_attestation` - Checkbox attestation"
             },
+            "PaletteColors": {
+                "type": "object",
+                "description": "The resolved palette.\n\nDeclared field by field rather than left as free JSON so the generated\nTypeScript client knows a swatch has a `primary` — and so the catalogue keys\narrive in the picker as unions of literals rather than bare strings, which\nis what makes an invalid choice a build error instead of a 400.",
+                "properties": {
+                    "key": {
+                        "$ref": "#/components/schemas/PaletteEnum"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "primary": {
+                        "type": "string"
+                    },
+                    "secondary": {
+                        "type": "string"
+                    },
+                    "accent": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "accent",
+                    "description",
+                    "key",
+                    "label",
+                    "primary",
+                    "secondary"
+                ]
+            },
+            "PaletteColorsRequest": {
+                "type": "object",
+                "description": "The resolved palette.\n\nDeclared field by field rather than left as free JSON so the generated\nTypeScript client knows a swatch has a `primary` — and so the catalogue keys\narrive in the picker as unions of literals rather than bare strings, which\nis what makes an invalid choice a build error instead of a 400.",
+                "properties": {
+                    "key": {
+                        "$ref": "#/components/schemas/PaletteEnum"
+                    },
+                    "label": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "primary": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "secondary": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "accent": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "description": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "required": [
+                    "accent",
+                    "description",
+                    "key",
+                    "label",
+                    "primary",
+                    "secondary"
+                ]
+            },
+            "PaletteEnum": {
+                "enum": [
+                    "ember",
+                    "moss",
+                    "tide",
+                    "dusk",
+                    "blossom"
+                ],
+                "type": "string",
+                "description": "* `ember` - ember\n* `moss` - moss\n* `tide` - tide\n* `dusk` - dusk\n* `blossom` - blossom"
+            },
             "PatchedChildRequest": {
                 "type": "object",
                 "properties": {
@@ -947,6 +1406,38 @@
                         "description": "Minutes per sitting before the story starts winding down (§13.6)."
                     }
                 }
+            },
+            "PersonalityPresetEnum": {
+                "enum": [
+                    "warm_guide",
+                    "brave_spark",
+                    "calm_anchor",
+                    "curious_helper"
+                ],
+                "type": "string",
+                "description": "* `warm_guide` - warm_guide\n* `brave_spark` - brave_spark\n* `calm_anchor` - calm_anchor\n* `curious_helper` - curious_helper"
+            },
+            "PersonalityPresetOption": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "$ref": "#/components/schemas/PersonalityPresetEnum"
+                    },
+                    "label": {
+                        "type": "string"
+                    },
+                    "traits": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "required": [
+                    "key",
+                    "label",
+                    "traits"
+                ]
             },
             "SignupRequest": {
                 "type": "object",

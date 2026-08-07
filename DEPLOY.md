@@ -54,6 +54,13 @@ Three processes and two managed services:
 | `ANTHROPIC_API_KEY` | From the Anthropic console |
 | `AI_PROVIDER_ORDER` | `anthropic` on staging. OpenRouter is a dev convenience; don't ship a free model to a child. |
 | `AI_BEAT_MODEL` | Optional — defaults to the Claude model in `base.py` |
+| `IMAGE_PROVIDER` | `cloudflare`. Never `local` outside development — that ships placeholder art to a child. |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | From the Cloudflare dashboard (Workers AI) |
+| `TTS_PROVIDER` | `elevenlabs` |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | From the ElevenLabs console. The voice id is required — there is no vendor default. |
+| `MEDIA_STORAGE` | `s3`. **`prod.py` refuses to boot without it**: containers are ephemeral, so local disk would lose a child's illustrations on every restart. |
+| `AWS_STORAGE_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | The media bucket. Add `AWS_S3_ENDPOINT_URL` for R2/B2/MinIO. |
+| `MEDIA_CDN_BASE_URL` | The CDN hostname in front of the bucket. Without it, media URLs point at the bucket directly — correct, but uncached and slower than the child experience needs. |
 | `SECURE_SSL_REDIRECT` | `1` unless the platform already redirects |
 
 `config/settings/prod.py` turns on HSTS, secure cookies, and
