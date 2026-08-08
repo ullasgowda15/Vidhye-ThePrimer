@@ -15,9 +15,13 @@ must be able to come back to the same forest.
 The DB `Beat` deliberately **mirrors** the generated contract in
 `apps.story.ai.schemas` rather than embedding it whole: the generated object is
 what a model produced, and this is what we chose to keep. `continuity_refs` and
-`next_hint` are generation-time hints that steer the *next* call; they are not
-persisted today because nothing reads them until the branch loop lands.
+`next_hint` steer the *next* call, so they are persisted from Day 5 on — a
+consequence beat is conditioned on the hint the beat before it left behind
+(§8.5), and a hint that lived only in a response object could not survive the
+round trip through the child's tap.
 """
+
+from typing import Any
 
 from django.db import models
 
@@ -169,6 +173,16 @@ class Beat(UUIDModel):
     learning = models.JSONField(null=True, blank=True)
     emotion = models.CharField(max_length=32, blank=True)
 
+    #: The model's own steer for what should happen next, e.g. "if the child
+    #: counts -> cross the river". Persisted because the beat that reads it is
+    #: generated in a *different* request — after the child has tapped — so it has
+    #: to survive the round trip (§8.5).
+    next_hint = models.TextField(blank=True)
+    #: Entities this beat leaned on, e.g. `["companion:pip", "world:river"]`.
+    #: Written now and read by the memory service on Day 8; keeping it from the
+    #: first branching beat is worth more than backfilling it later.
+    continuity_refs = models.JSONField(default=list, blank=True)
+
     # `+` reverse names: a Media row is reached through its beat, never the other
     # way round, and two FKs to the same table would otherwise collide.
     media = models.ForeignKey(
@@ -185,6 +199,12 @@ class Beat(UUIDModel):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    #: `{choice_key: media_id}` — the little picture on each choice card (§14.4).
+    #: A JSON map rather than a table: these rows are only ever read as a set
+    #: belonging to one beat, they are written by the same task that writes the
+    #: two columns above, and a child who cannot read needs the picture to arrive
+    #: with the option, not to be joined to it.
+    choice_media = models.JSONField(default=dict, blank=True)
 
     safety_status = models.CharField(
         max_length=16,
@@ -205,15 +225,35 @@ class Beat(UUIDModel):
     def __str__(self) -> str:
         return f"beat {self.seq} of {self.adventure_id}"
 
+    @property
+    def options(self) -> list[dict[str, Any]]:
+        """The illustrated options this beat offers (§8.5), or an empty list.
+
+        Read off `interaction` rather than stored twice: the generated beat is the
+        only place options are decided, and a second copy is a second thing that
+        can disagree about what the child was shown.
+        """
+        return [dict(option) for option in (self.interaction or {}).get("choices") or []]
+
+    def option(self, key: str) -> dict[str, Any] | None:
+        """The option with this key, if this beat offered it."""
+        return next((option for option in self.options if option.get("key") == key), None)
+
 
 class Choice(UUIDModel):
-    """What the child picked, and what it cost them (§8.5).
+    """What the child picked, and what the world did about it (§8.5).
 
-    Defined today, **written on Day 5**. It exists now because the beat that
-    offers a choice and the row that records it are one migration's worth of
-    schema, and because `latency_ms`/`retries`/`assisted` are the wellbeing and
-    difficulty signals (§8.9, §10.4) — recording them from the first choice ever
-    made is worth more than adding the columns once there is data to lose.
+    Written on **every** interaction, not only on a two-or-three-way branch: a tap
+    to carry on is still the child acting, and `latency_ms`/`retries`/`assisted`
+    are the wellbeing and difficulty signals (§8.9, §10.4) whatever the beat
+    asked. It is also what makes "which beat is the child on" answerable — a beat
+    with a choice against it has been played, and one without it is where they are
+    now (`orchestrator.next_position`).
+
+    Deliberately **not** a score. There is no correct column and no wrong column,
+    because there are no losing choices (§8.5). `assisted` records that the
+    companion helped, which is an input to difficulty, never a mark against the
+    child.
     """
 
     adventure = models.ForeignKey(
@@ -225,6 +265,11 @@ class Choice(UUIDModel):
 
     options = models.JSONField(default=list, blank=True)
     chosen_key = models.CharField(max_length=64, blank=True)
+    #: What the child actually answered, when the beat asked for something —
+    #: `3` for a count, a word for a `say`. JSON rather than a typed column
+    #: because §18.6's `value` is whatever the interaction type meant it to be,
+    #: and null because most beats ask only which way to go.
+    value = models.JSONField(null=True, blank=True)
     consequence_summary = models.TextField(blank=True)
 
     #: How long the child took, how many attempts, and whether the companion
@@ -236,6 +281,14 @@ class Choice(UUIDModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["adventure", "-created_at"])]
+        constraints = [
+            # One answer per beat. A double-tap on a big forgiving target is the
+            # normal way a four-year-old submits twice, and two rows here would
+            # advance the story two beats at once — the child would watch a beat
+            # they never got to play. Retries live in the `retries` column, which
+            # is what "the child tried again" actually means.
+            models.UniqueConstraint(fields=["beat"], name="choice_beat_uniq"),
+        ]
 
     def __str__(self) -> str:
         return f"{self.chosen_key or '(unanswered)'} on beat {self.beat_id}"

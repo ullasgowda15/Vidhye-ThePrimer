@@ -70,6 +70,33 @@ class InteractionType(StrEnum):
     NONE = "none"
 
 
+class ChoiceOption(_Strict):
+    """One thing the child can pick at a decision point (§8.5, §14.4).
+
+    A structured option rather than a bare string, because a choice has three
+    different jobs and a string can only do one of them. `key` is what the child's
+    tap sends back and what the consequence beat is conditioned on, so it must
+    survive rewording; `label` is *heard*, not read, since the audience cannot
+    read; and `icon_prompt` is what gets drawn on the card, because §14.4 requires
+    a picture of each path rather than a text list — a pre-reader cannot
+    participate in a menu.
+
+    There are no losing options (§8.5). Every one of these leads somewhere good.
+    """
+
+    key: str = Field(description="Stable snake_case id for this option, e.g. 'follow_river'.")
+    label: str = Field(
+        description="What the companion calls this option out loud — three to six plain words.",
+    )
+    icon_prompt: str = Field(
+        description=(
+            "What the little picture on this option's card shows: one concrete "
+            "noun-phrase, no characters, no text, e.g. 'a sparkling river winding "
+            "between mossy stones'."
+        ),
+    )
+
+
 class Interaction(_Strict):
     # No Field(...) here: extra metadata would make Pydantic emit siblings next to
     # the `$ref`, which strict schema validators are inconsistent about accepting.
@@ -85,8 +112,12 @@ class Interaction(_Strict):
     expected: int | str | None = Field(
         description="The expected answer, if there is a single one; null otherwise.",
     )
-    choices: list[str] | None = Field(
-        description="2-3 concrete choices when type is 'choose'; null otherwise.",
+    choices: list[ChoiceOption] | None = Field(
+        description=(
+            "2-3 illustrated options when type is 'choose'; null otherwise. Each one "
+            "must change something the child can see in the next beat, and none of "
+            "them may be a wrong or losing pick."
+        ),
     )
 
 

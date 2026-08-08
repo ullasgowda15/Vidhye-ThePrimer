@@ -28,6 +28,127 @@
                 }
             }
         },
+        "/api/v1/adventures/{adventure_id}/choice": {
+            "post": {
+                "operationId": "adventure_choice",
+                "description": "Records the child's interaction with a beat and returns **202** immediately; the consequence arrives on the stream (`streamUrl`), not in this response (§18.6).\n\nIt answers before anything is generated on purpose. The tap has to be acknowledged on screen within about 100ms (§14.7), and the beat that reacts to it takes seconds — so the row is written here and the generation is started on a worker, which is usually finished by the time the client has reopened the stream.\n\nIdempotent per beat: a double-tap records one choice and the first one stands (`recorded: false` on the second). Sent for **every** interaction, including a beat that only asked the child to carry on — `latencyMs`, `retries` and `assisted` are wellbeing and difficulty signals we want for all of them.\n\nThere is no wrong answer to reject: nothing here is checked against the beat's `expected`, and no request to this endpoint can fail the child (§8.5).",
+                "summary": "Submit what the child just did",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "adventure_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChoiceRequestRequest"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChoiceRequestRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChoiceRequestRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChoiceAccepted"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/adventures/{adventure_id}/end": {
+            "post": {
+                "operationId": "adventure_end",
+                "description": "Marks the adventure `completed` (or `abandoned`, for `reason: exit`) and finalises the `PlaySession` with its duration and why it stopped.\n\nIdempotent: an adventure that is already finished is returned unchanged, so the child tapping 'all done' and the page unloading cannot disagree about when the sitting ended.\n\nUntil this is called the adventure stays `in_progress` and `POST /children/{id}/adventures` keeps rejoining it, which is what makes a reload land back in the same story rather than paying for a new one.",
+                "summary": "Close the adventure and the sitting",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "adventure_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AdventureEndRequestRequest"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AdventureEndRequestRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AdventureEndRequestRequest"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AdventureEnd"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
         "/api/v1/auth/login": {
             "post": {
                 "operationId": "auth_login",
@@ -789,6 +910,48 @@
                     "voiceId"
                 ]
             },
+            "AdventureEnd": {
+                "type": "object",
+                "description": "The state the adventure was left in.",
+                "properties": {
+                    "adventureId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "completedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "beats": {
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "adventureId",
+                    "beats",
+                    "completedAt",
+                    "status"
+                ]
+            },
+            "AdventureEndRequestRequest": {
+                "type": "object",
+                "description": "Why the sitting stopped (§13.6).",
+                "properties": {
+                    "reason": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/ReasonEnum"
+                            }
+                        ],
+                        "default": "completed",
+                        "description": "`completed` when the child reached the warm close, `exit` when they left before it. A wellbeing signal for the parent report, kept separate from whether the story finished.\n\n* `completed` - completed\n* `exit` - exit"
+                    }
+                }
+            },
             "AdventureStart": {
                 "type": "object",
                 "description": "The response to `POST /children/{id}/adventures` (§18.4).",
@@ -1032,6 +1195,76 @@
                 "required": [
                     "birthdate",
                     "first_name"
+                ]
+            },
+            "ChoiceAccepted": {
+                "type": "object",
+                "description": "The `202` body (§18.6). The consequence arrives on the stream, not here.",
+                "properties": {
+                    "choiceId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "beatId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "recorded": {
+                        "type": "boolean",
+                        "description": "False when this beat had already been answered and the first answer stands."
+                    },
+                    "streamUrl": {
+                        "type": "string",
+                        "description": "Reopen this to receive the consequence beat."
+                    }
+                },
+                "required": [
+                    "beatId",
+                    "choiceId",
+                    "recorded",
+                    "streamUrl"
+                ]
+            },
+            "ChoiceRequestRequest": {
+                "type": "object",
+                "description": "What the child's tap sends back (§18.6).\n\nEvery field but `beatId` and `choiceKey` is a *signal*, not an answer. §18.6\nnames `latencyMs` and `retries`; `assisted` joins them because the companion\nscaffolding is the thing that distinguishes \"found it easy\" from \"got there\nwith help\", and Day 10 reads all three as learning evidence (§10.4). They are\nrecorded on every interaction, including a tap that only means \"carry on\", so\nthe evidence is not silently missing for the beats that asked something simple.\n\nNothing here is validated against the beat's `expected`. There is no wrong\nanswer to check against (§8.5), so `choiceKey` is accepted as sent and the\nconsequence is written warmly from whatever arrived.",
+                "properties": {
+                    "beatId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "The beat the child was on."
+                    },
+                    "choiceKey": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The option the child picked. `continue` for a beat that only asked them to carry on.",
+                        "maxLength": 64
+                    },
+                    "value": {
+                        "nullable": true,
+                        "description": "What the child actually answered, when the beat asked for one."
+                    },
+                    "latencyMs": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "nullable": true,
+                        "description": "How long from the beat being ready to the tap."
+                    },
+                    "retries": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "Attempts before this one. Never a score — a difficulty signal."
+                    },
+                    "assisted": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Whether the companion scaffolded the answer (§8.5)."
+                    }
+                },
+                "required": [
+                    "beatId",
+                    "choiceKey"
                 ]
             },
             "Companion": {
@@ -1567,6 +1800,14 @@
                     "label",
                     "traits"
                 ]
+            },
+            "ReasonEnum": {
+                "enum": [
+                    "completed",
+                    "exit"
+                ],
+                "type": "string",
+                "description": "* `completed` - completed\n* `exit` - exit"
             },
             "SignupRequest": {
                 "type": "object",

@@ -27,7 +27,8 @@ from asgiref.sync import async_to_sync
 from celery import shared_task
 
 from apps.story import orchestrator
-from apps.story.models import Beat
+from apps.story.ai.router import AIError
+from apps.story.models import Adventure, Beat
 
 logger = logging.getLogger(__name__)
 
@@ -72,3 +73,74 @@ def generate_beat_media(beat_id: str) -> str:
         logger.warning("story.media_task_partial beat=%s missing=%s", beat_id, ",".join(remaining))
         return "partial"
     return "complete"
+
+
+@shared_task
+def advance_adventure(adventure_id: str, after_beat_id: str) -> str:
+    """Generate the beat that follows `after_beat_id`, ahead of the client (§4.9).
+
+    Returns a one-word outcome for the Celery result row: `generated`, `ready` (the
+    beat already existed), `skipped` (the position is not ours to fill) or `missing`.
+
+    This is the prefetch, and it is the reason a child who taps a choice card is
+    told what happened instead of watching their friend think about it. The stream
+    that arrives a moment later finds the beat already written and replays it — and
+    if it arrives *first*, the lock in `_beat_or_generate` means one of the two
+    waits for the other rather than both paying a provider.
+
+    `after_beat_id` rather than a bare sequence number, because "the beat after the
+    one the child just finished" is a fact about the story and "beat four" is a
+    guess about a race. Re-checked here rather than trusted from the caller: the
+    child may have raced ahead, or the adventure may have ended, between the enqueue
+    and the worker picking it up.
+
+    No retry, deliberately. A failed prefetch is not a failed beat — the stream
+    generates it on demand and the child never learns the difference. Retrying would
+    risk paying twice for a beat nobody is waiting for.
+    """
+    after = (
+        Beat.objects.select_related("adventure__child__companion")
+        .filter(pk=after_beat_id, adventure_id=adventure_id)
+        .first()
+    )
+    if after is None:
+        logger.info("story.advance_skipped beat=%s reason=deleted", after_beat_id)
+        return "missing"
+
+    adventure = after.adventure
+    if adventure.status != Adventure.Status.IN_PROGRESS:
+        logger.info("story.advance_skipped adventure=%s reason=%s", adventure_id, adventure.status)
+        return "skipped"
+
+    seq, prev = orchestrator.next_position(adventure)
+    if seq != after.seq + 1 or (prev is not None and prev.pk != after.pk):
+        # The child is not where this task assumed: they were still on an earlier
+        # beat, or a stream got here first. Generating anyway would write a beat
+        # into a position that is not next, which `next_position` would then have to
+        # skip past — a beat paid for and never told.
+        logger.info(
+            "story.advance_skipped adventure=%s reason=moved want=%d found=%d",
+            adventure_id,
+            after.seq + 1,
+            seq,
+        )
+        return "skipped"
+
+    if adventure.beats.filter(seq=seq).exists():
+        logger.info("story.advance_skipped adventure=%s reason=exists seq=%d", adventure_id, seq)
+        return "ready"
+
+    try:
+        beat, _ = orchestrator.resolve_beat(adventure, seq=seq, prev=prev)
+    except AIError:
+        # The stream will try again when the child asks. Logged, never raised: a
+        # failed prefetch must not become a retry storm against a provider that is
+        # already having a bad time.
+        logger.exception("story.advance_failed adventure=%s seq=%d", adventure_id, seq)
+        return "skipped"
+
+    # The picture, the voice and the icons are not this task's to run: `create_beat`
+    # handed them to `generate_beat_media` on commit, and doing them here as well
+    # would be two workers missing the same cache and paying twice for one beat.
+    logger.info("story.advance adventure=%s beat=%s seq=%d", adventure_id, beat.id, beat.seq)
+    return "generated"

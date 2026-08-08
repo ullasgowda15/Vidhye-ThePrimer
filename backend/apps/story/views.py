@@ -2,9 +2,11 @@
 
     POST /api/v1/children/{id}/adventures           begin *or rejoin* an adventure
     GET  /api/v1/children/{id}/adventures/current   the in-progress one, or 204
-    GET  /api/v1/adventures/{id}/stream             SSE: the beats
+    GET  /api/v1/adventures/{id}/stream             SSE: the beat the child is on
+    POST /api/v1/adventures/{id}/choice             what the child just did -> 202
+    POST /api/v1/adventures/{id}/end                close the story and the sitting
 
-The three are deliberately different kinds of view.
+They are deliberately different kinds of view.
 
 **The POST is an ordinary DRF view, and it is idempotent.** It is a normal
 request/response: check ownership and consent, find or generate the plan, persist,
@@ -48,7 +50,7 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import status
-from rest_framework.exceptions import APIException, AuthenticationFailed
+from rest_framework.exceptions import APIException, AuthenticationFailed, NotFound
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
@@ -64,8 +66,12 @@ from apps.profiles.models import Child
 from apps.story import orchestrator, streaming
 from apps.story.models import Adventure
 from apps.story.serializers import (
+    AdventureEndRequestSerializer,
+    AdventureEndSerializer,
     AdventureStartRequestSerializer,
     AdventureStartSerializer,
+    ChoiceAcceptedSerializer,
+    ChoiceRequestSerializer,
     start_payload,
 )
 
@@ -192,6 +198,150 @@ class AdventureCurrentView(AdventureChildView):
         return Response(AdventureStartSerializer(self.payload_for(adventure)).data)
 
 
+class AdventureScopedView(GenericAPIView):
+    """Shared plumbing for the two endpoints that act on an adventure by id.
+
+    Ownership is checked against the adventure's *child*, exactly as the
+    child-scoped views do, so "this adventure belongs to another family" and "this
+    child is not yours" are one rule with one implementation. A 404 for an
+    adventure that exists but is not theirs would be kinder to an attacker and no
+    kinder to anyone else — `IsParentOwner` already answers 403 consistently across
+    the API (§18.8).
+    """
+
+    permission_classes = [IsAuthenticated, IsParentOwner]
+    queryset = Adventure.objects.none()
+
+    def adventure_for(self, request: Request, adventure_id: str) -> Adventure:
+        adventure = get_object_or_404(
+            Adventure.objects.select_related("child", "child__companion", "session"),
+            pk=adventure_id,
+        )
+        self.check_object_permissions(request, adventure.child)
+        require_consent(cast(User, request.user))
+        return adventure
+
+
+@extend_schema_view(
+    post=extend_schema(
+        operation_id="adventure_choice",
+        summary="Submit what the child just did",
+        description=(
+            "Records the child's interaction with a beat and returns **202** "
+            "immediately; the consequence arrives on the stream (`streamUrl`), not "
+            "in this response (§18.6).\n\n"
+            "It answers before anything is generated on purpose. The tap has to be "
+            "acknowledged on screen within about 100ms (§14.7), and the beat that "
+            "reacts to it takes seconds — so the row is written here and the "
+            "generation is started on a worker, which is usually finished by the "
+            "time the client has reopened the stream.\n\n"
+            "Idempotent per beat: a double-tap records one choice and the first one "
+            "stands (`recorded: false` on the second). Sent for **every** "
+            "interaction, including a beat that only asked the child to carry on — "
+            "`latencyMs`, `retries` and `assisted` are wellbeing and difficulty "
+            "signals we want for all of them.\n\n"
+            "There is no wrong answer to reject: nothing here is checked against "
+            "the beat's `expected`, and no request to this endpoint can fail the "
+            "child (§8.5)."
+        ),
+        request=ChoiceRequestSerializer,
+        responses={202: ChoiceAcceptedSerializer},
+    )
+)
+class AdventureChoiceView(AdventureScopedView):
+    serializer_class = ChoiceRequestSerializer
+    # A choice costs a beat call plus its media, exactly like starting one does,
+    # so it gets a scope of its own rather than riding on the read budget. Sized
+    # for several full adventures an hour and nothing like a loop.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "adventure_choice"
+
+    def post(self, request: Request, adventure_id: str, *args: Any, **kwargs: Any) -> Response:
+        adventure = self.adventure_for(request, adventure_id)
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        beat = adventure.beats.filter(pk=data["beatId"]).first()
+        if beat is None:
+            # Scoped to the adventure in the URL, so a beat id from another
+            # family's story is a 404 here rather than a cross-story write.
+            raise NotFound("No such beat in this adventure.")
+
+        choice, created = orchestrator.record_choice(
+            beat,
+            chosen_key=data["choiceKey"],
+            value=data.get("value"),
+            latency_ms=data.get("latencyMs"),
+            retries=data.get("retries", 0),
+            assisted=data.get("assisted", False),
+        )
+        if created:
+            # The branch is settled, so the consequence can start generating now
+            # rather than when the client next connects (§4.9).
+            orchestrator.schedule_advance(adventure, after=beat)
+
+        return Response(
+            ChoiceAcceptedSerializer(
+                {
+                    "choiceId": choice.id,
+                    "beatId": beat.id,
+                    "recorded": created,
+                    "streamUrl": reverse("adventure-stream", kwargs={"adventure_id": adventure.id}),
+                }
+            ).data,
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+@extend_schema_view(
+    post=extend_schema(
+        operation_id="adventure_end",
+        summary="Close the adventure and the sitting",
+        description=(
+            "Marks the adventure `completed` (or `abandoned`, for `reason: exit`) "
+            "and finalises the `PlaySession` with its duration and why it "
+            "stopped.\n\n"
+            "Idempotent: an adventure that is already finished is returned "
+            "unchanged, so the child tapping 'all done' and the page unloading "
+            "cannot disagree about when the sitting ended.\n\n"
+            "Until this is called the adventure stays `in_progress` and "
+            "`POST /children/{id}/adventures` keeps rejoining it, which is what "
+            "makes a reload land back in the same story rather than paying for a "
+            "new one."
+        ),
+        request=AdventureEndRequestSerializer,
+        responses={200: AdventureEndSerializer},
+    )
+)
+class AdventureEndView(AdventureScopedView):
+    serializer_class = AdventureEndRequestSerializer
+    # A write, but a cheap one — no generation. Shares the read scope's headroom
+    # rather than the generation scope's, because a client that ends the same
+    # adventure twice must not be locked out of starting the next one.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "adventure_read"
+
+    def post(self, request: Request, adventure_id: str, *args: Any, **kwargs: Any) -> Response:
+        adventure = self.adventure_for(request, adventure_id)
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        ended = orchestrator.end_adventure(adventure, reason=serializer.validated_data["reason"])
+        return Response(
+            AdventureEndSerializer(
+                {
+                    "adventureId": ended.id,
+                    "status": ended.status,
+                    "completedAt": ended.completed_at,
+                    "beats": ended.beats.count(),
+                }
+            ).data
+        )
+
+
 class StreamRateThrottle(SimpleRateThrottle):
     """A per-parent ceiling on stream opens, applied by hand.
 
@@ -257,7 +407,7 @@ async def adventure_stream(request: HttpRequest, adventure_id: str) -> HttpRespo
 
     logger.info("story.stream_open adventure=%s parent=%s", adventure.id, user.pk)
     response = StreamingHttpResponse(
-        streaming.stream_first_beat(adventure),
+        streaming.stream_beat(adventure),
         content_type=STREAM_CONTENT_TYPE,
     )
     for header, value in streaming.STREAM_HEADERS.items():

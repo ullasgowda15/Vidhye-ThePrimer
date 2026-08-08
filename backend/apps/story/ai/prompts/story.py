@@ -31,12 +31,62 @@ Build it around what the child loves. The learning objective belongs inside the 
 plot, never announced.\
 """
 
+#: Said when the beat follows a choice. The word doing the work is **name**: a
+#: model asked only to "continue" writes a beat that would have followed either
+#: option, and a consequence the child cannot recognise as theirs is not a
+#: consequence at all (§8.5) — agency is the whole point of asking.
+CONSEQUENCE_RULE = """\
+The child has just chosen, and the DATA below says what they picked. This beat \
+is the consequence. Name what they chose in the narration — the place they went, \
+the creature they helped, the thing they tried — so it is unmistakably *their* \
+choice that changed the world. Show the change in scene.illustration_prompt too, \
+not only in the words. A beat that would have read the same after the other \
+option is the one thing this must not be.\
+"""
+
+#: Said when the child needed a hand. §8.5 in one paragraph: struggle is
+#: scaffolded, never punished, and the companion models trying rather than
+#: grading. Written as what to *do*, because "do not say wrong" on its own leaves
+#: a model with nothing to write.
+SCAFFOLD_RULE = """\
+The child took a few tries, or the companion helped them. Open this beat by \
+doing it *together* and getting there — "Let's try it together", counting along, \
+a hand held out. Celebrate that they kept going. Do not mention a mistake, do not \
+say wrong or nearly or almost, and do not make this beat easier-looking than the \
+last one in a way the child would notice. Nothing was lost and nothing is behind.\
+"""
+
+#: Said on every beat that is not the last one. The 2-3 bound is §14.5's "one
+#: decision at a time, max 2-3 options"; the pictures are §14.4, because a text
+#: list excludes the entire audience.
+CHOICE_RULE = """\
+End this beat by giving the child something to do. Prefer interaction.type \
+"choose" with two or three options in interaction.choices — each one a different \
+thing that happens next, each leading somewhere good. There are no wrong options \
+and no option that ends the story badly. Give every option a short spoken label \
+and an icon_prompt describing one simple picture of it: a place, an object, an \
+action, no characters and no writing in the image.\
+"""
+
+#: Said only on the last beat (§8.8). The hook is the reason a child asks to come
+#: back, and it is the one thing a model will not produce unless asked.
+FINAL_BEAT_RULE = """\
+This is the last beat of the sitting. Land the story: the problem is solved, \
+everyone is safe, and the companion says something warm to the child by name. \
+Then plant one small hook for tomorrow — something the companion has found or \
+noticed that they could go and see next time. Nothing is left unresolved and \
+nothing is frightening. Set interaction.type to "none" and interaction.choices to \
+null: the child is not being asked for anything here, they are being said \
+goodnight to.\
+"""
+
 
 def beat_request(
     *,
     seq: int,
     beat_id: str,
     is_first: bool,
+    is_final: bool = False,
     stage: str = "",
     prev_choice: Mapping[str, Any] | None = None,
     characters: Sequence[str] = (),
@@ -46,6 +96,11 @@ def beat_request(
     `stage` is the line from the plan skeleton this beat is meant to land, passed
     explicitly rather than left for the model to infer from the plan: "which step
     are we on" is the one thing about the plan that a stateless call cannot know.
+
+    `is_final` is the same kind of fact and matters more. §8.8 requires the last
+    beat of every sitting to be warm and safe, and a stateless call has no way to
+    know it is writing the last one — a model told only "beat six of six" will
+    happily leave the child mid-problem.
     """
     lines = [
         f'Write beat {seq} of this adventure. Use "{beat_id}" as its beat_id.',
@@ -61,10 +116,11 @@ def beat_request(
             "wants to do next."
         )
     elif prev_choice:
-        lines.append(
-            "Continue from what the child just did. Their choice must visibly "
-            "change something in this beat."
-        )
+        lines.append(CONSEQUENCE_RULE)
+        if prev_choice.get("assisted") or prev_choice.get("retries"):
+            lines.append(SCAFFOLD_RULE)
+
+    lines.append(FINAL_BEAT_RULE if is_final else CHOICE_RULE)
 
     if characters:
         lines.append(

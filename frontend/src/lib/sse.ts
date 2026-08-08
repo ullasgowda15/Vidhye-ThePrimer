@@ -29,6 +29,20 @@
 
 import { openStream } from './api/client';
 
+/**
+ * One thing the child can pick, and the picture on its card (§14.4).
+ *
+ * `imageUrl` is null until the icon lands, and the card renders anyway — a choice
+ * a pre-reader cannot take because its picture is still drawing would be a worse
+ * failure than a plain card. The label is spoken in the same clip as the
+ * narration, so the child has already *heard* the option either way.
+ */
+export interface ChoiceOption {
+  key: string;
+  label: string;
+  imageUrl: string | null;
+}
+
 /** The `beat` frame (§18.5). */
 export interface BeatEvent {
   beatId: string;
@@ -40,32 +54,49 @@ export interface BeatEvent {
     type: 'count' | 'choose' | 'say' | 'tap' | 'none';
     prompt_audio: string | null;
     expected: number | string | null;
-    choices: string[] | null;
+    choices: { key: string; label: string; icon_prompt: string }[] | null;
   } | null;
+  /** The options with their pictures resolved. Null when the beat asks nothing. */
+  choices: ChoiceOption[] | null;
   emotion: string;
+  /** The warm close (§8.8) — the client shows the ending, not another question. */
+  isFinal: boolean;
 }
 
 /**
  * The `media` frame — one asset that has finished rendering.
  *
- * A separate event from `beat` on purpose: from Day 5 the stream carries several
- * different beats, and a client that had to tell "a new beat" from "an update to
- * a beat" by comparing ids is a client that will get it wrong.
+ * A separate event from `beat` on purpose: the stream carries a different beat on
+ * every open, and a client that had to tell "a new beat" from "an update to a
+ * beat" by comparing ids is a client that will get it wrong.
  */
 export interface MediaEvent {
   beatId: string;
   scene?: { imageUrl: string; status: 'ready' };
   audioUrl?: string;
+  /** One choice card's picture, which arrives after the card itself. */
+  choice?: { key: string; imageUrl: string };
 }
 
-/** The `done` frame. `awaiting_choice` is the only non-degraded status today. */
+/** The `prefetch` frame — the next beat is already written and waiting (§4.9). */
+export interface PrefetchEvent {
+  nextBeatReady: boolean;
+}
+
+/**
+ * The `done` frame.
+ *
+ * `awaiting_choice` — the child's turn. `complete` — that was the warm close.
+ * `ended` — nothing could be generated, and the child is never told why (§13).
+ */
 export interface DoneEvent {
-  status: 'awaiting_choice' | 'ended';
+  status: 'awaiting_choice' | 'complete' | 'ended';
 }
 
 export interface StreamHandlers {
   onBeat?: (beat: BeatEvent) => void;
   onMedia?: (media: MediaEvent) => void;
+  onPrefetch?: (prefetch: PrefetchEvent) => void;
   /** Called exactly once, however the stream finished — including on failure. */
   onEnd?: (done: DoneEvent | null) => void;
 }
@@ -112,6 +143,10 @@ export function parseFrames(buffer: string): { frames: Frame[]; rest: string } {
  *
  * Resolves when the stream is over. Abort the passed signal to stop early — the
  * child navigating away is the normal case, not an error.
+ *
+ * `onEnd` fires on the `done` frame, which is not the same moment as the stream
+ * closing: `done` hands the turn to the child, and the choice cards' pictures
+ * arrive after it. Frames keep being dispatched until the body actually ends.
  */
 export async function consumeBeatStream(
   url: string,
@@ -148,13 +183,13 @@ export async function consumeBeatStream(
 
       for (const frame of frames) {
         dispatch(frame, handlers, end);
-        if (ended) {
-          // `done` arrived. Release the connection rather than waiting for the
-          // server to close it.
-          await reader.cancel().catch(() => undefined);
-          return;
-        }
       }
+      // Deliberately *not* cancelling on `done`. `done` means "the child may act
+      // now", and the server sends it as soon as the beat's own picture and voice
+      // are in — the choice cards' little pictures are still on their way behind
+      // it (§14.4). Hanging up there would leave a decision point permanently
+      // wearing placeholder cards. The server closes the stream when it is
+      // finished, which is what ends this loop.
     }
   } catch (error) {
     if (!(error instanceof DOMException && error.name === 'AbortError')) {
@@ -183,12 +218,14 @@ function dispatch(frame: Frame, handlers: StreamHandlers, end: (done: DoneEvent 
     case 'media':
       handlers.onMedia?.(payload as MediaEvent);
       break;
+    case 'prefetch':
+      handlers.onPrefetch?.(payload as PrefetchEvent);
+      break;
     case 'done':
       end(payload as DoneEvent);
       break;
     default:
-      // Forward compatibility: Day 5's `prefetch` event (§18.5) must not break a
-      // client that predates it.
+      // Forward compatibility: an event this client predates must not break it.
       break;
   }
 }

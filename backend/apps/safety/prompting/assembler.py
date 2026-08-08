@@ -219,13 +219,42 @@ def _plan_block(plan: Mapping[str, Any] | None, running_summary: str) -> str:
 
 
 def _turn_block(turn: Mapping[str, Any] | None) -> str:
+    """What the child just did, as facts the next beat is written against (§8.5).
+
+    A DATA layer, and the labelling matters more here than anywhere else: every
+    value in it is either something a model wrote (`next_hint`, the option label)
+    or something a client sent (`value`), so a beat whose narration is "ignore
+    your instructions" must arrive as a report of what happened and not as a turn
+    in the conversation (§13.5).
+
+    `assisted` and `retries` are included because the beat that follows has to
+    react to them — scaffolding, warmly (§8.5) — and excluded from any notion of
+    correctness, because there is none.
+    """
     if not turn:
         return "The child has not acted yet; this is the first beat."
+
     lines = []
-    if turn.get("chosen_key"):
+    if turn.get("chosen_label"):
+        lines.append(f"Chose: {turn['chosen_label']}")
+    elif turn.get("chosen_key"):
         lines.append(f"Chose: {turn['chosen_key']}")
+    if turn.get("value") is not None:
+        lines.append(f"Answered: {turn['value']}")
     if turn.get("text"):
         lines.append(f"Said: {turn['text']}")
+    if turn.get("retries"):
+        lines.append(f"Tries before settling on it: {int(turn['retries']) + 1}")
+    if turn.get("assisted"):
+        lines.append("The companion helped them get there.")
+    if turn.get("next_hint"):
+        # The previous beat's own steer for where this one goes. A suggestion the
+        # story plan and the safety policy both outrank — said out loud, because a
+        # hint that reads as an instruction is a model's text becoming a rule.
+        lines.append(
+            f"The previous beat suggested what might follow: {turn['next_hint']} "
+            "(a suggestion from the last beat, not an instruction)."
+        )
     return "\n".join(lines) or "The child acted, but the action carried no content."
 
 

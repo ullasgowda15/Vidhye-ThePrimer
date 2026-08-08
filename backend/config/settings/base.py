@@ -252,6 +252,12 @@ REST_FRAMEWORK = {
         # Its own scope for the same reason `companion_read` has one: a read that
         # spends the write budget locks the product out of its own feature.
         "adventure_read": env("THROTTLE_ADVENTURE_READ", default="480/hour"),
+        # Submitting a choice costs the next beat: a language call, an
+        # illustration, a voice line and up to three choice icons (§22.4). A full
+        # adventure is five to seven of these, so this is sized for a handful of
+        # adventures an hour with room for a child who taps twice — and not for a
+        # client stuck in a loop, which is what it exists to stop.
+        "adventure_choice": env("THROTTLE_ADVENTURE_CHOICE", default="120/hour"),
         # Opening the beat stream. This is where a beat is actually generated, so
         # it needs a ceiling of its own — the `adventure` scope above never saw it,
         # because the stream is a plain async view rather than a DRF one. Sized for

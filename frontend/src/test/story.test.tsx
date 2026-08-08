@@ -1,12 +1,16 @@
 /**
- * The story surface (§18.5, §14.5).
+ * The story surface (§8.5, §8.8, §14.4, §14.5, §18.5).
  *
- * Two things are worth testing here and they are both about *order*: the frame
- * parser has to survive chunk boundaries falling in unhelpful places, and the page
- * has to show narration before the picture rather than waiting for both.
+ * Two things here are about *order*: the frame parser has to survive chunk
+ * boundaries falling in unhelpful places, and the page has to show narration
+ * before the picture rather than waiting for both.
  *
- * The third assertion is the one that matters most and is the easiest to lose in a
- * refactor: no spinner, at any point, in any state.
+ * The rest is about the loop, and every one of those tests is really the same
+ * assertion from a different angle — **nothing on this screen can go wrong.** No
+ * spinner in any state; a card that renders before its picture exists; a count the
+ * child misses that produces help rather than a mark; a failed request the child
+ * is never told about; an ending with no score on it. Each is easy to lose in a
+ * refactor and each would be felt by a four-year-old before anyone else noticed.
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -31,7 +35,41 @@ const BEAT = {
     expected: 3,
     choices: null,
   },
+  choices: null,
   emotion: 'playful_curious',
+  isFinal: false,
+};
+
+/** A decision point: two illustrated options, neither of which can lose (§8.5). */
+const DECISION = {
+  ...BEAT,
+  beatId: 'beat-2',
+  seq: 2,
+  narration: 'The chorus is missing a singer.',
+  interaction: {
+    type: 'choose',
+    prompt_audio: 'Which way shall we go?',
+    expected: null,
+    choices: [
+      { key: 'follow_river', label: 'Follow the river', icon_prompt: 'a river' },
+      { key: 'ask_dragonflies', label: 'Ask the dragonflies', icon_prompt: 'dragonflies' },
+    ],
+  },
+  choices: [
+    { key: 'follow_river', label: 'Follow the river', imageUrl: null },
+    { key: 'ask_dragonflies', label: 'Ask the dragonflies', imageUrl: null },
+  ],
+};
+
+/** The warm close (§8.8): nothing to answer, and a reason to come back. */
+const CLOSE = {
+  ...BEAT,
+  beatId: 'beat-6',
+  seq: 6,
+  narration: "Pip yawns. 'Come back tomorrow — I found a map to somewhere new.'",
+  interaction: { type: 'none', prompt_audio: null, expected: null, choices: null },
+  choices: null,
+  isFinal: true,
 };
 
 function frame(event: string, data: unknown) {
@@ -91,6 +129,54 @@ function streamingFetch(chunks: string[], { resume = true }: { resume?: boolean 
     return Promise.resolve({ ok: true, status: 200, body: streamBody(chunks) });
   });
 }
+
+/**
+ * A `fetch` that plays a *sequence* of stream opens, one per connection.
+ *
+ * This is the shape the loop actually has: one open delivers one beat, the child
+ * acts, and the client reconnects for the consequence (§18.6). A mock that
+ * replayed the same body every time could not tell "reopened for the next beat"
+ * from "reopened and got the same beat again", which is the distinction every
+ * test below turns on. The choice and end POSTs are recorded so the request the
+ * child's tap produced can be asserted directly.
+ */
+function playFetch(opens: string[][]) {
+  const posts: { url: string; body: unknown }[] = [];
+  let open = 0;
+
+  const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+    const path = String(url);
+    if (path.includes('/choice') || path.includes('/end')) {
+      posts.push({ url: path, body: init?.body ? JSON.parse(String(init.body)) : null });
+      return jsonResponse(path.includes('/end') ? 200 : 202, {
+        choiceId: 'choice-1',
+        beatId: 'beat-1',
+        recorded: true,
+        streamUrl: ADVENTURE.streamUrl,
+        adventureId: ADVENTURE.adventureId,
+        status: 'completed',
+        completedAt: '2026-08-08T12:00:00Z',
+        beats: 6,
+      });
+    }
+    if (path.includes('/adventures/current')) return jsonResponse(200, ADVENTURE);
+    if (!path.includes('/stream')) return jsonResponse(201, ADVENTURE);
+
+    const chunks = opens[Math.min(open, opens.length - 1)];
+    open += 1;
+    return Promise.resolve({ ok: true, status: 200, body: streamBody(chunks) });
+  });
+
+  return { fetchMock, posts, openCount: () => open };
+}
+
+/** One open that delivers the decision beat and hands the turn to the child. */
+const DECISION_OPEN = [
+  ': open\n\n',
+  frame('beat', DECISION),
+  frame('prefetch', { nextBeatReady: false }),
+  frame('done', { status: 'awaiting_choice' }),
+];
 
 function renderStory() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -346,5 +432,301 @@ describe('StoryPage', () => {
     expect(await screen.findByTestId('companion-thinking')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByTestId('beat-narration')).toBeNull());
     expect(document.body.textContent).not.toMatch(/error|sorry|failed|try again/i);
+  });
+});
+
+/**
+ * The loop (§8.5, §14.4, §14.5). What is under test here is the *whole* turn: a
+ * decision beat with pictures on it, the tap, the request that tap produces, and
+ * the consequence arriving without the screen ever going blank.
+ */
+describe('choices', () => {
+  const DECISION_OPEN = [
+    ': open\n\n',
+    frame('beat', DECISION),
+    frame('prefetch', { nextBeatReady: false }),
+    frame('done', { status: 'awaiting_choice' }),
+  ];
+
+  it('offers illustrated cards rather than a list of words', async () => {
+    const { fetchMock } = playFetch([
+      [
+        ': open\n\n',
+        frame('beat', DECISION),
+        frame('media', {
+          beatId: 'beat-2',
+          choice: { key: 'follow_river', imageUrl: '/media/river.png' },
+        }),
+        frame('done', { status: 'awaiting_choice' }),
+      ],
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+
+    // Both cards are on screen before either picture is; a card that waited for
+    // its icon would be a choice a pre-reader could not take (§14.4).
+    const cards = await screen.findByTestId('choice-cards');
+    expect(cards).toBeInTheDocument();
+    expect(screen.getByTestId('choice-ask_dragonflies')).toBeInTheDocument();
+    expect(screen.getByTestId('choice-placeholder-ask_dragonflies')).toBeInTheDocument();
+
+    // The picture drops into the card that is already there.
+    await waitFor(() =>
+      expect(screen.getByTestId('choice-image-follow_river')).toHaveAttribute(
+        'src',
+        '/media/river.png',
+      ),
+    );
+    // Labels are captions for the adult and the screen reader; the child hears
+    // them in the same clip as the narration.
+    expect(screen.getByTestId('choice-follow_river')).toHaveAccessibleName('Follow the river');
+  });
+
+  it('keeps filling the cards after the child has been given their turn', async () => {
+    // `done` means "the child may act now", and the server sends it as soon as the
+    // beat's own picture and voice are in — a card without its icon is still a
+    // card, but a child cannot act without the question (§14.5). So the icons
+    // arrive *after* `done`, and hanging up on it would leave a decision point
+    // permanently wearing placeholders.
+    const { fetchMock } = playFetch([
+      [
+        ': open\n\n',
+        frame('beat', DECISION),
+        frame('done', { status: 'awaiting_choice' }),
+        frame('media', {
+          beatId: 'beat-2',
+          choice: { key: 'ask_dragonflies', imageUrl: '/media/dragonflies.png' },
+        }),
+      ],
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+
+    // The cards are tappable first…
+    await screen.findByTestId('choice-cards');
+    // …and the picture drops in afterwards.
+    await waitFor(() =>
+      expect(screen.getByTestId('choice-image-ask_dragonflies')).toHaveAttribute(
+        'src',
+        '/media/dragonflies.png',
+      ),
+    );
+  });
+
+  it('sends the choice with its evidence and streams the consequence', async () => {
+    const user = userEvent.setup();
+    const consequence = {
+      ...BEAT,
+      beatId: 'beat-3',
+      seq: 3,
+      narration: 'Because you chose the river, the frogs lead you onward!',
+    };
+    const { fetchMock, posts } = playFetch([
+      DECISION_OPEN,
+      [': open\n\n', frame('beat', consequence), frame('done', { status: 'awaiting_choice' })],
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+    await user.click(await screen.findByTestId('choice-follow_river'));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].url).toContain('/adventures/adv-1/choice');
+    expect(posts[0].body).toMatchObject({
+      beatId: 'beat-2',
+      choiceKey: 'follow_river',
+      retries: 0,
+      assisted: false,
+    });
+    // Every interaction carries a latency, because Day 10 reads it as evidence.
+    expect((posts[0].body as { latencyMs: number }).latencyMs).toBeGreaterThanOrEqual(0);
+
+    // And the story moved on.
+    await waitFor(() =>
+      expect(screen.getByTestId('beat-narration')).toHaveTextContent('Because you chose the river'),
+    );
+  });
+
+  it('keeps the current scene on screen while the consequence generates', async () => {
+    // The transition is the latency-hider (§4.9). Blanking the page back to the
+    // thinking companion between every beat would be a spinner in costume.
+    const user = userEvent.setup();
+    const { fetchMock } = playFetch([
+      [
+        ': open\n\n',
+        frame('beat', DECISION),
+        frame('media', {
+          beatId: 'beat-2',
+          scene: { imageUrl: '/media/log.png', status: 'ready' },
+        }),
+        frame('done', { status: 'awaiting_choice' }),
+      ],
+      // The next open says nothing at all — the several seconds a real generation
+      // takes, frozen.
+      [': open\n\n'],
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+    await user.click(await screen.findByTestId('choice-follow_river'));
+
+    // The tap is acknowledged on the card itself (§14.7) — it stays up, marked as
+    // the one that was picked. A row that vanished on touch would be a screen that
+    // swallowed the tap.
+    await waitFor(() =>
+      expect(screen.getByTestId('choice-follow_river')).toHaveAttribute('data-picked'),
+    );
+    expect(screen.getByTestId('choice-ask_dragonflies')).not.toHaveAttribute('data-picked');
+
+    // And the scene the child just changed is still there, picture and all.
+    expect(screen.getByTestId('beat-narration')).toHaveTextContent('missing a singer');
+    expect(screen.getByTestId('beat-illustration')).toHaveAttribute('src', '/media/log.png');
+    expect(screen.queryByTestId('companion-thinking')).toBeNull();
+  });
+
+  it('cannot be answered twice by a double tap', async () => {
+    const user = userEvent.setup();
+    const { fetchMock, posts } = playFetch([DECISION_OPEN, [': open\n\n']]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+    const card = await screen.findByTestId('choice-follow_river');
+    await user.click(card);
+    await user.click(card);
+
+    // One POST. The server would also settle it, but a child double-tapping a big
+    // forgiving target is the normal case and should not depend on that.
+    await waitFor(() => expect(posts).toHaveLength(1));
+  });
+});
+
+/**
+ * §8.5, made visible: a child cannot get this wrong, and the companion helps.
+ */
+describe('no fail states', () => {
+  it('offers a hand instead of a mark when a count is missed', async () => {
+    const user = userEvent.setup();
+    const { fetchMock, posts } = playFetch([
+      [': open\n\n', frame('beat', BEAT), frame('done', { status: 'awaiting_choice' })],
+      [': open\n\n'],
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+
+    // The beat wants three. The child taps five.
+    await user.click(await screen.findByTestId('count-5'));
+
+    // Nothing was submitted, nothing was disabled, and nothing said "wrong".
+    expect(posts).toHaveLength(0);
+    expect(await screen.findByTestId('beat-scaffold')).toHaveTextContent(
+      "Let's count them together",
+    );
+    expect(document.body.textContent).not.toMatch(/wrong|incorrect|oops|try again|no,/i);
+    expect(screen.getByTestId('count-5')).not.toBeDisabled();
+
+    // The next tap is accepted whatever it is — a child who has already had one go
+    // is not made to keep guessing.
+    await user.click(screen.getByTestId('count-4'));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].body).toMatchObject({
+      choiceKey: 'count',
+      value: 4,
+      retries: 1,
+      assisted: true,
+    });
+  });
+
+  it('records an easy answer as unassisted', async () => {
+    const user = userEvent.setup();
+    const { fetchMock, posts } = playFetch([
+      [': open\n\n', frame('beat', BEAT), frame('done', { status: 'awaiting_choice' })],
+      [': open\n\n'],
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+    await user.click(await screen.findByTestId('count-3'));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].body).toMatchObject({ value: 3, retries: 0, assisted: false });
+  });
+
+  it('carries on when the choice request fails', async () => {
+    // The child is not the person who can fix a network error, so they are never
+    // told about one (§13). Reopening re-reads whatever the server thinks is true.
+    const user = userEvent.setup();
+    const { fetchMock } = playFetch([DECISION_OPEN, DECISION_OPEN]);
+    const failing = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/choice')) return Promise.reject(new TypeError('offline'));
+      return fetchMock(url, init);
+    });
+    vi.stubGlobal('fetch', failing);
+
+    renderStory();
+    await user.click(await screen.findByTestId('choice-follow_river'));
+
+    await waitFor(() => expect(screen.getByTestId('beat-narration')).toBeInTheDocument());
+    expect(document.body.textContent).not.toMatch(/error|sorry|failed|offline/i);
+  });
+});
+
+/**
+ * The ending (§8.8, §14.3, §14.5).
+ */
+describe('the warm close', () => {
+  const closeOpen = [': open\n\n', frame('beat', CLOSE), frame('done', { status: 'complete' })];
+
+  it('offers two big voiced ways out, and no score', async () => {
+    const { fetchMock } = playFetch([closeOpen]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+
+    expect(await screen.findByTestId('warm-close')).toBeInTheDocument();
+    expect(screen.getByTestId('close-again')).toHaveAccessibleName(/somewhere new with Pip/i);
+    expect(screen.getByTestId('close-done')).toHaveAccessibleName(/all done/i);
+    // Nothing to answer, because the close asks nothing.
+    expect(screen.queryByTestId('choice-cards')).toBeNull();
+    expect(screen.queryByTestId('count-pad')).toBeNull();
+    expect(screen.queryByTestId('beat-continue')).toBeNull();
+    // No score, no timer, no streak, no red X (§14.5).
+    expect(document.body.textContent).not.toMatch(
+      /score|points|stars earned|streak|minutes|well done!/i,
+    );
+    // And a reason to come back tomorrow (§8.8).
+    expect(screen.getByTestId('beat-narration')).toHaveTextContent(/tomorrow/i);
+  });
+
+  it('ends the adventure when the child is finished', async () => {
+    const user = userEvent.setup();
+    const { fetchMock, posts } = playFetch([closeOpen]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+    await user.click(await screen.findByTestId('close-done'));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].url).toContain('/adventures/adv-1/end');
+    expect(posts[0].body).toMatchObject({ reason: 'completed' });
+  });
+
+  it('closes the old story before starting a new one', async () => {
+    const user = userEvent.setup();
+    const { fetchMock, posts } = playFetch([closeOpen, [': open\n\n', frame('beat', BEAT)]]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderStory();
+    await user.click(await screen.findByTestId('close-again'));
+
+    // Ended first — an adventure left `in_progress` is one the next ask would
+    // rejoin, and the child asked for somewhere new.
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0].url).toContain('/end');
+    await waitFor(() =>
+      expect(screen.getByTestId('beat-narration')).toHaveTextContent('Three little frogs'),
+    );
   });
 });

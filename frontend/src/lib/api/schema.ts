@@ -24,6 +24,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/adventures/{adventure_id}/choice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit what the child just did
+         * @description Records the child's interaction with a beat and returns **202** immediately; the consequence arrives on the stream (`streamUrl`), not in this response (§18.6).
+         *
+         *     It answers before anything is generated on purpose. The tap has to be acknowledged on screen within about 100ms (§14.7), and the beat that reacts to it takes seconds — so the row is written here and the generation is started on a worker, which is usually finished by the time the client has reopened the stream.
+         *
+         *     Idempotent per beat: a double-tap records one choice and the first one stands (`recorded: false` on the second). Sent for **every** interaction, including a beat that only asked the child to carry on — `latencyMs`, `retries` and `assisted` are wellbeing and difficulty signals we want for all of them.
+         *
+         *     There is no wrong answer to reject: nothing here is checked against the beat's `expected`, and no request to this endpoint can fail the child (§8.5).
+         */
+        post: operations["adventure_choice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/adventures/{adventure_id}/end": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close the adventure and the sitting
+         * @description Marks the adventure `completed` (or `abandoned`, for `reason: exit`) and finalises the `PlaySession` with its duration and why it stopped.
+         *
+         *     Idempotent: an adventure that is already finished is returned unchanged, so the child tapping 'all done' and the page unloading cannot disagree about when the sitting ended.
+         *
+         *     Until this is called the adventure stays `in_progress` and `POST /children/{id}/adventures` keeps rejoining it, which is what makes a reload land back in the same story rather than paying for a new one.
+         */
+        post: operations["adventure_end"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -383,6 +433,26 @@ export interface components {
             name: string;
             voiceId: string | null;
         };
+        /** @description The state the adventure was left in. */
+        AdventureEnd: {
+            /** Format: uuid */
+            adventureId: string;
+            status: string;
+            /** Format: date-time */
+            completedAt: string | null;
+            beats: number;
+        };
+        /** @description Why the sitting stopped (§13.6). */
+        AdventureEndRequestRequest: {
+            /**
+             * @description `completed` when the child reached the warm close, `exit` when they left before it. A wellbeing signal for the parent report, kept separate from whether the story finished.
+             *
+             *     * `completed` - completed
+             *     * `exit` - exit
+             * @default completed
+             */
+            reason: components["schemas"]["ReasonEnum"];
+        };
         /** @description The response to `POST /children/{id}/adventures` (§18.4). */
         AdventureStart: {
             /** Format: uuid */
@@ -475,6 +545,54 @@ export interface components {
             intensity_ceiling?: number;
             /** @description Minutes per sitting before the story starts winding down (§13.6). */
             session_cap_min?: number;
+        };
+        /** @description The `202` body (§18.6). The consequence arrives on the stream, not here. */
+        ChoiceAccepted: {
+            /** Format: uuid */
+            choiceId: string;
+            /** Format: uuid */
+            beatId: string;
+            /** @description False when this beat had already been answered and the first answer stands. */
+            recorded: boolean;
+            /** @description Reopen this to receive the consequence beat. */
+            streamUrl: string;
+        };
+        /**
+         * @description What the child's tap sends back (§18.6).
+         *
+         *     Every field but `beatId` and `choiceKey` is a *signal*, not an answer. §18.6
+         *     names `latencyMs` and `retries`; `assisted` joins them because the companion
+         *     scaffolding is the thing that distinguishes "found it easy" from "got there
+         *     with help", and Day 10 reads all three as learning evidence (§10.4). They are
+         *     recorded on every interaction, including a tap that only means "carry on", so
+         *     the evidence is not silently missing for the beats that asked something simple.
+         *
+         *     Nothing here is validated against the beat's `expected`. There is no wrong
+         *     answer to check against (§8.5), so `choiceKey` is accepted as sent and the
+         *     consequence is written warmly from whatever arrived.
+         */
+        ChoiceRequestRequest: {
+            /**
+             * Format: uuid
+             * @description The beat the child was on.
+             */
+            beatId: string;
+            /** @description The option the child picked. `continue` for a beat that only asked them to carry on. */
+            choiceKey: string;
+            /** @description What the child actually answered, when the beat asked for one. */
+            value?: unknown;
+            /** @description How long from the beat being ready to the tap. */
+            latencyMs?: number | null;
+            /**
+             * @description Attempts before this one. Never a score — a difficulty signal.
+             * @default 0
+             */
+            retries: number;
+            /**
+             * @description Whether the companion scaffolded the answer (§8.5).
+             * @default false
+             */
+            assisted: boolean;
         };
         Companion: {
             /** Format: uuid */
@@ -668,6 +786,12 @@ export interface components {
             label: string;
             traits: string[];
         };
+        /**
+         * @description * `completed` - completed
+         *     * `exit` - exit
+         * @enum {string}
+         */
+        ReasonEnum: "completed" | "exit";
         SignupRequest: {
             /** Format: email */
             email: string;
@@ -725,6 +849,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
+                };
+            };
+        };
+    };
+    adventure_choice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                adventure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChoiceRequestRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["ChoiceRequestRequest"];
+                "multipart/form-data": components["schemas"]["ChoiceRequestRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChoiceAccepted"];
+                };
+            };
+        };
+    };
+    adventure_end: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                adventure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdventureEndRequestRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["AdventureEndRequestRequest"];
+                "multipart/form-data": components["schemas"]["AdventureEndRequestRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdventureEnd"];
                 };
             };
         };

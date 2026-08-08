@@ -220,6 +220,28 @@ export function useAdventure(childId: string | undefined) {
   });
 }
 
+/**
+ * Forget the adventure just finished, so the next ask starts a fresh one.
+ *
+ * `staleTime: Infinity` is what makes `useAdventure` stable within a mount — the
+ * adventure being told *is* the adventure — so the one moment it has to be
+ * unlearned needs saying out loud. That moment is the warm close: the child taps
+ * "again", the old adventure has been `end`ed server-side, and the next
+ * `GET …/adventures/current` will answer 204 and lead to a new story.
+ *
+ * `removeQueries` rather than `invalidateQueries`: invalidating refetches while
+ * the page is still mounted on the old data, and for a beat or two the client
+ * would be streaming one adventure while holding another's id.
+ */
+export function useResetAdventure(childId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  return () => {
+    if (!childId) return;
+    queryClient.removeQueries({ queryKey: queryKeys.adventure(childId) });
+  };
+}
+
 export function useDeleteChild() {
   const queryClient = useQueryClient();
 

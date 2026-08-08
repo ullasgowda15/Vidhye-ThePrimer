@@ -245,7 +245,7 @@ def test_a_reload_resumes_the_same_story_from_replay(auth, aarav, pip, fake_ai) 
     assert Beat.objects.count() == 1
     # Replayed complete: the media was already on the beat, so it rode in on the
     # `beat` frame and no `media` frames were needed at all.
-    assert [name for name, _ in second] == ["beat", "done"]
+    assert [name for name, _ in second] == ["beat", "prefetch", "done"]
 
 
 @pytest.mark.django_db
@@ -478,7 +478,7 @@ def test_reopening_the_stream_replays_the_beat_instead_of_paying_again(started, 
     # Replayed with its media already in the first frame, so no `media` events
     # are needed at all.
     assert second[0][1]["scene"]["status"] == "ready"
-    assert [name for name, _ in second] == ["beat", "done"]
+    assert [name for name, _ in second] == ["beat", "prefetch", "done"]
 
 
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)

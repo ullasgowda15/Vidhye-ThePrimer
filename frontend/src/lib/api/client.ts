@@ -35,6 +35,9 @@ export type Companion = components['schemas']['Companion'];
 export type CompanionRequest = components['schemas']['CompanionRequest'];
 export type CompanionCatalog = components['schemas']['CompanionCatalog'];
 export type AdventureStart = components['schemas']['AdventureStart'];
+export type ChoiceRequest = components['schemas']['ChoiceRequestRequest'];
+export type ChoiceAccepted = components['schemas']['ChoiceAccepted'];
+export type AdventureEnd = components['schemas']['AdventureEnd'];
 export type PaletteColors = components['schemas']['PaletteColors'];
 export type ArchetypeOption = components['schemas']['ArchetypeOption'];
 /** Catalogue keys. Unions of literals, so a typo is a build error. */
@@ -349,5 +352,36 @@ export const api = {
     request<AdventureStart>(`${V1}/children/${childId}/adventures`, {
       method: 'POST',
       body: {},
+    }),
+
+  /**
+   * Send back what the child just did (§18.6).
+   *
+   * Answers `202` before anything is generated: the tap has to be acknowledged on
+   * screen within about 100ms (§14.7) and the beat that reacts to it takes
+   * seconds, so the consequence arrives on the *stream*, not here. The client
+   * reopens the stream as soon as this resolves.
+   *
+   * Sent for every interaction, including a beat that only asked the child to
+   * carry on — `latencyMs`, `retries` and `assisted` are wellbeing and difficulty
+   * signals we want for all of them, not only for branches.
+   */
+  submitChoice: (adventureId: string, payload: ChoiceRequest) =>
+    request<ChoiceAccepted>(`${V1}/adventures/${adventureId}/choice`, {
+      method: 'POST',
+      body: payload,
+    }),
+
+  /**
+   * Close the adventure and the sitting (§13.6).
+   *
+   * `completed` when the child reached the warm close, `exit` when they left
+   * before it. Idempotent, so the tap on "all done" and the page unloading cannot
+   * disagree about when the sitting ended.
+   */
+  endAdventure: (adventureId: string, reason: 'completed' | 'exit' = 'completed') =>
+    request<AdventureEnd>(`${V1}/adventures/${adventureId}/end`, {
+      method: 'POST',
+      body: { reason },
     }),
 };

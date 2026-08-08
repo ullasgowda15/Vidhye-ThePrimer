@@ -1,9 +1,15 @@
-"""The orchestrator's own guarantees (PRODUCT.md §8.1, §19.1, §19.6).
+"""The orchestrator's own guarantees (PRODUCT.md §8.1, §8.5, §8.8, §19.1, §19.6).
 
-The API-level tests in `tests/test_adventures.py` prove the endpoint. These prove
-the parts of the orchestrator that are hard to see from outside it: what actually
-goes into a prompt, what happens when the plan call fails, and that the two media
-stages really do overlap rather than merely being written as if they do.
+The API-level tests in `tests/test_adventures.py` and `tests/test_choices.py` prove
+the endpoints. These prove the parts of the orchestrator that are hard to see from
+outside it: what actually goes into a prompt, what happens when the plan call
+fails, that the media stages really do overlap rather than merely being written as
+if they do, and — from Day 5 — the rules that hold a branching story together.
+
+Those last ones are worth naming, because each is a rule the *product* has rather
+than a behaviour the code happens to have: the last beat always ends, no option
+can lose, the child's position is their progress and not the newest row, and a
+branch is never guessed at before the child has taken it.
 """
 
 import asyncio
@@ -322,19 +328,20 @@ def test_a_beat_with_no_provider_raises_rather_than_inventing_one(
 # Media, in parallel (§16.4, §18.5)
 # ---------------------------------------------------------------------------
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
-def test_the_two_media_stages_actually_overlap(frog_lover, fake_ai) -> None:
+def test_the_two_media_stages_actually_overlap(frog_lover, fake_ai, monkeypatch) -> None:
     """The claim in `stream_media`'s docstring, measured.
 
     The offline adapters are fast, so each stage is padded with a deliberate sleep.
     If the two were awaited in turn — or run on a thread-sensitive executor, which
     is the realistic way this regresses — the wall time would be the sum.
+
+    The producers are replaced on the module rather than the stage list, because
+    `media_stages` looks them up at call time precisely so a test can do this.
     """
     adventure = orchestrator.create_adventure(frog_lover)
     beat = orchestrator.create_beat(adventure)
 
     delay = 0.4
-    real_illustrate = orchestrator.illustrate_beat
-    real_narrate = orchestrator.narrate_beat
 
     def slow(fn):
         def wrapped(target):
@@ -343,19 +350,12 @@ def test_the_two_media_stages_actually_overlap(frog_lover, fake_ai) -> None:
 
         return wrapped
 
-    orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
-        ("illustration", "media", slow(real_illustrate)),
-        ("voice", "audio", slow(real_narrate)),
-    )
-    try:
-        started = time.monotonic()
-        results = async_to_sync(orchestrator.attach_media)(beat)
-        wall = time.monotonic() - started
-    finally:
-        orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
-            ("illustration", "media", real_illustrate),
-            ("voice", "audio", real_narrate),
-        )
+    monkeypatch.setattr(orchestrator, "illustrate_beat", slow(orchestrator.illustrate_beat))
+    monkeypatch.setattr(orchestrator, "narrate_beat", slow(orchestrator.narrate_beat))
+
+    started = time.monotonic()
+    results = async_to_sync(orchestrator.attach_media)(beat)
+    wall = time.monotonic() - started
 
     assert results["illustration"] is not None
     assert results["voice"] is not None
@@ -369,7 +369,7 @@ def test_the_two_media_stages_actually_overlap(frog_lover, fake_ai) -> None:
 
 
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
-def test_a_media_failure_leaves_the_beat_tellable(frog_lover, fake_ai, caplog) -> None:
+def test_a_media_failure_leaves_the_beat_tellable(frog_lover, fake_ai, caplog, monkeypatch) -> None:
     """A beat with narration and no picture is a story the child can still hear.
 
     A beat that raised would be a story that stopped, and media is the most likely
@@ -380,23 +380,13 @@ def test_a_media_failure_leaves_the_beat_tellable(frog_lover, fake_ai, caplog) -
     adventure = orchestrator.create_adventure(frog_lover)
     beat = orchestrator.create_beat(adventure)
 
-    real_illustrate = orchestrator.illustrate_beat
-
     def explode(_target):
         raise MediaProviderError("the image provider is having a day")
 
-    orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
-        ("illustration", "media", explode),
-        ("voice", "audio", orchestrator.narrate_beat),
-    )
-    try:
-        with caplog.at_level("ERROR", logger="apps.story.orchestrator"):
-            results = async_to_sync(orchestrator.attach_media)(beat)
-    finally:
-        orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
-            ("illustration", "media", real_illustrate),
-            ("voice", "audio", orchestrator.narrate_beat),
-        )
+    monkeypatch.setattr(orchestrator, "illustrate_beat", explode)
+
+    with caplog.at_level("ERROR", logger="apps.story.orchestrator"):
+        results = async_to_sync(orchestrator.attach_media)(beat)
 
     assert results["illustration"] is None
     assert results["voice"] is not None
@@ -410,10 +400,10 @@ def test_a_media_failure_leaves_the_beat_tellable(frog_lover, fake_ai, caplog) -
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
 def test_the_opening_beat_is_replayed_rather_than_regenerated(frog_lover, fake_ai) -> None:
     adventure = orchestrator.create_adventure(frog_lover)
-    first = async_to_sync(orchestrator.ensure_first_beat)(adventure)
+    first = async_to_sync(orchestrator.ensure_current_beat)(adventure)
     calls = fake_ai.beat_calls
 
-    second = async_to_sync(orchestrator.ensure_first_beat)(adventure)
+    second = async_to_sync(orchestrator.ensure_current_beat)(adventure)
 
     assert second[0].id == first[0].id
     assert fake_ai.beat_calls == calls
@@ -459,8 +449,8 @@ def test_two_streams_on_one_adventure_generate_the_opening_beat_once(frog_lover,
 
     async def both():
         return await asyncio.gather(
-            orchestrator.ensure_first_beat(adventure),
-            orchestrator.ensure_first_beat(adventure),
+            orchestrator.ensure_current_beat(adventure),
+            orchestrator.ensure_current_beat(adventure),
         )
 
     (left, *_), (right, *_) = async_to_sync(both)()
@@ -512,6 +502,287 @@ def test_one_child_s_story_is_never_another_child_s(frog_lover, fake_ai) -> None
 
 
 # ---------------------------------------------------------------------------
+# The warm close, and no way to lose (§8.5, §8.8)
+# ---------------------------------------------------------------------------
+class TestTheLastBeatIsAlwaysAnEnding:
+    """§8.8: the last beat of every sitting is warm and safe.
+
+    Two halves. The prompt has to *ask* for a close — a stateless call cannot know
+    it is writing the last beat — and the write has to make the result presentable
+    whatever came back, because there is no beat after it for an option to lead to.
+    """
+
+    def test_the_prompt_asks_for_a_close_and_a_hook(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        last = adventure.estimated_beats
+
+        user = orchestrator.build_beat_context(adventure, seq=last)["user"]
+
+        assert "last beat of the sitting" in user
+        assert "hook for tomorrow" in user
+        # And the beats before it are asked for the opposite.
+        assert "last beat" not in orchestrator.build_beat_context(adventure, seq=2)["user"]
+
+    def test_options_on_a_final_beat_are_dropped(self) -> None:
+        # Cards on the close are cards that lead nowhere: the child taps one and
+        # watches the story end on what looks like a mistake.
+        interaction = {
+            "type": "choose",
+            "prompt_audio": "Shall we come back tomorrow?",
+            "expected": None,
+            "choices": [{"key": "yes", "label": "Yes!", "icon_prompt": "a sunrise"}],
+        }
+
+        closed = orchestrator.normalise_choices(interaction, is_final=True)
+
+        assert closed["type"] == "none"
+        assert closed["choices"] is None
+        # The spoken warmth survives — it is not a question anyone has to answer.
+        assert closed["prompt_audio"] == "Shall we come back tomorrow?"
+
+    def test_a_model_that_will_not_stop_is_made_to(self, frog_lover, fake_ai) -> None:
+        """End to end through the real write path, with a provider that ignores the
+        instruction and offers choices on the close anyway."""
+        adventure = orchestrator.create_adventure(frog_lover)
+        last = adventure.estimated_beats
+        beat_json = fake_ai.beat("loves frogs.")
+        beat_json["interaction"] = {
+            "type": "choose",
+            "prompt_audio": "Which way now?",
+            "expected": None,
+            "choices": [{"key": "on", "label": "Keep going", "icon_prompt": "a path"}],
+        }
+        fake_ai.queue_beat_response(json.dumps(beat_json))
+
+        beat = orchestrator.create_beat(adventure, seq=last)
+
+        assert beat.options == []
+        assert (beat.interaction or {})["type"] == "none"
+
+
+class TestTheChoicesAChildIsOffered:
+    def test_more_than_three_options_are_trimmed(self) -> None:
+        # §14.5 caps a decision at two or three. Four cards on a tablet is four
+        # things a four-year-old is holding at once.
+        interaction = {
+            "type": "choose",
+            "choices": [
+                {"key": f"o{index}", "label": f"Option {index}", "icon_prompt": "a path"}
+                for index in range(5)
+            ],
+        }
+
+        kept = orchestrator.normalise_choices(interaction, is_final=False)["choices"]
+
+        assert len(kept) == orchestrator.MAX_CHOICES
+        assert [option["key"] for option in kept] == ["o0", "o1", "o2"]
+
+    def test_duplicate_keys_are_dropped_rather_than_merged(self) -> None:
+        # Two cards that report the same tap are two cards the consequence cannot
+        # tell apart — the child would pick one and see the other's outcome.
+        interaction = {
+            "type": "choose",
+            "choices": [
+                {"key": "river", "label": "The river", "icon_prompt": "water"},
+                {"key": "river", "label": "The other river", "icon_prompt": "more water"},
+            ],
+        }
+
+        kept = orchestrator.normalise_choices(interaction, is_final=False)["choices"]
+
+        assert [option["label"] for option in kept] == ["The river"]
+
+    def test_an_empty_choice_list_becomes_no_choices_at_all(self) -> None:
+        # `[]` and `null` must not be two different things a client has to handle.
+        assert orchestrator.normalise_choices({"choices": []}, is_final=False)["choices"] is None
+
+    def test_the_options_are_read_out_in_the_same_clip(self, frog_lover, fake_ai) -> None:
+        """A picture says one card is a river; only the voice says those are the two
+        things you may pick between (§14.4)."""
+        adventure = orchestrator.create_adventure(frog_lover)
+        orchestrator.create_beat(adventure, seq=1)
+        decision = orchestrator.create_beat(adventure, seq=2)
+
+        line = orchestrator.spoken_line(decision)
+
+        assert decision.options, "the scripted second beat is a decision point"
+        for option in decision.options:
+            assert option["label"] in line
+        # One sentence, one TTS call, and it scans as a question.
+        assert line.rstrip().endswith("?")
+        assert " or " in line
+
+
+class TestNoChoiceCanLose:
+    def test_an_unrecognised_key_is_recorded_rather_than_refused(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        choice, created = orchestrator.record_choice(beat, chosen_key="something_else", value=99)
+
+        assert created is True
+        assert choice.chosen_key == "something_else"
+        assert choice.value == 99
+
+    def test_the_consequence_summary_never_grades(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        choice, _ = orchestrator.record_choice(
+            beat, chosen_key="continue", value=7, retries=3, assisted=True
+        )
+
+        text = choice.consequence_summary.lower()
+        assert "aarav chose" in text
+        assert "helped them get there" in text
+        for verdict in ("wrong", "incorrect", "failed", "correct", "right answer"):
+            assert verdict not in text, verdict
+
+    def test_a_second_answer_on_one_beat_adopts_the_first(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        first, created_first = orchestrator.record_choice(beat, chosen_key="left")
+        second, created_second = orchestrator.record_choice(beat, chosen_key="right")
+
+        assert created_first is True
+        assert created_second is False
+        assert second.id == first.id
+        assert second.chosen_key == "left"
+        assert beat.choices.count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Where the child is (§8.5)
+# ---------------------------------------------------------------------------
+class TestNextPosition:
+    def test_a_fresh_adventure_starts_at_beat_one(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        assert orchestrator.next_position(adventure) == (1, None)
+
+    def test_an_unanswered_beat_is_where_the_child_is(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        seq, prev = orchestrator.next_position(adventure)
+
+        assert (seq, prev) == (beat.seq, None)
+
+    def test_answering_moves_the_child_on(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.record_choice(beat, chosen_key="continue")
+
+        seq, prev = orchestrator.next_position(adventure)
+
+        assert seq == 2
+        assert prev is not None and prev.id == beat.id
+
+    def test_a_beat_generated_ahead_of_the_child_does_not_move_them(
+        self, frog_lover, fake_ai
+    ) -> None:
+        """The reason the cursor is progress and not the newest row.
+
+        The prefetch writes beat two while the child is still on beat one. A cursor
+        that meant "the last beat" would jump them straight to it — a beat they
+        never played, and one they paid for.
+        """
+        adventure = orchestrator.create_adventure(frog_lover)
+        first = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.create_beat(adventure, seq=2)
+
+        seq, _ = orchestrator.next_position(adventure)
+
+        assert seq == first.seq
+
+
+class TestEndingAnAdventure:
+    def test_ending_closes_the_story_and_the_sitting(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        ended = orchestrator.end_adventure(adventure)
+
+        assert ended.status == Adventure.Status.COMPLETED
+        assert ended.completed_at is not None
+        session = ended.session
+        assert session is not None
+        assert session.ended_reason == "completed"
+        assert session.duration_s is not None
+
+    def test_leaving_early_is_abandoned_and_never_failed(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        ended = orchestrator.end_adventure(adventure, reason="exit")
+
+        assert ended.status == Adventure.Status.ABANDONED
+        assert ended.session is not None
+        assert ended.session.ended_reason == "exit"
+
+    def test_ending_is_idempotent(self, frog_lover, fake_ai, caplog) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        first = orchestrator.end_adventure(adventure)
+
+        with caplog.at_level("INFO", logger="apps.story.orchestrator"):
+            second = orchestrator.end_adventure(adventure, reason="exit")
+
+        assert second.status == first.status
+        assert second.completed_at == first.completed_at
+        assert "story.end_noop" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Prefetch (§4.9)
+# ---------------------------------------------------------------------------
+class TestSchedulingTheNextBeat:
+    def test_a_settled_branch_is_queued(
+        self, frog_lover, fake_ai, monkeypatch, django_capture_on_commit_callbacks
+    ) -> None:
+        queued: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "apps.story.tasks.advance_adventure.delay",
+            lambda *args: queued.append(args),
+        )
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.record_choice(beat, chosen_key="continue")
+
+        # Enqueued `on_commit`, like the media task and for the same reason: a
+        # worker must not look up rows a transaction has not written yet. The test
+        # therefore has to let the commit happen.
+        with django_capture_on_commit_callbacks(execute=True):
+            status = orchestrator.schedule_advance(adventure, after=beat)
+
+        assert status == orchestrator.ADVANCE_QUEUED
+        assert queued == [(str(adventure.id), str(beat.id))]
+
+    def test_an_unanswered_decision_is_not_guessed(self, frog_lover, fake_ai) -> None:
+        """Guessing a branch means paying for beats the child will never see, and a
+        beat generated before `assisted` is known is a beat that ignores the child
+        needing help (§8.5)."""
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        assert (
+            orchestrator.schedule_advance(adventure, after=beat) == orchestrator.ADVANCE_BRANCHING
+        )
+        assert adventure.beats.count() == 1
+
+    def test_the_close_has_nothing_after_it(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        last = orchestrator.create_beat(adventure, seq=adventure.estimated_beats)
+
+        assert orchestrator.schedule_advance(adventure, after=last) == orchestrator.ADVANCE_FINAL
+
+    def test_a_beat_already_written_is_reported_ready(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.record_choice(beat, chosen_key="continue")
+        orchestrator.create_beat(adventure, seq=2)
+
+        assert orchestrator.schedule_advance(adventure, after=beat) == orchestrator.ADVANCE_READY
+
+
+# ---------------------------------------------------------------------------
 # Handing the media to a worker (§16.3)
 # ---------------------------------------------------------------------------
 def test_a_persisted_beat_is_handed_to_the_media_worker(frog_lover, fake_ai, monkeypatch) -> None:
@@ -541,7 +812,7 @@ def test_pending_stages_name_what_is_missing(frog_lover, fake_ai) -> None:
 
 
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
-def test_a_repair_run_only_does_the_stage_that_is_missing(frog_lover, fake_ai) -> None:
+def test_a_repair_run_only_does_the_stage_that_is_missing(frog_lover, fake_ai, monkeypatch) -> None:
     """Half a beat's media is the state a dead worker leaves behind.
 
     Finishing it must not re-run the half that landed: the media pipeline is
@@ -554,7 +825,6 @@ def test_a_repair_run_only_does_the_stage_that_is_missing(frog_lover, fake_ai) -
     beat.save(update_fields=["audio", "updated_at"])
 
     ran: list[str] = []
-    real_illustrate, real_narrate = orchestrator.illustrate_beat, orchestrator.narrate_beat
 
     def record(label, fn):
         def wrapped(target):
@@ -563,19 +833,12 @@ def test_a_repair_run_only_does_the_stage_that_is_missing(frog_lover, fake_ai) -
 
         return wrapped
 
-    orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
-        (orchestrator.ILLUSTRATION_STAGE, "media", record("illustration", real_illustrate)),
-        (orchestrator.VOICE_STAGE, "audio", record("voice", real_narrate)),
+    monkeypatch.setattr(
+        orchestrator, "illustrate_beat", record("illustration", orchestrator.illustrate_beat)
     )
-    try:
-        async_to_sync(orchestrator.attach_media)(
-            beat, stages=orchestrator.pending_media_stages(beat)
-        )
-    finally:
-        orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
-            (orchestrator.ILLUSTRATION_STAGE, "media", real_illustrate),
-            (orchestrator.VOICE_STAGE, "audio", real_narrate),
-        )
+    monkeypatch.setattr(orchestrator, "narrate_beat", record("voice", orchestrator.narrate_beat))
+
+    async_to_sync(orchestrator.attach_media)(beat, stages=orchestrator.pending_media_stages(beat))
 
     assert ran == ["illustration"]
     beat.refresh_from_db()

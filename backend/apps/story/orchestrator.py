@@ -23,10 +23,18 @@ rule or a persona line. `apps.safety.prompting.assemble` owns the system layer
 for both calls, so a beat and a plan are constrained identically, and the child's
 own seeds enter as labelled DATA (§13.5) rather than as instructions.
 
+**The story is a loop, and the loop is driven by the child.** From Day 5 the
+orchestrator does not generate "the next beat" — it generates *the beat the child
+has not played yet* (`next_position`), conditioned on what they just chose. Two
+consequences follow and both are load-bearing: a beat generated ahead of the child
+by a worker is replayed rather than skipped, and a beat is never generated for a
+branch the child did not take. What bounds the cost of all this is the running
+summary (`apps.story.summary`), which keeps the prompt flat across a long
+adventure rather than pasting every beat into every request.
+
 What is deliberately *not* here yet: memory retrieval (Days 8-9), the objective
-selector (Day 10), the runtime safety guard (Day 7), and the choice loop (Day 5).
-Each has a named seam and a placeholder, so those days are wiring rather than
-redesign.
+selector (Day 10) and the runtime safety guard (Day 7). Each has a named seam and
+a placeholder, so those days are wiring rather than redesign.
 """
 
 from __future__ import annotations
@@ -35,7 +43,8 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, TypeVar
+from dataclasses import dataclass
+from typing import Any, TypeVar
 
 from asgiref.sync import sync_to_async
 from django.core.exceptions import ObjectDoesNotExist
@@ -44,20 +53,21 @@ from django.db import connection as db_connection
 from django.utils import timezone
 
 from apps.companion import service as companion_service
+from apps.media import prompts as media_prompts
 from apps.media import service as media_service
 from apps.media.exceptions import MediaError
+from apps.media.hashing import hashes_for
+from apps.media.models import Media
+from apps.media.style import style_signature
 from apps.profiles.models import Child
 from apps.safety.prompting import assembler
 from apps.safety.prompting.layers import render as render_layers
 from apps.story.ai import router as ai_router
 from apps.story.ai.prompts import story as story_prompts
 from apps.story.ai.schemas import Beat as BeatContract
-from apps.story.ai.schemas import StoryPlan, beat_json_schema, json_schema_for
-from apps.story.models import Adventure, Beat
-
-if TYPE_CHECKING:
-    from apps.media.models import Media
-    from apps.story.models import PlaySession
+from apps.story.ai.schemas import InteractionType, StoryPlan, beat_json_schema, json_schema_for
+from apps.story.models import Adventure, Beat, Choice, PlaySession
+from apps.story.summary import refresh_running_summary
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +100,10 @@ FALLBACK_BRANCH_THEMES: tuple[str, ...] = ("explore further", "help someone else
 
 #: Beats are 1-indexed, because `seq` is a position in a story and not an offset.
 FIRST_BEAT_SEQ = 1
+
+#: §14.5's "one decision at a time, max 2-3 options", enforced rather than asked
+#: for. Four cards on a tablet is four things a four-year-old is holding at once.
+MAX_CHOICES = 3
 
 #: How long a beat's media may sit untouched before another stream open assumes
 #: the worker that owned it is gone and queues a replacement. Comfortably longer
@@ -209,6 +223,11 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
     which is the same total wait with nothing on screen for most of it (§14.5).
     """
     plan = build_plan(child)
+    # A sitting begins when a story does, unless the caller already had one. It is
+    # created here rather than left null because `end` has to be able to say how
+    # long the child played and why they stopped (§13.6) — a wellbeing signal the
+    # parent dashboard reports, and one that cannot be reconstructed afterwards.
+    session = session or PlaySession.objects.create(child=child)
     adventure = Adventure.objects.create(
         child=child,
         session=session,
@@ -233,12 +252,12 @@ async def begin_adventure(child: Child, *, session: PlaySession | None = None) -
 def current_adventure(child: Child) -> Adventure | None:
     """The story this child is in the middle of, if there is one (§18.4).
 
-    "In the middle of" is `status=in_progress` and nothing more subtle. Completion
-    arrives with the choice loop on Day 5; until then an adventure stays open until
-    something explicitly closes it, which is the conservative direction — the cost
-    of resuming a story the child had drifted away from is that they see the same
-    forest, and the cost of the opposite mistake is a second paid-for adventure on
-    every reload.
+    "In the middle of" is `status=in_progress` and nothing more subtle. What moves
+    an adventure out of that state is `end_adventure` — the child reaching the warm
+    close and tapping "all done", or leaving. Until something says so explicitly the
+    story stays open, which is the conservative direction: the cost of resuming a
+    story the child had drifted away from is that they see the same forest, and the
+    cost of the opposite mistake is a second paid-for adventure on every reload.
     """
     return (
         Adventure.objects.select_related("child", "child__companion")
@@ -293,6 +312,70 @@ def resume_or_create_adventure(
 # ---------------------------------------------------------------------------
 # Generating a beat
 # ---------------------------------------------------------------------------
+def total_beats(adventure: Adventure) -> int:
+    """How many beats this adventure runs to.
+
+    The plan's own length, clamped — the same number the client was promised as
+    `estimatedBeats` (§18.4), so the progress hint a child's parent sees and the
+    point at which the story actually ends cannot disagree.
+    """
+    return adventure.estimated_beats
+
+
+def is_final_seq(adventure: Adventure, seq: int) -> bool:
+    """Is the beat at this position the warm close (§8.8)?"""
+    return seq >= total_beats(adventure)
+
+
+def next_position(adventure: Adventure) -> tuple[int, Beat | None]:
+    """`(the beat to tell next, the beat before it)`.
+
+    "Next" is the **lowest-numbered beat the child has not answered**, not the
+    highest one generated. The distinction is what makes prefetch safe: beat k+1
+    may already exist because a worker wrote it ahead of time, and a cursor that
+    meant "the last row" would jump the child straight to it — they would watch a
+    beat they never got to play, and the beat they were on would silently vanish.
+
+    A beat counts as answered once it has a `Choice` against it, which is why
+    every interaction records one (`Choice`'s docstring) — including a tap that
+    only means "carry on".
+    """
+    beats = list(adventure.beats.order_by("seq").prefetch_related("choices"))
+    if not beats:
+        return FIRST_BEAT_SEQ, None
+
+    for index, beat in enumerate(beats):
+        if not beat.choices.all():
+            return beat.seq, (beats[index - 1] if index else None)
+    return beats[-1].seq + 1, beats[-1]
+
+
+def turn_from(beat: Beat | None) -> dict[str, Any] | None:
+    """What the child did on `beat`, as the next beat's prompt needs it (§8.5).
+
+    None when there is nothing to react to — the opening, or a beat generated
+    ahead of the child (prefetch). `next_hint` rides along because it is the
+    previous beat's own steer and it is stored precisely so it can survive the
+    round trip through the child's tap.
+    """
+    if beat is None:
+        return None
+    choice = next(iter(beat.choices.all()), None)
+    if choice is None:
+        return None
+
+    option = beat.option(choice.chosen_key) or {}
+    return {
+        "chosen_key": choice.chosen_key,
+        "chosen_label": option.get("label") or "",
+        "value": choice.value,
+        "assisted": choice.assisted,
+        "retries": choice.retries,
+        "consequence": choice.consequence_summary,
+        "next_hint": beat.next_hint,
+    }
+
+
 def build_beat_context(
     adventure: Adventure,
     *,
@@ -300,7 +383,13 @@ def build_beat_context(
     prev_choice: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """The assembled prompt for one beat (§19.1). Pure — no model, no I/O but the
-    active prompt row."""
+    active prompt row.
+
+    Note what is *not* in here: the beats themselves. The prompt carries the plan,
+    the bounded running summary (§8.6) and the one turn just taken — so its size
+    is flat across an adventure rather than growing with every beat told. See
+    `apps.story.summary`.
+    """
     child = adventure.child
     skeleton: Sequence[Any] = adventure.plan.get("skeleton") or []
     stage = str(skeleton[seq - 1]) if 0 < seq <= len(skeleton) else ""
@@ -318,6 +407,7 @@ def build_beat_context(
         seq=seq,
         beat_id=f"b{seq}",
         is_first=seq == 1,
+        is_final=is_final_seq(adventure, seq),
         stage=stage,
         prev_choice=prev_choice,
         characters=_known_characters(child),
@@ -334,11 +424,11 @@ def create_beat(
     """Generate and persist a beat. Synchronous core.
 
     `seq` names the position being filled, defaulting to "the next free one". A
-    caller that means a *specific* position has to say so: `ensure_first_beat`
-    means beat one, and if it asked for "next" instead then two streams racing on
-    a fresh adventure would produce a beat 1 and a beat 2 rather than colliding on
-    the constraint — the child would be told the opening, then told a second
-    opening as though it were what came next.
+    caller that means a *specific* position has to say so: `resolve_beat` names
+    the position the child is on, and if it asked for "next" instead then two
+    streams racing on a fresh adventure would produce a beat 1 and a beat 2 rather
+    than colliding on the constraint — the child would be told the opening, then
+    told a second opening as though it were what came next.
 
     Raises `BeatValidationError` when the provider cannot produce a schema-valid
     beat even after the router's one repair attempt (§19.6). The caller — the
@@ -358,7 +448,7 @@ def create_beat(
         # Another stream on the same adventure wrote this position while we were
         # generating. The unique constraint settles it and we adopt their beat
         # rather than telling the child the opening twice. We have still paid for
-        # a generation, which is why `first_beat_state` checks *before* we get
+        # a generation, which is why `beat_state` checks *before* we get
         # here — this catch is for the narrow window that check cannot close.
         winner = adventure.beats.filter(seq=seq).first()
         if winner is None:
@@ -369,17 +459,28 @@ def create_beat(
         return winner
 
     logger.info(
-        "story.beat adventure=%s beat=%s seq=%d gen_ms=%d emotion=%s interaction=%s",
+        "story.beat adventure=%s beat=%s seq=%d gen_ms=%d emotion=%s interaction=%s choices=%d "
+        "final=%d prompt_chars=%d",
         adventure.id,
         beat.id,
         seq,
         elapsed_ms,
         contract.emotion,
-        contract.interaction.type,
+        (beat.interaction or {}).get("type"),
+        len(beat.options),
+        int(is_final_seq(adventure, seq)),
+        # The evidence for §8.6, in the log a human already reads per beat: this
+        # number must stay roughly flat across an adventure rather than climbing
+        # with every beat told.
+        len(context["system"]) + len(context["user"]),
     )
-    # The picture and the voice are a worker's job from here (§16.3). Handing them
-    # over at the moment the beat is persisted is what stops a client that
-    # disconnects mid-generation from leaving a paid-for beat with no media.
+    # Folded into the bounded summary immediately, so the *next* beat's prompt
+    # already knows this one happened without carrying its text (§8.6).
+    refresh_running_summary(adventure)
+    # The picture, the voice and the choice icons are a worker's job from here
+    # (§16.3). Handing them over at the moment the beat is persisted is what stops
+    # a client that disconnects mid-generation from leaving a paid-for beat with
+    # no media.
     schedule_beat_media(beat)
     return beat
 
@@ -419,6 +520,52 @@ def dedupe_prompt_audio(narration: str, interaction: dict[str, Any]) -> dict[str
     return interaction
 
 
+def normalise_choices(interaction: dict[str, Any], *, is_final: bool) -> dict[str, Any]:
+    """Make a generated interaction one a child's screen can actually present.
+
+    Two rules, and both exist because the client cannot invent its way out of a
+    malformed one:
+
+    **A final beat asks for nothing.** Options on the warm close are options that
+    lead nowhere — there is no beat after it to generate — so a child would tap a
+    card and watch the story end on what looked like a mistake. The prompt asks
+    for `type: "none"` (`FINAL_BEAT_RULE`); this is what makes it true. The spoken
+    invitation survives, because "shall we come back tomorrow?" is warmth and not
+    a question anyone has to answer.
+
+    **At most three options, each with its own key.** §14.5 caps a decision at two
+    or three, which is a claim about how much a four-year-old can hold at once and
+    not a layout preference. Duplicate keys are dropped rather than merged: two
+    cards that report the same tap are two cards the consequence cannot tell
+    apart.
+    """
+    interaction = dict(interaction)
+
+    if is_final:
+        if interaction.get("choices"):
+            logger.info("story.final_beat_choices_dropped count=%d", len(interaction["choices"]))
+        interaction["type"] = InteractionType.NONE.value
+        interaction["choices"] = None
+        return interaction
+
+    options = interaction.get("choices") or []
+    kept: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for option in options:
+        key = str(option.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(dict(option))
+        if len(kept) == MAX_CHOICES:
+            break
+
+    if len(kept) != len(options):
+        logger.info("story.choices_trimmed offered=%d kept=%d", len(options), len(kept))
+    interaction["choices"] = kept or None
+    return interaction
+
+
 @transaction.atomic
 def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Beat:
     """Write the beat and extend the adventure's emotion arc, together.
@@ -429,7 +576,7 @@ def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Bea
     """
     # Normalised here, at the boundary where a model's output becomes our data, so
     # that everything downstream — the voice clip, the caption, the transcript a
-    # parent reads, Day 5's memory — trusts one clean record instead of each
+    # parent reads, Day 8's memory — trusts one clean record instead of each
     # re-deriving what the contract already promised.
     interaction = dedupe_prompt_audio(
         contract.narration, contract.interaction.model_dump(mode="json")
@@ -440,6 +587,7 @@ def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Bea
             adventure.id,
             seq,
         )
+    interaction = normalise_choices(interaction, is_final=is_final_seq(adventure, seq))
 
     beat = Beat.objects.create(
         adventure=adventure,
@@ -449,6 +597,8 @@ def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Bea
         interaction=interaction,
         learning=contract.learning.model_dump(mode="json"),
         emotion=contract.emotion,
+        next_hint=contract.next_hint,
+        continuity_refs=list(contract.continuity_refs),
     )
     locked = Adventure.objects.select_for_update().get(pk=adventure.pk)
     locked.emotion_arc = [*locked.emotion_arc, contract.emotion]
@@ -477,79 +627,295 @@ async def generate_beat(
     return await _offload(create_beat, adventure, seq=seq, prev_choice=prev_choice)
 
 
-def first_beat_state(adventure: Adventure) -> tuple[Beat, str | None, str | None] | None:
-    """The adventure's opening beat and its media URLs, if it has been generated.
+def beat_state(adventure: Adventure, seq: int) -> tuple[Beat, dict[str, str | None]] | None:
+    """The beat at this position and its media URLs, if it has been generated.
 
     `select_related` because the caller is an async generator: following
-    `beat.media` lazily from there raises, and the two URLs are the only thing it
+    `beat.media` lazily from there raises, and the URLs are the only thing it
     wants from those rows.
     """
-    beat = adventure.beats.select_related("media", "audio").filter(seq=FIRST_BEAT_SEQ).first()
+    beat = adventure.beats.select_related("media", "audio").filter(seq=seq).first()
     if beat is None:
         return None
-    return beat, _servable_url(beat.media), _servable_url(beat.audio)
+    return beat, beat_media_urls(beat)
 
 
 def _servable_url(media: Media | None) -> str | None:
     return media.url if media is not None and media.is_servable else None
 
 
-def resolve_first_beat(adventure: Adventure) -> tuple[Beat, str | None, str | None]:
-    """The opening beat and its media URLs: replayed if it exists, generated once
-    if it does not. Synchronous core of `ensure_first_beat`.
+def resolve_beat(
+    adventure: Adventure,
+    *,
+    seq: int,
+    prev: Beat | None = None,
+) -> tuple[Beat, dict[str, str | None]]:
+    """The beat at `seq` and its media URLs: replayed if it exists, generated once
+    if it does not. Synchronous core of `ensure_beat`.
 
     Replay is not a nicety. A child who reloads mid-story — which the founder test
     does deliberately, and which a tablet does by itself when the OS evicts a tab —
     must land back in the *same* forest, and must not cost a second plan, beat,
-    illustration and voice line to get there.
+    illustration and voice line to get there. From Day 5 it also covers the beat a
+    worker generated ahead of the child: the ordinary path through a branching
+    story is a replay, not a generation.
     """
-    beat, image_url, audio_url = _first_beat_or_generate(adventure)
+    beat, urls = _beat_or_generate(adventure, seq=seq, prev=prev)
 
     # An explicit repair rather than an accident. The old code re-ran the media
     # stages whenever a URL was missing, which happened to heal an orphaned beat
     # and happened to double-pay when two clients did it at once. Saying "this
     # beat's media never finished — make sure something is producing it" out loud
     # is what makes the difference visible in the log and testable.
-    if not (image_url and audio_url):
+    if pending_media_stages(beat):
         ensure_media_scheduled(beat)
-    return beat, image_url, audio_url
+    return beat, urls
 
 
-def _first_beat_or_generate(adventure: Adventure) -> tuple[Beat, str | None, str | None]:
-    """Beat one, generating it at most once across every concurrent stream.
+def _beat_or_generate(
+    adventure: Adventure,
+    *,
+    seq: int,
+    prev: Beat | None,
+) -> tuple[Beat, dict[str, str | None]]:
+    """The beat at `seq`, generated at most once across every concurrent caller.
 
     The unique constraint on `(adventure, seq)` is the backstop and stays; it
     cannot stop the thing that actually costs money, because two callers can both
     check, both find nothing, and both call the provider before either writes. The
     lock closes that window: the second caller waits, then finds the first's beat.
 
-    Taken only when there is nothing to replay, so the ordinary reload — the case
-    this endpoint serves most often — never touches it.
+    That matters more now than it did for the opening. A stream re-opened after a
+    choice and the task the choice enqueued (`advance_adventure`) are aiming at the
+    same position on purpose — the task exists to have got there first — so the two
+    of them racing is the *design*, not an edge case.
+
+    Taken only when there is nothing to replay, so the ordinary path — a beat that
+    is already written — never touches it.
     """
-    if state := first_beat_state(adventure):
-        logger.info("story.beat_replayed adventure=%s beat=%s", adventure.id, state[0].id)
+    if state := beat_state(adventure, seq):
+        logger.info(
+            "story.beat_replayed adventure=%s beat=%s seq=%d", adventure.id, state[0].id, seq
+        )
         return state
 
     with transaction.atomic():
         Adventure.objects.select_for_update().get(pk=adventure.pk)
 
-        if state := first_beat_state(adventure):
+        if state := beat_state(adventure, seq):
             # Someone else generated it while we were waiting for the lock. This
             # is the double-pay that used to happen here, now costing one query.
             logger.info(
-                "story.beat_replayed adventure=%s beat=%s waited_for_lock=1",
+                "story.beat_replayed adventure=%s beat=%s seq=%d waited_for_lock=1",
                 adventure.id,
                 state[0].id,
+                seq,
             )
             return state
 
-        # `seq=1` explicitly, not "the next one": see `create_beat`.
-        return create_beat(adventure, seq=FIRST_BEAT_SEQ), None, None
+        # The position is always named explicitly, never "the next one": see
+        # `create_beat`.
+        beat = create_beat(adventure, seq=seq, prev_choice=turn_from(prev))
+        return beat, beat_media_urls(beat)
 
 
-async def ensure_first_beat(adventure: Adventure) -> tuple[Beat, str | None, str | None]:
-    """`resolve_first_beat` for an async caller, off the event loop (§16.4)."""
-    return await _offload(resolve_first_beat, adventure)
+def resolve_current_beat(adventure: Adventure) -> tuple[Beat, dict[str, str | None], bool]:
+    """Where the child is, as `(beat, media urls, is_final)`.
+
+    The one entry point the stream uses. It answers "which beat now" from the
+    child's own progress (`next_position`) rather than from the newest row, and it
+    refuses to run past the plan's last beat — an adventure that has been played to
+    its warm close replays that close rather than growing a beat eight.
+    """
+    seq, prev = next_position(adventure)
+    last = total_beats(adventure)
+
+    if seq > last:
+        # Every beat is answered and the story is over. Replay the close; the
+        # client shows the warm ending rather than asking for more.
+        final = beat_state(adventure, last)
+        if final is not None:
+            return final[0], final[1], True
+        seq = last  # No close was ever written: generate it.
+
+    beat, urls = resolve_beat(adventure, seq=seq, prev=prev)
+    return beat, urls, is_final_seq(adventure, beat.seq)
+
+
+async def ensure_current_beat(adventure: Adventure) -> tuple[Beat, dict[str, str | None], bool]:
+    """`resolve_current_beat` for an async caller, off the event loop (§16.4)."""
+    return await _offload(resolve_current_beat, adventure)
+
+
+# ---------------------------------------------------------------------------
+# The child acts (§8.5, §18.6)
+# ---------------------------------------------------------------------------
+def consequence_summary(
+    beat: Beat,
+    *,
+    child_name: str,
+    chosen_key: str,
+    value: Any = None,
+    assisted: bool = False,
+) -> str:
+    """One line saying what the child did and what it means for what comes next.
+
+    Written **synchronously**, from what is already on the row, with no model call:
+    it is computed on the request that returns `202`, and a child waiting on a
+    generation to be told their tap registered is the exact latency this endpoint
+    exists to avoid. The generated *reaction* is the next beat's job.
+
+    Not a verdict. There is no branch here that reads "wrong" — `value` is recorded
+    as what the child said, and `assisted` as the companion having helped, because
+    both are difficulty signals (§8.9) and neither is a mark (§8.5).
+    """
+    option = beat.option(chosen_key) or {}
+    label = str(option.get("label") or "").strip() or chosen_key or "to carry on"
+
+    parts = [f'At beat {beat.seq}, {child_name} chose "{label}".']
+    if value is not None:
+        parts.append(f"They answered {value}.")
+    if assisted:
+        parts.append(f"{_companion_name(beat)} helped them get there, and they kept going.")
+    if beat.next_hint:
+        parts.append(f"The beat's own steer for what follows: {beat.next_hint}")
+    return " ".join(parts)
+
+
+def record_choice(
+    beat: Beat,
+    *,
+    chosen_key: str,
+    value: Any = None,
+    latency_ms: int | None = None,
+    retries: int = 0,
+    assisted: bool = False,
+) -> tuple[Choice, bool]:
+    """Persist what the child did on this beat. Returns `(choice, created)`.
+
+    Idempotent by constraint rather than by lock. A four-year-old submits twice by
+    double-tapping a big forgiving target, and two rows here would advance the
+    story two beats at once — the child would watch a beat they never played. The
+    unique constraint on `beat` settles it and the second submission adopts the
+    first, which is the same shape as `_persist_beat` and `media._create_row`.
+
+    Deliberately not validated against `interaction.expected`. Nothing here decides
+    whether the child was right, because nothing in this product does (§8.5): an
+    unrecognised key is recorded as what the child sent and the next beat carries
+    on warmly from it.
+    """
+    adventure = beat.adventure
+    try:
+        with transaction.atomic():
+            choice = Choice.objects.create(
+                adventure=adventure,
+                beat=beat,
+                options=beat.options,
+                chosen_key=chosen_key,
+                value=value,
+                consequence_summary=consequence_summary(
+                    beat,
+                    child_name=adventure.child.first_name,
+                    chosen_key=chosen_key,
+                    value=value,
+                    assisted=assisted,
+                ),
+                latency_ms=latency_ms,
+                retries=retries,
+                assisted=assisted,
+            )
+    except IntegrityError:
+        existing = Choice.objects.filter(beat=beat).first()
+        if existing is None:
+            raise
+        logger.info(
+            "story.choice_duplicate adventure=%s beat=%s kept=%s",
+            adventure.id,
+            beat.id,
+            existing.chosen_key,
+        )
+        return existing, False
+
+    logger.info(
+        "story.choice adventure=%s beat=%s key=%s latency_ms=%s retries=%d assisted=%d",
+        adventure.id,
+        beat.id,
+        chosen_key,
+        latency_ms,
+        retries,
+        int(assisted),
+    )
+    # The summary is what the *next* beat is written against, so it has to include
+    # this choice before anything is asked to react to it.
+    refresh_running_summary(adventure)
+    return choice, True
+
+
+def end_adventure(
+    adventure: Adventure, *, reason: str = PlaySession.EndedReason.COMPLETED
+) -> Adventure:
+    """Close the story and the sitting it happened in (§13.6, §17.2).
+
+    Idempotent: an adventure that is already finished is returned untouched, so a
+    client that sends `end` twice — a tap on "all done" plus the page unloading —
+    does not rewrite when the sitting ended.
+
+    `ended_reason` is a wellbeing signal reported to parents and is kept separate
+    from narrative completion on purpose: a child who reached the warm close and a
+    child who wandered off after two beats both end a session, and only one of them
+    finished a story.
+    """
+    with transaction.atomic():
+        # No `select_related("session")` here: the FK is nullable, so Django joins
+        # it as an outer join and Postgres refuses `FOR UPDATE` against the
+        # nullable side. The session is fetched separately in `_finalise_session`,
+        # which is one query on a path taken once per adventure.
+        locked = Adventure.objects.select_for_update().get(pk=adventure.pk)
+        if locked.status != Adventure.Status.IN_PROGRESS:
+            logger.info("story.end_noop adventure=%s status=%s", locked.id, locked.status)
+            return locked
+
+        completed = reason == PlaySession.EndedReason.COMPLETED
+        locked.status = Adventure.Status.COMPLETED if completed else Adventure.Status.ABANDONED
+        locked.completed_at = timezone.now()
+        locked.save(update_fields=["status", "completed_at", "updated_at"])
+        _finalise_session(locked, reason)
+
+    logger.info(
+        "story.adventure_ended adventure=%s status=%s reason=%s beats=%d",
+        locked.id,
+        locked.status,
+        reason,
+        locked.beats.count(),
+    )
+    adventure.status = locked.status
+    adventure.completed_at = locked.completed_at
+    return locked
+
+
+def _finalise_session(adventure: Adventure, reason: str) -> None:
+    """Stamp the sitting's duration and why it stopped.
+
+    Left alone if it has already been closed. Today that guard never fires, because
+    `create_adventure` opens a session per adventure — but `session` is a caller's
+    argument for exactly the reason §17.2 keeps the two tables apart: one sitting
+    may contain several adventures, and when the session cap lands (Day 11) and a
+    shared session appears, the first story to finish must not decide when the
+    child stopped playing.
+    """
+    session = adventure.session
+    if session is None or session.ended_at is not None:
+        return
+
+    session.ended_at = timezone.now()
+    session.duration_s = max(0, int((session.ended_at - session.started_at).total_seconds()))
+    session.ended_reason = reason
+    session.save(update_fields=["ended_at", "duration_s", "ended_reason", "updated_at"])
+
+
+def _companion_name(beat: Beat) -> str:
+    companion = _companion_or_none(beat)
+    return companion.name if companion is not None else "The companion"
 
 
 # ---------------------------------------------------------------------------
@@ -558,16 +924,37 @@ async def ensure_first_beat(adventure: Adventure) -> tuple[Beat, str | None, str
 def spoken_line(beat: Beat) -> str:
     """What the companion says aloud for this beat.
 
-    Narration plus the interaction's invitation, in one clip and therefore one
-    TTS call. Splitting them would double the spend and introduce a silence
-    exactly where the child is being asked a question. The text *is* the cache
-    key (§16.6), so this concatenation has to be built in one place — here.
+    Narration, the interaction's invitation, and the options read out — in one
+    clip and therefore one TTS call. Splitting them would double the spend and
+    introduce a silence exactly where the child is being asked a question.
+
+    **The options are spoken because the audience cannot read them.** A picture
+    tells a three-year-old that one card is a river and one is a meadow; only the
+    voice tells them those are the two things they may pick between. A choice
+    screen with unvoiced labels is a choice screen a pre-reader has to guess at.
+
+    The text *is* the cache key (§16.6), so this concatenation has to be built in
+    one place — here.
     """
-    line = beat.narration.strip()
+    parts = [beat.narration.strip()]
+
     prompt_audio = (beat.interaction or {}).get("prompt_audio")
     if prompt_audio:
-        line = f"{line} {str(prompt_audio).strip()}"
-    return line
+        parts.append(str(prompt_audio).strip())
+
+    if labels := [str(option.get("label") or "").strip() for option in beat.options]:
+        spoken = [label for label in labels if label]
+        if spoken:
+            parts.append(_read_out(spoken))
+
+    return " ".join(part for part in parts if part)
+
+
+def _read_out(labels: Sequence[str]) -> str:
+    """The options as one spoken sentence: "A, B, or C?"."""
+    if len(labels) == 1:
+        return f"{labels[0]}?"
+    return f"{', '.join(labels[:-1])}, or {labels[-1]}?"
 
 
 def illustrate_beat(beat: Beat) -> Media | None:
@@ -589,6 +976,39 @@ def illustrate_beat(beat: Beat) -> Media | None:
         logger.warning("story.illustration_skipped beat=%s reason=no_companion", beat.id)
         return None
     return companion_service.illustrate(companion, prompt)
+
+
+def illustrate_choice(beat: Beat, icon_prompt: str) -> Media | None:
+    """Render the little picture on one choice card (§14.4).
+
+    Deliberately **without** the companion. A choice card shows the path, not the
+    friend standing on it: putting Pip on all three cards would make them read as
+    three pictures of Pip rather than three different places, and it would triple
+    what a decision point costs for nothing the child can use. The same style
+    tokens still apply, so the cards sit inside the same picture book as the
+    scene.
+
+    Cast-free also means the cache key is cast-free, so "a mossy stepping stone"
+    is rendered once for every child who is ever offered one (§16.6) — which is
+    what makes an icon per option affordable at all.
+    """
+    prompt = media_prompts.build_illustration_prompt(
+        icon_prompt,
+        [],
+        include_references=False,
+    )
+    style, character, scene = hashes_for(
+        style_signature(),
+        media_prompts.character_signature([]),
+        icon_prompt,
+    )
+    return media_service.get_or_generate_image(
+        child=beat.adventure.child,
+        style_hash=style,
+        character_hash=character,
+        scene_hash=scene,
+        prompt=prompt,
+    )
 
 
 def narrate_beat(beat: Beat) -> Media | None:
@@ -616,24 +1036,142 @@ def _companion_or_none(beat: Beat) -> Any:
 #: frame builder, the timing log and the `Beat` columns.
 ILLUSTRATION_STAGE = "illustration"
 VOICE_STAGE = "voice"
+#: Each illustrated option gets its own stage, `choice:<key>` (§14.4). A stage per
+#: option rather than one "the choices" stage because they are independent
+#: renders: three of them run alongside the scene and the voice, and one that
+#: fails must not take the other two down with it.
+CHOICE_STAGE_PREFIX = "choice:"
 
-#: The two media stages of a beat, as `(label, field, producer)`. Named in one
-#: place so the stream, the timing log and the `Beat` columns cannot disagree
-#: about what "illustration" means.
-MEDIA_STAGES: tuple[tuple[str, str, Callable[[Beat], Media | None]], ...] = (
-    (ILLUSTRATION_STAGE, "media", illustrate_beat),
-    (VOICE_STAGE, "audio", narrate_beat),
-)
+#: The stages every beat has, whatever it asks. Named so the stream can say "the
+#: beat's own assets" without re-deriving which two those are.
+MEDIA_STAGE_LABELS: tuple[str, ...] = (ILLUSTRATION_STAGE, VOICE_STAGE)
+
+
+def choice_stage(key: str) -> str:
+    return f"{CHOICE_STAGE_PREFIX}{key}"
+
+
+def choice_key_for(label: str) -> str | None:
+    """The option key a `choice:<key>` stage label refers to, or None."""
+    if not label.startswith(CHOICE_STAGE_PREFIX):
+        return None
+    return label.removeprefix(CHOICE_STAGE_PREFIX)
+
+
+@dataclass(frozen=True, slots=True)
+class MediaStage:
+    """One asset a beat needs, and everything the pipeline must know about it.
+
+    A record rather than a `(label, field, producer)` tuple because the three
+    kinds of asset no longer share a shape: the illustration and the voice each
+    own a foreign key, and a choice icon is one entry in a JSON map. Naming
+    `attach` and `is_done` separately is what lets the stream, the repair check
+    and the Celery task treat all of them identically.
+    """
+
+    label: str
+    #: Generate the asset. Runs on its own thread; may return None when there is
+    #: nothing to render (no prompt, no companion).
+    produce: Callable[[Beat], Media | None]
+    #: Write it onto the beat, durably, before the client is told about it.
+    attach: Callable[[Beat, Media], None]
+    #: Is it already there? Reads local columns only, so it is safe on a beat
+    #: loaded without `select_related` and from inside an async generator.
+    is_done: Callable[[Beat], bool]
+
+
+def media_stages(beat: Beat) -> tuple[MediaStage, ...]:
+    """Every asset this beat needs — the scene, the voice, and one icon per option.
+
+    Built per beat rather than held as a module constant, because how many stages
+    a beat has is a property of the beat: a decision point needs three more
+    pictures than a transition does.
+
+    The producers are looked up through the module at call time (`illustrate_beat`
+    rather than a captured reference) so that a test which replaces one of them
+    replaces it here too.
+    """
+    stages = [
+        MediaStage(
+            label=ILLUSTRATION_STAGE,
+            produce=lambda target: illustrate_beat(target),
+            attach=_field_attacher("media"),
+            is_done=lambda target: target.media_id is not None,
+        ),
+        MediaStage(
+            label=VOICE_STAGE,
+            produce=lambda target: narrate_beat(target),
+            attach=_field_attacher("audio"),
+            is_done=lambda target: target.audio_id is not None,
+        ),
+    ]
+    for option in beat.options:
+        key = str(option.get("key") or "")
+        prompt = str(option.get("icon_prompt") or "").strip()
+        if not key or not prompt:
+            continue
+        stages.append(
+            MediaStage(
+                label=choice_stage(key),
+                produce=_choice_producer(prompt),
+                attach=_choice_attacher(key),
+                is_done=_choice_checker(key),
+            )
+        )
+    return tuple(stages)
+
+
+def _field_attacher(field: str) -> Callable[[Beat, Media], None]:
+    """Point one of the beat's two media columns at a rendered asset.
+
+    Scoped `update_fields` is what makes the stages safe to run at once — each
+    writes its own column, so neither can clobber the other's result with a stale
+    in-memory copy of the row.
+    """
+
+    def attach(beat: Beat, media: Media) -> None:
+        setattr(beat, field, media)
+        beat.save(update_fields=[field, "updated_at"])
+
+    return attach
+
+
+def _choice_attacher(key: str) -> Callable[[Beat, Media], None]:
+    """Record one option's icon in `choice_media`.
+
+    Locked, unlike the two column attachers: every option writes into the *same*
+    JSON column, so `update_fields` cannot keep them apart and a read-modify-write
+    from three threads would leave one icon behind. The lock is held for a single
+    row write, after the provider call has already returned.
+    """
+
+    def attach(beat: Beat, media: Media) -> None:
+        with transaction.atomic():
+            locked = Beat.objects.select_for_update().get(pk=beat.pk)
+            locked.choice_media = {**locked.choice_media, key: str(media.id)}
+            locked.save(update_fields=["choice_media", "updated_at"])
+        beat.choice_media = dict(locked.choice_media)
+
+    return attach
+
+
+def _choice_checker(key: str) -> Callable[[Beat], bool]:
+    def is_done(beat: Beat) -> bool:
+        return bool((beat.choice_media or {}).get(key))
+
+    return is_done
+
+
+def _choice_producer(prompt: str) -> Callable[[Beat], Media | None]:
+    def produce(beat: Beat) -> Media | None:
+        return illustrate_choice(beat, prompt)
+
+    return produce
 
 
 def pending_media_stages(beat: Beat) -> tuple[str, ...]:
-    """Which of this beat's assets are still missing.
-
-    Reads the FK id columns rather than following the relations, so it is safe to
-    call on a beat loaded without `select_related` and from inside an async
-    generator.
-    """
-    return tuple(label for label, field, _ in MEDIA_STAGES if getattr(beat, f"{field}_id") is None)
+    """Which of this beat's assets are still missing."""
+    return tuple(stage.label for stage in media_stages(beat) if not stage.is_done(beat))
 
 
 def schedule_beat_media(beat: Beat) -> None:
@@ -661,6 +1199,71 @@ def schedule_beat_media(beat: Beat) -> None:
             logger.exception("story.media_enqueue_failed beat=%s", beat_id)
 
     transaction.on_commit(enqueue)
+
+
+#: What `schedule_advance` decided to do, for the log and for the `prefetch` frame.
+ADVANCE_READY = "ready"
+ADVANCE_QUEUED = "queued"
+ADVANCE_BRANCHING = "branching"
+ADVANCE_FINAL = "final"
+
+
+def schedule_advance(adventure: Adventure, *, after: Beat) -> str:
+    """Start generating the beat that follows `after`, now, on a worker (§4.9).
+
+    Returns one of `ADVANCE_*`: the next beat is already written, we have just
+    queued it, we cannot know it yet because the child is mid-decision, or there is
+    no next beat because this was the close.
+
+    This is the prefetch, and it is the difference between a child tapping a card
+    and waiting twenty seconds, and a child tapping a card and being told what
+    happened. The expensive part of a beat — the language call, then an
+    illustration, a voice line and up to three icons — does not depend on the
+    connection that will deliver it, so it is started the moment we know what the
+    next beat *is* rather than when a client next asks.
+
+    There are exactly two moments when we know that:
+
+    * **the child has chosen** — the branch is settled, so the consequence beat can
+      be generated while the client is still reopening the stream;
+    * **the beat asks nothing** (`type: "none"`) — a transition, so what follows it
+      cannot depend on anything the child is about to do.
+
+    Everything else is left alone deliberately. Guessing a branch means paying for
+    beats the child will never see, and a `count` or `tap` beat can still come back
+    `assisted`, which the next beat has to react to (§8.5) — a beat generated before
+    that is known would be a beat that ignores the child needing help.
+    """
+    if is_final_seq(adventure, after.seq):
+        return ADVANCE_FINAL
+    if adventure.beats.filter(seq=after.seq + 1).exists():
+        return ADVANCE_READY
+    if not after.choices.exists() and (after.interaction or {}).get("type") != InteractionType.NONE:
+        return ADVANCE_BRANCHING
+
+    from apps.story.tasks import advance_adventure
+
+    adventure_id, after_id = str(adventure.id), str(after.id)
+
+    def enqueue() -> None:
+        try:
+            advance_adventure.delay(adventure_id, after_id)
+        except Exception:
+            # The broker being down costs a prefetch, never a beat: the stream
+            # generates it on the next open instead. Same posture as
+            # `schedule_beat_media`.
+            logger.exception("story.advance_enqueue_failed adventure=%s", adventure_id)
+
+    logger.info(
+        "story.advance_queued adventure=%s after=%s seq=%d", adventure.id, after.id, after.seq
+    )
+    transaction.on_commit(enqueue)
+    return ADVANCE_QUEUED
+
+
+async def prepare_next_beat(adventure: Adventure, *, after: Beat) -> str:
+    """`schedule_advance` for an async caller, off the event loop (§16.4)."""
+    return await _offload(schedule_advance, adventure, after=after)
 
 
 def ensure_media_scheduled(beat: Beat) -> bool:
@@ -704,11 +1307,35 @@ def ensure_media_scheduled(beat: Beat) -> bool:
 
 
 def media_urls(beat_id: Any) -> dict[str, str | None]:
-    """This beat's servable asset URLs, by stage label. One query."""
+    """This beat's servable asset URLs, by stage label.
+
+    Two queries at most: the beat with its two media rows, then the choice icons
+    in one `IN` — never one query per option, because a decision point has three
+    of them and this is called on every poll of every open stream.
+    """
     row = Beat.objects.select_related("media", "audio").filter(pk=beat_id).first()
     if row is None:
         return {}
-    return {label: _servable_url(getattr(row, field)) for label, field, _ in MEDIA_STAGES}
+    return beat_media_urls(row)
+
+
+def beat_media_urls(beat: Beat) -> dict[str, str | None]:
+    """The same, for a beat already loaded with `select_related("media", "audio")`."""
+    urls: dict[str, str | None] = {
+        ILLUSTRATION_STAGE: _servable_url(beat.media),
+        VOICE_STAGE: _servable_url(beat.audio),
+    }
+    urls.update(choice_media_urls(beat))
+    return urls
+
+
+def choice_media_urls(beat: Beat) -> dict[str, str | None]:
+    """`{"choice:<key>": url}` for the option icons that have landed."""
+    by_key = {key: value for key, value in (beat.choice_media or {}).items() if value}
+    if not by_key:
+        return {}
+    rows = {str(media.id): media for media in Media.objects.filter(id__in=set(by_key.values()))}
+    return {choice_stage(key): _servable_url(rows.get(value)) for key, value in by_key.items()}
 
 
 def _poll_wait(attempt: int) -> float:
@@ -724,8 +1351,7 @@ def _poll_wait(attempt: int) -> float:
 async def follow_media(
     beat: Beat,
     *,
-    image_url: str | None,
-    audio_url: str | None,
+    known: Mapping[str, str | None],
 ) -> AsyncIterator[tuple[str, str]]:
     """Yield each of the beat's assets as it lands, wherever it was produced.
 
@@ -736,13 +1362,17 @@ async def follow_media(
     belongs to a Celery task keyed on the beat, and this only watches for the
     result — so a disconnect costs the *view*, never the beat.
 
-    `image_url`/`audio_url` are what the `beat` frame already carried, so a replay
-    of a finished beat does no work at all.
+    `known` is what the `beat` frame already carried, so a replay of a finished
+    beat does no work at all.
     """
-    emitted = {
-        label for label, url in ((ILLUSTRATION_STAGE, image_url), (VOICE_STAGE, audio_url)) if url
-    }
-    expected = {label for label, _, _ in MEDIA_STAGES}
+    # Ordered, not a set, and the order is `media_stages`': the scene, the voice,
+    # then the choice icons. It is what decides which asset the client is told
+    # about first when several land in the same poll, and the stream hands the
+    # child their turn as soon as the first two are through (`streaming`) — so an
+    # alphabetical order here would put three card icons in front of the question.
+    order = [stage.label for stage in media_stages(beat)]
+    expected = set(order)
+    emitted = {label for label, url in known.items() if url and label in expected}
     if emitted >= expected:
         return
 
@@ -750,9 +1380,10 @@ async def follow_media(
     attempt = 0
     while True:
         urls = await _offload(media_urls, beat.pk)
-        for label, _, _ in MEDIA_STAGES:
-            url = urls.get(label)
-            if url and label not in emitted:
+        for label in order:
+            if label in emitted:
+                continue
+            if url := urls.get(label):
                 emitted.add(label)
                 yield label, url
 
@@ -797,28 +1428,27 @@ async def stream_media(
     `stages` narrows the work to the labels named, which is how a repair run
     finishes a half-generated beat without re-doing the half that already landed.
     """
-    specs = MEDIA_STAGES if stages is None else tuple(s for s in MEDIA_STAGES if s[0] in stages)
+    specs = media_stages(beat)
+    if stages is not None:
+        wanted = set(stages)
+        specs = tuple(spec for spec in specs if spec.label in wanted)
     base = time.monotonic()
     timings: list[tuple[str, float, float]] = []
 
-    async def stage(
-        label: str,
-        field: str,
-        produce: Callable[[Beat], Media | None],
-    ) -> tuple[str, Media | None]:
+    async def run(spec: MediaStage) -> tuple[str, Media | None]:
         start = time.monotonic() - base
         try:
             # Generation and the write happen in the same offloaded call, so the
             # asset is durable before the client is told about it — a child who
             # closes the tab mid-beat comes back to a beat that has its picture.
-            media = await _offload(_produce_and_attach, beat, field, produce)
+            media = await _offload(_produce_and_attach, beat, spec)
         except MediaError:
-            logger.exception("story.media_failed beat=%s stage=%s", beat.id, label)
+            logger.exception("story.media_failed beat=%s stage=%s", beat.id, spec.label)
             media = None
-        timings.append((label, start, time.monotonic() - base))
-        return label, media
+        timings.append((spec.label, start, time.monotonic() - base))
+        return spec.label, media
 
-    tasks = [asyncio.create_task(stage(*spec)) for spec in specs]
+    tasks = [asyncio.create_task(run(spec)) for spec in specs]
     try:
         for finished in asyncio.as_completed(tasks):
             yield await finished
@@ -868,26 +1498,17 @@ async def attach_media(
     return {label: media async for label, media in stream_media(beat, stages=stages)}
 
 
-def _produce_and_attach(
-    beat: Beat,
-    field: str,
-    produce: Callable[[Beat], Media | None],
-) -> Media | None:
-    """Generate one asset and point the beat's column at it.
+def _produce_and_attach(beat: Beat, stage: MediaStage) -> Media | None:
+    """Generate one asset and record it on the beat.
 
     `is_servable` is checked rather than trusted: the media pipeline only ever
     stores scanned bytes, but a `flagged` row would still have a URL, and a field
     a child's client reads is the one place that must never happen.
-
-    Scoped `update_fields` is what makes the two stages safe to run at once —
-    each writes its own column, so neither can clobber the other's result with a
-    stale in-memory copy of the row.
     """
-    media = produce(beat)
+    media = stage.produce(beat)
     if media is None or not media.is_servable:
         return None
-    setattr(beat, field, media)
-    beat.save(update_fields=[field, "updated_at"])
+    stage.attach(beat, media)
     return media
 
 
