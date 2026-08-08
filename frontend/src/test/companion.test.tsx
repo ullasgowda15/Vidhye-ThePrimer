@@ -13,6 +13,11 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  COMPANION_POLL_MAX_MS,
+  COMPANION_POLL_MIN_MS,
+  companionPollInterval,
+} from '@/lib/api/queries';
 import MeetCompanion from '@/routes/child/MeetCompanion';
 import CompanionPicker from '@/routes/parent/CompanionPicker';
 import { useAuthStore } from '@/store/auth';
@@ -231,6 +236,26 @@ describe('meeting the companion', () => {
     expect(screen.queryByText(/error/i)).not.toBeInTheDocument();
   });
 
+  it('stops asking once the server says it has been asked too often', async () => {
+    // The bug this replaces: a flat two-second poll spent the endpoint's whole
+    // budget in forty seconds, then retried the 429 forever — and since the poll
+    // is how this screen learns the companion is ready, it never woke up.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 429, text: async () => '{"detail":"throttled"}' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWith(<MeetCompanion />, '/meet/child-1');
+
+    expect(await screen.findByText(/waking up/i)).toBeInTheDocument();
+    // A 429 is not retried, so one request is spent and no more.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, COMPANION_POLL_MIN_MS / 2 + 200));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // And the child is still looking at a sleeping friend, not a failure.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('offers a tap when the browser refuses to autoplay', async () => {
     const user = userEvent.setup();
     const play = vi.fn().mockRejectedValueOnce(new Error('NotAllowedError'));
@@ -246,5 +271,43 @@ describe('meeting the companion', () => {
     await user.click(await screen.findByRole('button', { name: /Say hello to Pip/ }));
 
     await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
+  });
+});
+
+/**
+ * The poll's *rate*, which is the half of the bug that lived on this side.
+ *
+ * A rate limit and the client that polls through it are one design decision split
+ * across two repositories' worth of file. Nothing enforces the relationship
+ * automatically, so it is written down here.
+ */
+describe('companion poll backoff', () => {
+  /** `companion_read` in backend/config/settings/base.py. Keep these in step. */
+  const SERVER_READ_BUDGET_PER_HOUR = 480;
+
+  it('starts fast, so the imprint moment stays responsive', () => {
+    expect(companionPollInterval(0)).toBe(COMPANION_POLL_MIN_MS);
+    expect(companionPollInterval(1)).toBeLessThan(COMPANION_POLL_MAX_MS);
+  });
+
+  it('settles at the cap rather than growing without bound', () => {
+    // An unbounded backoff would eventually mean a child waiting minutes after
+    // their companion was already ready.
+    expect(companionPollInterval(20)).toBe(COMPANION_POLL_MAX_MS);
+    expect(companionPollInterval(500)).toBe(COMPANION_POLL_MAX_MS);
+  });
+
+  it('notices a ready companion within the cap', () => {
+    // The worst-case delay between the assets landing and the screen showing
+    // them. Ten seconds of a sleeping friend is a scene; a minute is a bug.
+    expect(COMPANION_POLL_MAX_MS).toBeLessThanOrEqual(10_000);
+  });
+
+  it('has a steady state that fits inside the server budget', () => {
+    const requestsPerHour = 3_600_000 / companionPollInterval(Infinity);
+
+    // This is the assertion the old code would have failed: 2s flat is 1800/hour
+    // against a budget of 20. Headroom, not a coincidence.
+    expect(requestsPerHour).toBeLessThan(SERVER_READ_BUDGET_PER_HOUR);
   });
 });

@@ -13,6 +13,8 @@ Three rules are enforced here, all server-side:
    for a client to do twice.
 3. **The parent owns the child.** Ownership is checked against the child before
    the companion is touched at all.
+
+The two methods are rate-limited separately — see `CompanionView.get_throttles`.
 """
 
 import logging
@@ -26,12 +28,12 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.consent import require_consent
 from apps.accounts.models import User
 from apps.common.permissions import IsParentOwner
+from apps.common.throttling import CompanionCreateThrottle, CompanionReadThrottle
 from apps.companion.catalog import catalog
 from apps.companion.models import Companion
 from apps.companion.serializers import CompanionCatalogSerializer, CompanionSerializer
@@ -68,9 +70,25 @@ class CompanionExists(APIException):
 class CompanionView(GenericAPIView):
     serializer_class = CompanionSerializer
     permission_classes = [IsAuthenticated, IsParentOwner]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "companion"
     queryset = Companion.objects.all()
+
+    def get_throttles(self) -> list:
+        """A scope per method, because the two methods cost wildly different things.
+
+        `POST` is six paid illustrations and a voice line. `GET` is one indexed row
+        lookup that the greeting scene polls every couple of seconds while those
+        illustrations render (§4.3).
+
+        They used to share one `ScopedRateThrottle` at the create rate, and the
+        consequence was not a slow poll: twenty polls spent the hour's entire
+        create budget in forty seconds, every request after that was a 429, and
+        since the poll is how the child's screen learns the companion is ready, the
+        companion never woke up. A limit that shares a budget with the UI that
+        reads it will eventually be spent by that UI.
+        """
+        if self.request.method == "POST":
+            return [CompanionCreateThrottle()]
+        return [CompanionReadThrottle()]
 
     def get_child(self) -> Child:
         """The child in the URL, once ownership has been proven."""

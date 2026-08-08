@@ -218,6 +218,16 @@ REST_FRAMEWORK = {
         # couple of attempts an hour is a bug or an attack, and either way it is
         # spending real money.
         "companion": env("THROTTLE_COMPANION", default="20/hour"),
+        # *Reading* a companion is one indexed row lookup, and the greeting scene
+        # polls it while the art renders (§4.3). It therefore gets its own scope,
+        # sized for that poll and not for the create above — sharing one budget
+        # between them is what made the poll spend the create's allowance in forty
+        # seconds and then 429 itself into a companion that never woke up.
+        #
+        # 480/hour against a poll that settles at 6/min leaves real headroom, so
+        # the product's own client never reaches it while a runaway one still
+        # stops.
+        "companion_read": env("THROTTLE_COMPANION_READ", default="480/hour"),
         # Beginning an adventure costs a plan call, a beat call, an illustration
         # and a TTS call before the child has done anything (§22.4). A family
         # starts a few a day; a loop that starts one a second is a bug.

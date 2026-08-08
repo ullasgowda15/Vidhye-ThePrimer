@@ -57,3 +57,90 @@ def test_the_health_probe_is_never_throttled(api, tight_rates) -> None:
     # take the service out of rotation.
     statuses = [api.get("/api/health/").status_code for _ in range(6)]
     assert statuses == [200] * 6
+
+
+# ---------------------------------------------------------------------------
+# Reading a companion must not spend the budget for creating one (§16.6)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def split_companion_rates(monkeypatch):
+    """One create, three reads. Deliberately different, so a shared scope fails."""
+    monkeypatch.setattr(
+        SimpleRateThrottle,
+        "THROTTLE_RATES",
+        {"anon": "100/min", "user": "100/min", "companion": "1/min", "companion_read": "3/min"},
+    )
+
+
+@pytest.fixture
+def companion_urls(auth, parent, consent):
+    import datetime
+
+    from apps.profiles.models import Child
+
+    child = Child.objects.create(
+        parent=parent,
+        first_name="Aarav",
+        birthdate=datetime.date(datetime.date.today().year - 5, 5, 4),
+    )
+    return auth, f"/api/v1/children/{child.id}/companion"
+
+
+def test_polling_a_companion_does_not_spend_the_create_budget(
+    companion_urls, split_companion_rates, settings
+) -> None:
+    """The regression that mattered.
+
+    The greeting scene polls this GET every couple of seconds while the art
+    renders. When both methods shared one scope at the create rate, twenty polls
+    spent the hour in forty seconds — and because the poll is how the child's
+    screen learns their companion is ready, the companion never woke up.
+
+    The create rate here is 1/min. If the GET touched it, the POST below would be
+    refused.
+    """
+    auth, url = companion_urls
+    settings.CELERY_TASK_ALWAYS_EAGER = False
+
+    # Three reads: allowed by `companion_read`, and 404 because no companion
+    # exists yet — which is exactly the state the greeting scene polls in.
+    assert [auth.get(url).status_code for _ in range(3)] == [404, 404, 404]
+
+    created = auth.post(
+        url,
+        {
+            "archetype": "dragon",
+            "name": "Pip",
+            "palette": "ember",
+            "personality_preset": "brave_spark",
+        },
+        format="json",
+    )
+    assert created.status_code == 201, created.data
+
+
+def test_reading_a_companion_is_still_bounded(companion_urls, split_companion_rates) -> None:
+    """Its own scope, not no scope. A runaway client still meets a ceiling."""
+    auth, url = companion_urls
+
+    statuses = [auth.get(url).status_code for _ in range(4)]
+
+    assert statuses[:3] == [404, 404, 404]
+    assert statuses[3] == 429
+
+
+def test_creating_a_companion_is_capped_independently(
+    companion_urls, split_companion_rates
+) -> None:
+    auth, url = companion_urls
+    payload = {
+        "archetype": "dragon",
+        "name": "Pip",
+        "palette": "ember",
+        "personality_preset": "brave_spark",
+    }
+
+    assert auth.post(url, payload, format="json").status_code == 201
+    # The second attempt is refused by the *create* scope, not by the 409 that
+    # would otherwise answer it — the money-spending path stays tightly capped.
+    assert auth.post(url, payload, format="json").status_code == 429

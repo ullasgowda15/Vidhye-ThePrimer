@@ -19,8 +19,46 @@ export const queryKeys = {
   adventure: (childId: string) => ['adventure', childId] as const,
 };
 
-/** How often the greeting scene asks whether the companion has finished waking up. */
-const COMPANION_POLL_MS = 2_000;
+/**
+ * How often the greeting scene asks whether the companion has finished waking up.
+ *
+ * It **backs off**, and that is the point rather than a refinement. A fixed
+ * two-second poll asks thirty times a minute for as long as the page is open, and
+ * the asset build it is waiting for takes a minute or more — so a flat poll is
+ * guaranteed to send far more requests than the thing it is watching needs, and
+ * will find whatever ceiling exists on the endpoint. It found ours.
+ *
+ * Starting fast keeps the imprint moment responsive (assets usually land while the
+ * interval is still a few seconds); settling at ten seconds bounds the steady
+ * state to six requests a minute, comfortably inside the read scope's 480/hour.
+ */
+export const COMPANION_POLL_MIN_MS = 2_000;
+export const COMPANION_POLL_MAX_MS = 10_000;
+const COMPANION_POLL_BACKOFF = 1.5;
+
+/**
+ * A 429 means we have already asked too often. Asking again *is* the bug — it is
+ * what turns one rate limit into a permanent one, since a denied request still
+ * arrives at the server. So it ends the poll rather than slowing it.
+ */
+function isThrottled(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 429;
+}
+
+/**
+ * The wait before the next poll, after `attempts` completed round trips.
+ *
+ * Exported because the numbers, not the code, are the thing worth checking: this
+ * function's steady state has to fit inside the `companion_read` budget the
+ * backend grants (`config/settings/base.py`). That coupling crosses the stack and
+ * nothing enforces it automatically, so its test states it out loud.
+ */
+export function companionPollInterval(attempts: number): number {
+  return Math.min(
+    COMPANION_POLL_MIN_MS * COMPANION_POLL_BACKOFF ** attempts,
+    COMPANION_POLL_MAX_MS,
+  );
+}
 
 /**
  * Backend liveness. Drives the unobtrusive status dot in the child footer.
@@ -95,9 +133,17 @@ export function useCompanionCatalog() {
 /**
  * One child's companion.
  *
- * Polls while the art and the voice are still being generated, and stops as
- * soon as they land. A 404 means "no companion yet" — a normal state during
- * onboarding, not an error — so it is never retried into a spinner.
+ * Polls with backoff while the art and the voice are still being generated, and
+ * stops as soon as they land. Two statuses are not "try again":
+ *
+ * - **404** — "no companion yet", a normal state during onboarding rather than an
+ *   error, so it is never retried into a spinner. The poll continues, because the
+ *   parent may be creating one right now.
+ * - **429** — we have already asked too often, so the poll ends. Retrying a rate
+ *   limit is what makes it permanent.
+ *
+ * Neither is ever shown to the child: the greeting scene renders a sleeping friend
+ * whatever this hook returns (§13).
  */
 export function useCompanion(childId: string | undefined) {
   return useQuery({
@@ -105,8 +151,16 @@ export function useCompanion(childId: string | undefined) {
     queryFn: ({ signal }) => api.companion(childId as string, signal),
     enabled: Boolean(childId),
     retry: (failureCount, error) =>
-      !(error instanceof ApiError && error.status === 404) && failureCount < 2,
-    refetchInterval: (query) => (query.state.data?.assets_ready ? false : COMPANION_POLL_MS),
+      !(error instanceof ApiError && (error.status === 404 || error.status === 429)) &&
+      failureCount < 2,
+    refetchInterval: (query) => {
+      if (query.state.data?.assets_ready) return false;
+      if (isThrottled(query.state.error)) return false;
+      // Every completed round trip lengthens the next wait, successes and
+      // failures alike — a poll that only backed off on success would keep
+      // hammering exactly when something is already wrong.
+      return companionPollInterval(query.state.dataUpdateCount + query.state.errorUpdateCount);
+    },
   });
 }
 
