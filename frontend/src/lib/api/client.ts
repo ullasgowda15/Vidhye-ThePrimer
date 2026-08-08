@@ -42,6 +42,16 @@ export type ArchetypeKey = components['schemas']['ArchetypeEnum'];
 export type PaletteKey = components['schemas']['PaletteEnum'];
 export type PersonalityPresetKey = components['schemas']['PersonalityPresetEnum'];
 
+/**
+ * Status used when the request never reached a server at all.
+ *
+ * `fetch` rejects rather than resolving for a dropped connection, a dead dev
+ * proxy or DNS failure, so without this every caller has to handle two unrelated
+ * error shapes and most will forget. "We could not reach it" is a distinct
+ * outcome from any HTTP answer and a parent needs to be told which one happened.
+ */
+export const NETWORK_ERROR = 0;
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -55,17 +65,57 @@ export class ApiError extends Error {
 }
 
 /**
+ * How long to wait, in whole minutes, from DRF's throttle detail.
+ *
+ * The wire format is `"Request was throttled. Expected available in 2428
+ * seconds."` — true, and useless to read. Returns null when the shape is anything
+ * else, so an unrecognised message falls through to a plain sentence.
+ */
+function throttleWaitMinutes(body: unknown): number | null {
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  if (typeof detail !== 'string') return null;
+  const seconds = /available in (\d+) seconds?/.exec(detail)?.[1];
+  return seconds ? Math.max(1, Math.ceil(Number(seconds) / 60)) : null;
+}
+
+/**
  * A human sentence for an error, for a *parent* to read.
  *
  * DRF answers with either `{field: ["…"]}` or `{detail: "…"}`. Nothing here is
  * ever shown on the child surface — the child never sees an error at all (§13).
+ *
+ * Two rules, both learned the hard way on the login form:
+ *
+ * 1. **Only a parsed object is a message.** A non-JSON body is not something a
+ *    person should read: an unreachable database made Django answer login with a
+ *    full HTML debug traceback, this function returned the string as-is, and the
+ *    login form rendered the traceback at the parent. In production the same
+ *    branch would render a proxy's 502 page. If it did not parse as a DRF error,
+ *    it is not an explanation.
+ * 2. **Say which kind of failure it was.** The caller's `fallback` describes the
+ *    *expected* failure — wrong password, say — so using it for a 500 or an outage
+ *    tells the parent something false about their own account, which is how a
+ *    working password ends up looking broken. Statuses that mean "not your fault"
+ *    are answered here instead, and outrank any caller's guess.
  */
 export function errorMessage(error: unknown, fallback = 'Something went wrong.'): string {
   if (!(error instanceof ApiError)) return fallback;
-  const body = error.body;
-  if (typeof body === 'string' && body) return body;
-  if (body && typeof body === 'object') {
-    const record = body as Record<string, unknown>;
+
+  if (error.status === NETWORK_ERROR) {
+    return 'We could not reach The Primer. Check your connection and try again.';
+  }
+  if (error.status === 429) {
+    const minutes = throttleWaitMinutes(error.body);
+    return minutes === null
+      ? 'That has been tried too many times just now. Please wait a little and try again.'
+      : `That has been tried too many times just now. Please try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+  }
+  if (error.status >= 500) {
+    return 'Something went wrong on our side, not with your details. Please try again in a moment.';
+  }
+
+  if (error.body && typeof error.body === 'object') {
+    const record = error.body as Record<string, unknown>;
     if (typeof record.detail === 'string') return record.detail;
     for (const value of Object.values(record)) {
       if (typeof value === 'string') return value;
@@ -129,13 +179,23 @@ async function send(path: string, options: RequestOptions, token: string | null)
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  return fetch(`${BASE_URL}${path}`, {
-    method: options.method ?? 'GET',
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    signal: options.signal,
-    credentials: options.withCookie ? 'include' : 'same-origin',
-  });
+  try {
+    return await fetch(`${BASE_URL}${path}`, {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal,
+      credentials: options.withCookie ? 'include' : 'same-origin',
+    });
+  } catch (caught) {
+    // An abort is the caller getting what it asked for, not a failure — React
+    // Query cancels in-flight queries constantly and must keep seeing its own
+    // `AbortError` rather than an `ApiError` it would then report.
+    if (caught instanceof DOMException && caught.name === 'AbortError') throw caught;
+    // Everything else here is "never reached a server": offline, dead proxy, DNS.
+    // Given a status, callers can tell that apart from an answer they were given.
+    throw new ApiError(`${options.method ?? 'GET'} ${path} could not be sent`, NETWORK_ERROR);
+  }
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {

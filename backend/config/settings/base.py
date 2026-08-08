@@ -212,7 +212,22 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": env("THROTTLE_ANON", default="100/day"),
         "user": env("THROTTLE_USER", default="1000/day"),
+        # Guessing at credentials. Tight on purpose: a human types their password
+        # wrong a handful of times, never thirty.
         "auth": env("THROTTLE_AUTH", default="30/hour"),
+        # Restoring a session is *not* a credential attempt, and must not share the
+        # budget above. The app refreshes once per page load (§14.5) — automatic
+        # traffic, several an hour during ordinary use and far more while a
+        # developer reloads. Sharing one scope meant those page loads spent the
+        # login allowance, and the parent was then refused on a correct password
+        # for the rest of the hour. Same mistake as `companion` below, one layer up.
+        #
+        # Unauthenticated, so it can only be keyed by IP, which a family behind one
+        # NAT shares — sized well above anything real rather than tight, since the
+        # thing it guards against is a runaway retry loop and not a guessable
+        # secret (a refresh token is signed, and rotation makes a stolen one
+        # single-use).
+        "session_refresh": env("THROTTLE_SESSION_REFRESH", default="240/hour"),
         # Creating a companion fans out into a handful of paid image calls plus a
         # TTS call (§16.6). A family does it once per child; anything beyond a
         # couple of attempts an hour is a bug or an attack, and either way it is

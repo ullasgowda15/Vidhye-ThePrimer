@@ -14,7 +14,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { api, ApiError, errorMessage } from '@/lib/api/client';
+import { api, ApiError, errorMessage, NETWORK_ERROR } from '@/lib/api/client';
 import { resetAuthBootstrapForTests, useAuthStore } from '@/store/auth';
 
 function jsonResponse(status: number, body: unknown) {
@@ -202,6 +202,57 @@ describe('silent refresh', () => {
   });
 });
 
+/**
+ * A page load must not be able to end a session, and a page load happens on every
+ * reload — so anything short of a definitive answer has to leave the session alone.
+ *
+ * This is the half of the lockout that lived on this side. A refused refresh was
+ * treated as "your session is over", so a parent whose reloads had exhausted a rate
+ * limit was signed out of a valid session and sent to a login form that was, by
+ * then, also refusing them.
+ */
+describe('a refresh that fails without answering', () => {
+  it('keeps a live session when the server errors', async () => {
+    useAuthStore.setState({ accessToken: 'live', status: 'authenticated' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(500, { detail: 'boom' })));
+
+    expect(await useAuthStore.getState().refresh()).toBeNull();
+
+    // We learned nothing about the session, so nothing about it changes.
+    expect(useAuthStore.getState().accessToken).toBe('live');
+    expect(useAuthStore.getState().status).toBe('authenticated');
+  });
+
+  it('keeps a live session when the refresh itself is throttled', async () => {
+    useAuthStore.setState({ accessToken: 'live', status: 'authenticated' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(429, { detail: 'throttled' })));
+
+    await useAuthStore.getState().refresh();
+
+    expect(useAuthStore.getState().status).toBe('authenticated');
+  });
+
+  it('keeps a live session when the device is offline', async () => {
+    useAuthStore.setState({ accessToken: 'live', status: 'authenticated' });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    await useAuthStore.getState().refresh();
+
+    expect(useAuthStore.getState().accessToken).toBe('live');
+  });
+
+  it('still settles a cold start it cannot confirm', async () => {
+    // Nothing to preserve here — there is no token either way — and holding
+    // `loading` would leave ProtectedRoute on a blank screen for good.
+    useAuthStore.setState({ accessToken: null, status: 'loading' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(503, {})));
+
+    await useAuthStore.getState().bootstrap();
+
+    expect(useAuthStore.getState().status).toBe('anonymous');
+  });
+});
+
 describe('error messages', () => {
   it('surfaces a DRF field error a parent can act on', () => {
     const error = new ApiError('failed', 400, { password: ['This password is too common.'] });
@@ -211,5 +262,75 @@ describe('error messages', () => {
   it('surfaces the consent gate refusal', () => {
     const error = new ApiError('failed', 403, { detail: 'Parental consent is required.' });
     expect(errorMessage(error)).toBe('Parental consent is required.');
+  });
+
+  it("never renders a server's HTML at a parent", () => {
+    // Verbatim shape of what an unreachable database produced: Django's debug
+    // page, 40KB of it, which this function used to hand straight to the login
+    // form as the reason their password was wrong.
+    const traceback =
+      '<!DOCTYPE html>\n<html><title>OperationalError at /api/v1/auth/login</title>';
+    const message = errorMessage(new ApiError('failed', 500, traceback));
+
+    expect(message).not.toContain('<');
+    expect(message).not.toContain('OperationalError');
+    expect(message).toContain('not with your details');
+  });
+
+  it("does not blame the parent's details for a failure on our side", () => {
+    // The caller's fallback describes the failure it *expected*. Using it for a
+    // 500 is how a working password comes to look broken.
+    const message = errorMessage(
+      new ApiError('failed', 502, null),
+      'That email and password did not match.',
+    );
+
+    expect(message).not.toContain('did not match');
+  });
+
+  it('reports an unreachable service as unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    const caught = await api.login('priya@example.com', 'pw').catch((error: unknown) => error);
+
+    // A dropped connection arrives as an ApiError like everything else, so no
+    // caller has to special-case a second error shape to tell a parent the truth.
+    expect(caught).toBeInstanceOf(ApiError);
+    expect((caught as ApiError).status).toBe(NETWORK_ERROR);
+    expect(errorMessage(caught, 'That email and password did not match.')).toContain(
+      'could not reach',
+    );
+  });
+
+  it('turns a throttle into a wait a person can act on', () => {
+    const error = new ApiError('failed', 429, {
+      detail: 'Request was throttled. Expected available in 2428 seconds.',
+    });
+
+    // "2428 seconds" is true and unreadable.
+    expect(errorMessage(error)).toBe(
+      'That has been tried too many times just now. Please try again in 41 minutes.',
+    );
+  });
+
+  it('still says something useful when a throttle gives no number', () => {
+    expect(errorMessage(new ApiError('failed', 429, { detail: 'Throttled.' }))).toContain(
+      'too many times',
+    );
+  });
+
+  it('does not report a cancelled request as a failure', async () => {
+    // React Query aborts in-flight queries constantly; an abort is the caller
+    // getting what it asked for, and must not be dressed up as a network outage.
+    const controller = new AbortController();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new DOMException('The operation was aborted.', 'AbortError')),
+    );
+
+    const caught = await api.health(controller.signal).catch((error: unknown) => error);
+
+    expect(caught).toBeInstanceOf(DOMException);
+    expect(caught).not.toBeInstanceOf(ApiError);
   });
 });

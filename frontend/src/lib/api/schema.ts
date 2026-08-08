@@ -95,6 +95,14 @@ export interface paths {
          *     Unauthenticated by inheritance, as in `LoginView` — the refresh token *is* the
          *     credential. `SameSite=Lax` on the cookie is what stops that from being a CSRF
          *     hole; see `apps.accounts.cookies`.
+         *
+         *     **Its own throttle scope, not `auth`.** This endpoint is called once per page
+         *     load, automatically, by every client that has ever been signed in; login is
+         *     called by a human, rarely. While they shared one 30/hour budget, a morning of
+         *     reloads spent it, `LoginView` then answered 429 to a perfectly correct
+         *     password, and — because a failed refresh reads as "your session is over" — the
+         *     client had already signed the parent out and sent them to the form that was
+         *     refusing them. See `SessionRefreshThrottle`.
          */
         post: operations["auth_refresh"];
         delete?: never;

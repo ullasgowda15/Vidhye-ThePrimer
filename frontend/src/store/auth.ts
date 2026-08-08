@@ -23,7 +23,7 @@
 
 import { create } from 'zustand';
 
-import { api, connectAuth, type Me, type User } from '@/lib/api/client';
+import { ApiError, api, connectAuth, type Me, type User } from '@/lib/api/client';
 
 /** How long one adult challenge keeps the parent area open. */
 export const PARENT_GATE_TTL_MS = 15 * 60 * 1000;
@@ -118,8 +118,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({ accessToken: tokens.access, status: 'authenticated' });
         return tokens.access;
       })
-      .catch(() => {
-        set({ accessToken: null, status: 'anonymous', user: null });
+      .catch((caught: unknown) => {
+        // **Only a 401 is an answer about the session.** A 429, a 502 or a dropped
+        // connection means we do not know yet, and treating "do not know" as "you
+        // are signed out" is how a server hiccup evicts a parent from a session
+        // that was still valid — then sends them to a login form to fix a password
+        // that was never wrong.
+        //
+        // (The 401-retry path in `client.ts` still ends the session on any failed
+        // refresh, and should: there we already have a 401 in hand, so the access
+        // token is known dead rather than merely unconfirmed.)
+        if (caught instanceof ApiError && caught.status === 401) {
+          set({ accessToken: null, status: 'anonymous', user: null });
+        } else if (get().status === 'loading') {
+          // A cold start has no token to preserve either way, and holding
+          // `loading` forever would leave `ProtectedRoute` on a blank screen.
+          set({ status: 'anonymous' });
+        }
         return null;
       })
       .finally(() => {

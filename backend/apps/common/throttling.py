@@ -29,6 +29,23 @@ class AuthUserThrottle(UserRateThrottle):
     scope = "auth"
 
 
+class SessionRefreshThrottle(AnonRateThrottle):
+    """Per-IP limit on rotating a session (§18.2).
+
+    Its own scope because restoring a session is nothing like guessing a password,
+    and it used to be counted as one. The app refreshes once per page load, so this
+    is *automatic* traffic measured in reloads; `auth` is a human typing. Sharing
+    one budget meant a morning's reloads spent the login allowance, and the
+    parent — whose password was fine — was refused for the rest of the hour, on the
+    screen that exists to let them back in.
+
+    Keyed by IP, because the caller is unauthenticated by definition: the refresh
+    cookie *is* the credential and it has not been read yet.
+    """
+
+    scope = "session_refresh"
+
+
 class CompanionCreateThrottle(UserRateThrottle):
     """Per-parent limit on *creating* a companion (§16.6).
 

@@ -8,7 +8,7 @@ thousand requests in a unit test.
 import pytest
 from rest_framework.throttling import SimpleRateThrottle
 
-from tests.conftest import CHILDREN_URL, LOGIN_URL, PASSWORD, SIGNUP_URL
+from tests.conftest import CHILDREN_URL, LOGIN_URL, PASSWORD, REFRESH_URL, SIGNUP_URL
 
 pytestmark = pytest.mark.django_db
 
@@ -21,7 +21,7 @@ def tight_rates(monkeypatch):
     time, so overriding `REST_FRAMEWORK` in Django settings does *not* reach it.
     Patching the class attribute is what actually changes the limit.
     """
-    rates = {"anon": "3/min", "user": "3/min", "auth": "2/min"}
+    rates = {"anon": "3/min", "user": "3/min", "auth": "2/min", "session_refresh": "100/min"}
     monkeypatch.setattr(SimpleRateThrottle, "THROTTLE_RATES", rates)
     return rates
 
@@ -50,6 +50,42 @@ def test_authenticated_endpoints_throttle_per_parent(auth, tight_rates) -> None:
 
     assert statuses[:3] == [200, 200, 200]
     assert statuses[3] == 429
+
+
+def test_restoring_a_session_does_not_spend_the_login_budget(api, tight_rates) -> None:
+    """The regression that locked a parent out of their own account.
+
+    `POST /auth/refresh` is called once per page load, automatically, by every
+    client that has ever signed in. `POST /auth/login` is called by a human, twice
+    a month. While both counted against `auth`, a morning of reloads spent the
+    login allowance — and because a refused refresh reads as "your session is
+    over", the client signed the parent out and sent them to the login form, which
+    then answered 429 to a completely correct password for the rest of the hour.
+
+    `auth` here is 2/min. If refresh still touched it, the login below would be
+    refused rather than merely wrong.
+    """
+    for _ in range(6):
+        # 401 every time: there is no refresh cookie. Being *answered* is the
+        # point — these are the requests that used to be counted as login attempts.
+        assert api.post(REFRESH_URL, {}, format="json").status_code == 401
+
+    payload = {"email": "nobody@example.com", "password": "wrong-password"}
+    refused = api.post(LOGIN_URL, payload, format="json")
+    assert refused.status_code == 401, "login's own budget was spent by page loads"
+
+
+def test_restoring_a_session_is_still_bounded(api, monkeypatch) -> None:
+    """Its own scope, not no scope — a runaway client still meets a ceiling."""
+    monkeypatch.setattr(
+        SimpleRateThrottle,
+        "THROTTLE_RATES",
+        {"anon": "100/min", "user": "100/min", "auth": "100/min", "session_refresh": "2/min"},
+    )
+
+    statuses = [api.post(REFRESH_URL, {}, format="json").status_code for _ in range(3)]
+
+    assert statuses == [401, 401, 429]
 
 
 def test_the_health_probe_is_never_throttled(api, tight_rates) -> None:
