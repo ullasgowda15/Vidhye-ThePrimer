@@ -67,6 +67,40 @@ Three processes and two managed services:
 `SECURE_PROXY_SSL_HEADER`, which assumes TLS terminates at a proxy in front of the
 app. That is true on Render, Railway, Fly, and behind an ALB.
 
+## The API and the PWA must be same-site
+
+**This is a deployment constraint, not a preference.** The parent session is
+carried by a refresh cookie with `SameSite=Lax`, and that attribute is the
+load-bearing CSRF control on `/api/v1/auth/refresh` — an endpoint that is
+unauthenticated by design, because the cookie *is* the credential
+(`backend/apps/accounts/cookies.py`).
+
+`Lax` means the browser withholds the cookie from **cross-site** requests. So the
+API and the app have to be same-site:
+
+| Layout | Works | Why |
+|---|---|---|
+| `theprimer.app` + `api.theprimer.app` | ✅ | Same registrable domain — this is the intended shape |
+| One host, API under `/api` | ✅ | Same origin; nothing is cross-site |
+| `theprimer.app` + `primer-api.onrender.com` | ❌ | Different sites. The cookie is never sent, so **every reload signs the parent out** |
+
+What that costs if it is got wrong is not an error message: a child cold-starting
+the app lands at a login form they cannot pass (§14.5). Point a custom domain at
+the API service before shipping; do not rely on the platform's default hostname.
+
+Locally this is already true — the Vite dev proxy makes `/api` same-origin — which
+is exactly why the mistake does not show up until the first deploy.
+
+Two related settings, for completeness:
+
+- `REFRESH_COOKIE_SECURE` is `True` in `prod.py`. A `Secure` cookie needs HTTPS
+  end-to-end from the browser's point of view; that is what
+  `SECURE_PROXY_SSL_HEADER` above establishes.
+- `CORS_ALLOWED_ORIGINS` must list the PWA's exact origin. `CORS_ALLOW_CREDENTIALS`
+  is on, and a wildcard combined with credentials is a credential-exposure surface
+  — `prod.py` reads the list from the environment for that reason, and `dev.py` is
+  scoped to localhost.
+
 ---
 
 ## Founder checklist
@@ -126,6 +160,8 @@ Deliberately absent on Day 1, listed so nobody assumes they exist:
 
 - **Object storage + CDN** for illustrations and audio (§16.6) — Day 6
 - **Stripe** (§17.2 `subscription`) — Day 14
+- **Runtime safety guard** on generated beats (§13.2) — Day 7. Until it lands,
+  `beat.safety_status` is `unchecked` and staging must stay unlinked.
 - **Observability**: OpenTelemetry, Sentry, LLM tracing (§16.1) — Day 14
 - **Blue-green / rolling deploys and feature flags** (§16.8)
 - **A staging→prod promotion path** — one environment is enough until there are users

@@ -1,11 +1,20 @@
 """Auth, account and consent endpoints (PRODUCT.md §18.3).
 
 Login and refresh are SimpleJWT's views, subclassed only to attach the tighter
-`auth` throttle scope and a stable `operation_id` — the token logic itself is
-not ours to reimplement.
+`auth` throttle scope, a stable `operation_id`, and the refresh cookie — the
+token logic itself is not ours to reimplement.
+
+**The refresh token never appears in a response body.** Signup, login and refresh
+all set it as an `httpOnly` cookie and return `access` alone; refresh and logout
+read it back from that cookie rather than from the request. `apps.accounts.cookies`
+owns the attributes and explains why each one is there. The consequence worth
+stating here: a client cannot store the refresh token even if it wants to, which
+is what makes "an XSS cannot steal the session" a property of the system rather
+than a promise about the frontend.
 """
 
 import logging
+from typing import Any, cast
 
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
@@ -14,14 +23,15 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
 from rest_framework.views import APIView
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from apps.accounts import cookies
 from apps.accounts.models import ConsentRecord, User
 from apps.accounts.serializers import (
+    AccessTokenSerializer,
     ConsentRecordSerializer,
-    LogoutSerializer,
     MeSerializer,
     SignupResponseSerializer,
     SignupSerializer,
@@ -73,12 +83,17 @@ class SignupView(generics.CreateAPIView):
         # Stubbed until an email provider lands: the link goes to the console.
         send_verification_email(user)
 
-        payload = SignupResponseSerializer({"user": user, **tokens_for(user)}).data
-        return Response(payload, status=status.HTTP_201_CREATED)
+        # `attach` rather than `move_to_cookie`, because the serializer has already
+        # dropped `refresh` — it does not declare the field, precisely so that a
+        # refresh token cannot reach a client through the signup body.
+        tokens = tokens_for(user)
+        payload = SignupResponseSerializer({"user": user, **tokens}).data
+        response = Response(payload, status=status.HTTP_201_CREATED)
+        return cookies.attach(response, tokens["refresh"])
 
 
 class LoginView(TokenObtainPairView):
-    """Exchange email + password for an access/refresh pair.
+    """Exchange email + password for an access token and a refresh cookie.
 
     `TokenViewBase` already sets `permission_classes = ()` and
     `authentication_classes = ()`, which is what a credential endpoint needs;
@@ -88,31 +103,72 @@ class LoginView(TokenObtainPairView):
 
     throttle_classes = [AuthAnonThrottle]
 
-    @extend_schema(operation_id="auth_login", summary="Log in", auth=[])
+    @extend_schema(
+        operation_id="auth_login",
+        summary="Log in",
+        responses={200: AccessTokenSerializer},
+        auth=[],
+    )
     def post(self, request: Request, *args: object, **kwargs: object) -> Response:
-        return super().post(request, *args, **kwargs)
+        return cookies.move_to_cookie(super().post(request, *args, **kwargs))
 
 
 class RefreshView(TokenRefreshView):
-    """Rotate a refresh token.
+    """Rotate the session, using the cookie as the credential.
 
-    With `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION` the response
-    carries a *new* refresh token and the presented one is blacklisted, so the
-    client must replace both halves of the pair, not just the access token.
+    With `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION` a *new* refresh
+    token is issued and the presented one is blacklisted, so the cookie must be
+    replaced on every call — which `move_to_cookie` does, in the same place it
+    strips the token from the body.
 
-    Unauthenticated by inheritance, as in `LoginView` — the refresh token *is*
-    the credential.
+    The token is read from the cookie and **only** from the cookie: accepting a
+    body as well would leave the old, script-readable path open forever, and a
+    client that still worked without the cookie is a client that never had to stop
+    storing the token.
+
+    Unauthenticated by inheritance, as in `LoginView` — the refresh token *is* the
+    credential. `SameSite=Lax` on the cookie is what stops that from being a CSRF
+    hole; see `apps.accounts.cookies`.
     """
 
     throttle_classes = [AuthAnonThrottle]
 
-    @extend_schema(operation_id="auth_refresh", summary="Rotate tokens", auth=[])
+    @extend_schema(
+        operation_id="auth_refresh",
+        summary="Rotate the session using the refresh cookie",
+        request=None,
+        responses={
+            200: AccessTokenSerializer,
+            401: OpenApiResponse(description="No refresh cookie, or it is no longer valid."),
+        },
+        auth=[],
+    )
     def post(self, request: Request, *args: object, **kwargs: object) -> Response:
-        return super().post(request, *args, **kwargs)
+        token = cookies.read(request)
+        if not token:
+            # 401, not 400: "you have no session" is what the client needs to
+            # hear, and it is the same answer a dead token gets. A bootstrap
+            # refresh on a first-ever visit lands here every time and must not
+            # look like a malformed request.
+            return Response(
+                {"detail": "No refresh cookie was presented."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # The serializer reads `refresh` from the request data, so the cookie is
+        # handed to it there rather than by reimplementing rotation.
+        serializer = self.get_serializer(data={"refresh": token})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError as exc:
+            raise InvalidToken(exc.args[0]) from exc
+
+        response = Response(serializer.validated_data, status=status.HTTP_200_OK)
+        return cookies.move_to_cookie(response)
 
 
 class LogoutView(APIView):
-    """Blacklist a refresh token."""
+    """End the session: blacklist the refresh token and delete its cookie."""
 
     permission_classes = [IsAuthenticated]
     throttle_classes = [AuthUserThrottle]
@@ -120,20 +176,24 @@ class LogoutView(APIView):
     @extend_schema(
         operation_id="auth_logout",
         summary="Log out",
-        request=LogoutSerializer,
-        responses={204: OpenApiResponse(description="Refresh token blacklisted.")},
+        request=None,
+        responses={204: OpenApiResponse(description="Session ended and cookie cleared.")},
     )
     def post(self, request: Request) -> Response:
-        serializer = LogoutSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        try:
-            RefreshToken(serializer.validated_data["refresh"]).blacklist()
-        except TokenError:
-            # An already-expired or already-blacklisted token means the client is
-            # logged out, which is what it asked for. Reporting an error here would
-            # only tempt clients to keep the token around and retry.
-            logger.info("Logout presented a token that was already invalid.")
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        if token := cookies.read(request):
+            try:
+                # SimpleJWT's `RefreshToken` takes the encoded string; its stub
+                # annotates the parameter as an already-decoded `Token`.
+                RefreshToken(cast("Any", token)).blacklist()
+            except TokenError:
+                # An already-expired or already-blacklisted token means the client
+                # is logged out, which is what it asked for. Reporting an error
+                # here would only tempt clients to keep the token and retry.
+                logger.info("Logout presented a token that was already invalid.")
+
+        # Cleared unconditionally. A logout that leaves the cookie in place
+        # because the token was already dead is a logout that does not log out.
+        return cookies.clear(Response(status=status.HTTP_204_NO_CONTENT))
 
 
 class MeView(generics.RetrieveAPIView):

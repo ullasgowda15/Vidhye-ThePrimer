@@ -1,16 +1,24 @@
 /**
- * Parent session state (PRODUCT.md §18.2, §14.2).
+ * Parent session state (PRODUCT.md §18.2, §14.2, §14.5).
  *
- * **Tokens live in memory only.** Not localStorage, not a readable cookie: an
- * XSS on a page that shows a child's memories should not also hand over a
- * fourteen-day refresh token. The cost is that a hard reload signs the parent
- * out, which is the right trade while the parent surface is a few short
- * sessions; the endgame is an httpOnly, SameSite refresh cookie set by the
- * backend, and that change lands entirely inside this file.
+ * **The access token lives in memory; the refresh token lives nowhere the client
+ * can see it.** The backend sets it as an `httpOnly`, `SameSite=Lax` cookie scoped
+ * to `/api/v1/auth`, so this file has no `refreshToken` field at all — an XSS on a
+ * page showing a child's memories cannot read it, and neither can we.
  *
- * The parent gate (§14.2) also lives here, because it is session state rather
- * than server state: it is a short-lived "an adult is holding the tablet" flag,
- * not a claim about identity, and it deliberately does *not* survive a reload.
+ * That is what makes a cold start survivable. The child experience runs under a
+ * parent session and a three-year-old cannot log in, so a morning, a reboot or an
+ * evicted tab must not drop them at a login form (§14.5). On load the app makes
+ * **exactly one** refresh call: that call *is* session restore.
+ *
+ * `status` is the third state that makes this work. Without it, `ProtectedRoute`
+ * would see `accessToken === null` during the bootstrap refresh and flash the
+ * login screen on every single load before redirecting back.
+ *
+ * The **parent gate** (§14.2) also lives here and is deliberately *not* restored
+ * by the cookie: it is a short-lived "an adult is holding the tablet" flag, not a
+ * claim about identity. The child cold-starts straight into their story; an adult
+ * challenge still stands between them and billing. That composition is the point.
  */
 
 import { create } from 'zustand';
@@ -20,9 +28,17 @@ import { api, connectAuth, type Me, type User } from '@/lib/api/client';
 /** How long one adult challenge keeps the parent area open. */
 export const PARENT_GATE_TTL_MS = 15 * 60 * 1000;
 
+/**
+ * Whether we know yet.
+ *
+ * `loading` is the state the app starts in and holds until the bootstrap refresh
+ * resolves. Treating it as `anonymous` is the bug this type exists to prevent.
+ */
+export type AuthStatus = 'loading' | 'anonymous' | 'authenticated';
+
 interface AuthState {
   accessToken: string | null;
-  refreshToken: string | null;
+  status: AuthStatus;
   user: User | Me | null;
   /** Epoch ms until which the adult challenge counts as passed. */
   parentVerifiedUntil: number | null;
@@ -33,8 +49,10 @@ interface AuthState {
   signup: (payload: { email: string; password: string; display_name?: string }) => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  /** Rotate the pair. Returns the new access token, or null if the session is over. */
+  /** Spend the refresh cookie for a new access token, or null if the session is over. */
   refresh: () => Promise<string | null>;
+  /** One refresh at app load. Idempotent — calling it again returns the same result. */
+  bootstrap: () => Promise<void>;
   setUser: (user: Me) => void;
   passParentGate: () => void;
   clearParentGate: () => void;
@@ -44,15 +62,23 @@ interface AuthState {
  * In-flight refresh, shared by every caller.
  *
  * A dashboard fires several queries at once; when the access token expires they
- * all 401 together. Without this, each would spend the refresh token, and
- * rotation means only the first would succeed — the rest would log the parent
- * out mid-read.
+ * all 401 together. Without this, each would spend the cookie, and rotation means
+ * only the first would succeed — the rest would log the parent out mid-read.
  */
 let inFlightRefresh: Promise<string | null> | null = null;
 
+/**
+ * The bootstrap attempt, kept so it happens once per page load.
+ *
+ * React 18's StrictMode runs effects twice in development, and a second bootstrap
+ * would present a cookie the first one had already rotated and blacklisted — a
+ * session that signs itself out, in dev only, which is a memorable afternoon.
+ */
+let bootstrapped: Promise<void> | null = null;
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   accessToken: null,
-  refreshToken: null,
+  status: 'loading',
   user: null,
   parentVerifiedUntil: null,
 
@@ -65,40 +91,35 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signup: async (payload) => {
     const result = await api.signup(payload);
-    set({ accessToken: result.access, refreshToken: result.refresh, user: result.user });
+    set({ accessToken: result.access, status: 'authenticated', user: result.user });
   },
 
   login: async (email, password) => {
     const tokens = await api.login(email, password);
-    set({ accessToken: tokens.access, refreshToken: tokens.refresh });
+    set({ accessToken: tokens.access, status: 'authenticated' });
   },
 
   logout: async () => {
-    const { refreshToken } = get();
     // Clear locally first: whatever the server says, this device is signed out.
-    set({ accessToken: null, refreshToken: null, user: null, parentVerifiedUntil: null });
-    if (refreshToken) {
-      // Best effort — a failed blacklist must not strand the parent in a
-      // half-signed-out UI.
-      await api.logout(refreshToken).catch(() => undefined);
-    }
+    // The cookie needs the server (it is httpOnly), so the call is still made —
+    // but a failed blacklist must not strand the parent in a half-signed-out UI.
+    set({ accessToken: null, status: 'anonymous', user: null, parentVerifiedUntil: null });
+    await api.logout().catch(() => undefined);
   },
 
   refresh: async () => {
     if (inFlightRefresh) return inFlightRefresh;
 
-    const { refreshToken } = get();
-    if (!refreshToken) return null;
-
     inFlightRefresh = api
-      .refresh(refreshToken)
+      .refresh()
       .then((tokens) => {
-        // Rotation issues a new refresh token; keeping the old one would blacklist us.
-        set({ accessToken: tokens.access, refreshToken: tokens.refresh ?? refreshToken });
+        // The rotated refresh token arrives as a Set-Cookie; there is nothing for
+        // us to store, which is the entire benefit.
+        set({ accessToken: tokens.access, status: 'authenticated' });
         return tokens.access;
       })
       .catch(() => {
-        set({ accessToken: null, refreshToken: null, user: null });
+        set({ accessToken: null, status: 'anonymous', user: null });
         return null;
       })
       .finally(() => {
@@ -106,6 +127,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
 
     return inFlightRefresh;
+  },
+
+  bootstrap: () => {
+    bootstrapped ??= get()
+      .refresh()
+      .then(() => {
+        // `refresh` already set the outcome. This only covers the case where it
+        // resolved from an in-flight call that predates the bootstrap.
+        if (get().status === 'loading') set({ status: 'anonymous' });
+      });
+    return bootstrapped;
   },
 
   setUser: (user) => set({ user }),
@@ -123,8 +155,14 @@ connectAuth({
   onSessionLost: () =>
     useAuthStore.setState({
       accessToken: null,
-      refreshToken: null,
+      status: 'anonymous',
       user: null,
       parentVerifiedUntil: null,
     }),
 });
+
+/** Test seam: forget that the bootstrap ran. Never called by the app. */
+export function resetAuthBootstrapForTests(): void {
+  bootstrapped = null;
+  inFlightRefresh = null;
+}

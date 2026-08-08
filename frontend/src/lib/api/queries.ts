@@ -16,6 +16,7 @@ export const queryKeys = {
   children: ['children'] as const,
   companionCatalog: ['companion-catalog'] as const,
   companion: (childId: string) => ['companion', childId] as const,
+  adventure: (childId: string) => ['adventure', childId] as const,
 };
 
 /** How often the greeting scene asks whether the companion has finished waking up. */
@@ -119,6 +120,33 @@ export function useCreateCompanion(childId: string) {
       // created rather than on a fresh request.
       queryClient.setQueryData(queryKeys.companion(childId), companion);
     },
+  });
+}
+
+/**
+ * Begin an adventure for this child (§18.4).
+ *
+ * A `useQuery` for something that POSTs, deliberately. React Query holds one
+ * in-flight request per key, and that is the property this call needs more than
+ * mutation semantics: React 18 runs effects twice on mount in development, and
+ * without deduplication that is two adventures — two plans, two beats, two
+ * illustrations, two voice lines — every time a developer opens the story page.
+ *
+ * `staleTime: Infinity` for the same reason: within one mount, the adventure that
+ * was started *is* the adventure. Starting a new one is navigating here again.
+ * The backend replays an adventure's existing beat rather than regenerating it, so
+ * a reload lands the child back in the same story either way.
+ */
+export function useBeginAdventure(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.adventure(childId ?? ''),
+    queryFn: () => api.beginAdventure(childId as string),
+    enabled: Boolean(childId),
+    staleTime: Infinity,
+    // One retry. A story that silently starts three times over a flaky connection
+    // costs three plans; the child sees the idle companion either way.
+    retry: 1,
+    refetchOnMount: false,
   });
 }
 

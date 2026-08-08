@@ -229,13 +229,14 @@ def _turn_block(turn: Mapping[str, Any] | None) -> str:
     return "\n".join(lines) or "The child acted, but the action carried no content."
 
 
-def _output_contract() -> str:
+def _output_contract(schema: Mapping[str, Any] | None) -> str:
     # `sort_keys` keeps this layer byte-identical across runs and Python versions,
     # which is what makes the whole assembly cacheable and testable.
-    schema = json.dumps(beat_json_schema(), indent=2, sort_keys=True)
+    contract = schema if schema is not None else beat_json_schema()
+    rendered = json.dumps(contract, indent=2, sort_keys=True)
     return (
         "Reply with a single JSON object matching this schema exactly. No prose "
-        "outside the object, no extra keys.\n\n" + schema
+        "outside the object, no extra keys.\n\n" + rendered
     )
 
 
@@ -247,6 +248,7 @@ def assemble(
     plan: Mapping[str, Any] | None = None,
     running_summary: str = "",
     turn: Mapping[str, Any] | None = None,
+    output_schema: Mapping[str, Any] | None = None,
 ) -> list[PromptLayer]:
     """Return the ordered, labeled layers for one generation (§19.1).
 
@@ -254,6 +256,13 @@ def assemble(
     text the child or a model produced, and both are emitted as `DATA` layers.
     That mapping is fixed here rather than chosen by the caller, so a future call
     site cannot accidentally promote a memory to an instruction.
+
+    `output_schema` is the contract for *this* generation, defaulting to the beat
+    schema. The layers above it — identity, safety policy, companion state — are
+    what make a generation safe, and they are identical whether we are asking for
+    a story plan or a beat. A caller that needed a different shape and could not
+    say so here would have to assemble its own prompt, which is precisely how a
+    generation ends up with no safety layer attached to it.
     """
     instruction = LayerKind.INSTRUCTION
     data = LayerKind.DATA
@@ -269,7 +278,7 @@ def assemble(
         "learning_directive": (instruction, _learning_block(objective)),
         "story_plan": (instruction, _plan_block(plan, running_summary)),
         "current_turn": (data, _turn_block(turn)),
-        "output_contract": (instruction, _output_contract()),
+        "output_contract": (instruction, _output_contract(output_schema)),
     }
 
     layers = []

@@ -13,6 +13,8 @@ test file:
 """
 
 import datetime
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +57,122 @@ def offline_media(tmp_path: Path, settings: Any) -> Path:
     settings.IMAGE_PROVIDER = "local"
     settings.TTS_PROVIDER = "local"
     return tmp_path
+
+
+class ScriptedAIProvider:
+    """Stands in for Claude, answering by contract and recording every prompt.
+
+    It dispatches on the schema it is handed — `StoryPlan` or `Beat` — rather than
+    on call order, so a test that only cares about the beat does not have to know
+    that a plan is generated first.
+
+    Two things it does deliberately:
+
+    * **It echoes the child's seeds back.** The narration is built around the first
+      "loves X" line it can find in the prompt, so a test can follow one seed from
+      the child's profile all the way into a streamed beat. What that proves is the
+      *plumbing* — that interests reach the model at all; whether a real model uses
+      them well is what `manage.py smoke_story` is for.
+    * **It can be told to answer badly.** `queue_beat_response` pushes raw strings,
+      which is how the router's validate-and-repair path (§19.6) is exercised
+      end-to-end instead of only in the router's own unit tests.
+    """
+
+    name = "scripted"
+    output_mode = "json_schema"
+
+    def __init__(self) -> None:
+        self.prompts: list[tuple[str, str]] = []
+        self.queued: list[str] = []
+        self.plan_calls = 0
+        self.beat_calls = 0
+
+    def queue_beat_response(self, *raw: str) -> None:
+        """Answer the next beat call(s) with exactly these strings."""
+        self.queued.extend(raw)
+
+    def is_configured(self) -> bool:
+        return True
+
+    def generate_json(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        schema: dict[str, Any],
+    ) -> str:
+        user = str(messages[-1].get("content", ""))
+        self.prompts.append((system, user))
+
+        if schema.get("title") == "StoryPlan":
+            self.plan_calls += 1
+            return json.dumps(self.plan())
+
+        self.beat_calls += 1
+        if self.queued:
+            return self.queued.pop(0)
+        return json.dumps(self.beat(system))
+
+    @staticmethod
+    def plan() -> dict[str, Any]:
+        return {
+            "title": "The Frog Chorus",
+            "skeleton": [
+                "Pip and the child arrive at the riverbank at dawn.",
+                "The frog chorus has lost one of its singers.",
+                "They follow the sound upstream.",
+                "The missing frog is found under a leaf.",
+                "The whole chorus sings, and Pip says thank you.",
+            ],
+            "branch_themes": ["follow the river", "ask the dragonflies", "sing along"],
+        }
+
+    @staticmethod
+    def beat(system: str) -> dict[str, Any]:
+        loved = re.search(r"loves ([^.\n]+)\.", system)
+        subject = loved.group(1) if loved else "the woods"
+        return {
+            "beat_id": "b1",
+            "narration": f"Pip peeks over the log. Three little {subject} sit in a row!",
+            "scene": {
+                "setting": "mossy riverbank at dawn",
+                "illustration_prompt": f"a mossy riverbank at dawn with three {subject} on a log",
+                "characters_present": ["pip"],
+            },
+            "interaction": {
+                "type": "count",
+                "prompt_audio": "How many can you count?",
+                "expected": 3,
+                "choices": None,
+            },
+            "learning": {
+                "objective_id": "count_to_3",
+                "difficulty": 0.4,
+                "skill_evidence_key": "count_riverbank",
+            },
+            "emotion": "playful_curious",
+            "continuity_refs": ["companion:pip"],
+            "next_hint": "if the child counts -> cross the river",
+        }
+
+
+@pytest.fixture
+def fake_ai(monkeypatch: Any) -> ScriptedAIProvider:
+    """Replace provider *selection* only, so the router's own logic still runs.
+
+    Patching `from_settings` rather than the module-level `generate_beat` seam
+    keeps validate-and-repair (§19.6) in the path being tested. A test that stubbed
+    the whole router would pass while repair was broken.
+    """
+    from apps.story.ai.router import ModelRouter
+
+    provider = ScriptedAIProvider()
+    monkeypatch.setattr(
+        ModelRouter,
+        "from_settings",
+        classmethod(lambda cls: ModelRouter(providers=[provider])),
+    )
+    return provider
 
 
 @pytest.fixture

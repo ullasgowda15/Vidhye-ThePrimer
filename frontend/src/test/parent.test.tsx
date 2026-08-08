@@ -54,9 +54,11 @@ async function passTheGate(user: ReturnType<typeof userEvent.setup>) {
 }
 
 beforeEach(() => {
+  // `anonymous`, not `loading`: these tests are about the guards' decisions, and
+  // the bootstrap refresh that resolves `loading` has its own tests below.
   useAuthStore.setState({
     accessToken: null,
-    refreshToken: null,
+    status: 'anonymous',
     user: null,
     parentVerifiedUntil: null,
   });
@@ -115,10 +117,28 @@ describe('protected routes', () => {
     expect(await screen.findByRole('heading', { name: 'Welcome back' })).toBeInTheDocument();
   });
 
+  it('never flashes the login screen while the session is being restored', async () => {
+    // The state every page load starts in: the gate has been passed in this tab,
+    // the bootstrap refresh is in flight, and there is no token *yet*. A guard
+    // that reads the token alone redirects here — and the parent sees the login
+    // form appear and vanish on every single reload.
+    useAuthStore.setState({
+      parentVerifiedUntil: Date.now() + PARENT_GATE_TTL_MS,
+      accessToken: null,
+      status: 'loading',
+    });
+
+    renderApp('/parent');
+
+    expect(await screen.findByTestId('session-restoring')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Welcome back' })).not.toBeInTheDocument();
+  });
+
   it('shows the dashboard once a token is held', async () => {
     useAuthStore.setState({
       parentVerifiedUntil: Date.now() + PARENT_GATE_TTL_MS,
       accessToken: 'access-token',
+      status: 'authenticated',
     });
     vi.stubGlobal(
       'fetch',
@@ -150,6 +170,7 @@ describe('onboarding', () => {
     useAuthStore.setState({
       parentVerifiedUntil: Date.now() + PARENT_GATE_TTL_MS,
       accessToken: 'access-token',
+      status: 'authenticated',
     });
 
     const calls: string[] = [];
@@ -196,6 +217,7 @@ describe('onboarding', () => {
     useAuthStore.setState({
       parentVerifiedUntil: Date.now() + PARENT_GATE_TTL_MS,
       accessToken: 'access-token',
+      status: 'authenticated',
     });
 
     const bodies: string[] = [];

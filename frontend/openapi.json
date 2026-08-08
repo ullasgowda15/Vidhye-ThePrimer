@@ -31,7 +31,7 @@
         "/api/v1/auth/login": {
             "post": {
                 "operationId": "auth_login",
-                "description": "Exchange email + password for an access/refresh pair.\n\n`TokenViewBase` already sets `permission_classes = ()` and\n`authentication_classes = ()`, which is what a credential endpoint needs;\nre-stating them here would only invite someone to \"tidy\" them into the\nproject defaults and lock the login page behind a login.",
+                "description": "Exchange email + password for an access token and a refresh cookie.\n\n`TokenViewBase` already sets `permission_classes = ()` and\n`authentication_classes = ()`, which is what a credential endpoint needs;\nre-stating them here would only invite someone to \"tidy\" them into the\nproject defaults and lock the login page behind a login.",
                 "summary": "Log in",
                 "tags": [
                     "v1"
@@ -61,7 +61,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/TokenObtainPair"
+                                    "$ref": "#/components/schemas/AccessToken"
                                 }
                             }
                         },
@@ -73,31 +73,11 @@
         "/api/v1/auth/logout": {
             "post": {
                 "operationId": "auth_logout",
-                "description": "Blacklist a refresh token.",
+                "description": "End the session: blacklist the refresh token and delete its cookie.",
                 "summary": "Log out",
                 "tags": [
                     "v1"
                 ],
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/LogoutRequest"
-                            }
-                        },
-                        "application/x-www-form-urlencoded": {
-                            "schema": {
-                                "$ref": "#/components/schemas/LogoutRequest"
-                            }
-                        },
-                        "multipart/form-data": {
-                            "schema": {
-                                "$ref": "#/components/schemas/LogoutRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
                 "security": [
                     {
                         "jwtAuth": []
@@ -108,7 +88,7 @@
                 ],
                 "responses": {
                     "204": {
-                        "description": "Refresh token blacklisted."
+                        "description": "Session ended and cookie cleared."
                     }
                 }
             }
@@ -116,41 +96,24 @@
         "/api/v1/auth/refresh": {
             "post": {
                 "operationId": "auth_refresh",
-                "description": "Rotate a refresh token.\n\nWith `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION` the response\ncarries a *new* refresh token and the presented one is blacklisted, so the\nclient must replace both halves of the pair, not just the access token.\n\nUnauthenticated by inheritance, as in `LoginView` — the refresh token *is*\nthe credential.",
-                "summary": "Rotate tokens",
+                "description": "Rotate the session, using the cookie as the credential.\n\nWith `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION` a *new* refresh\ntoken is issued and the presented one is blacklisted, so the cookie must be\nreplaced on every call — which `move_to_cookie` does, in the same place it\nstrips the token from the body.\n\nThe token is read from the cookie and **only** from the cookie: accepting a\nbody as well would leave the old, script-readable path open forever, and a\nclient that still worked without the cookie is a client that never had to stop\nstoring the token.\n\nUnauthenticated by inheritance, as in `LoginView` — the refresh token *is* the\ncredential. `SameSite=Lax` on the cookie is what stops that from being a CSRF\nhole; see `apps.accounts.cookies`.",
+                "summary": "Rotate the session using the refresh cookie",
                 "tags": [
                     "v1"
                 ],
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/TokenRefreshRequest"
-                            }
-                        },
-                        "application/x-www-form-urlencoded": {
-                            "schema": {
-                                "$ref": "#/components/schemas/TokenRefreshRequest"
-                            }
-                        },
-                        "multipart/form-data": {
-                            "schema": {
-                                "$ref": "#/components/schemas/TokenRefreshRequest"
-                            }
-                        }
-                    },
-                    "required": true
-                },
                 "responses": {
                     "200": {
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/TokenRefresh"
+                                    "$ref": "#/components/schemas/AccessToken"
                                 }
                             }
                         },
                         "description": ""
+                    },
+                    "401": {
+                        "description": "No refresh cookie, or it is no longer valid."
                     }
                 }
             }
@@ -270,6 +233,66 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/Child"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/adventures": {
+            "post": {
+                "operationId": "adventure_begin",
+                "description": "Generates and persists the story plan, then returns the SSE URL that streams the beats. The first beat is generated inside the stream, not here, so the client can open the stream and start the companion's thinking animation immediately.\n\nThe stream itself is not in this schema: it is a raw `text/event-stream` endpoint (`GET /api/v1/adventures/{id}/stream`) rather than a DRF view. Its frames are documented in `apps/story/streaming.py`.",
+                "summary": "Begin an adventure",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AdventureStartRequestRequest"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AdventureStartRequestRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AdventureStartRequestRequest"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AdventureStart"
                                 }
                             }
                         },
@@ -683,6 +706,71 @@
     },
     "components": {
         "schemas": {
+            "AccessToken": {
+                "type": "object",
+                "description": "What login and refresh return: the access token, and nothing else.\n\nThe refresh half of the pair travels in a cookie the client cannot read, so\nthis really is the whole body — see `apps.accounts.views`.",
+                "properties": {
+                    "access": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "access"
+                ]
+            },
+            "AdventureCompanion": {
+                "type": "object",
+                "description": "The companion, reduced to what the story client needs up front (§18.4).\n\n`voiceId` so the client can pre-warm audio; `name` so the loading scene can\nsay who is thinking. Nothing else — the portrait and expressions are already\non the companion endpoint.",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "voiceId": {
+                        "type": "string",
+                        "nullable": true
+                    }
+                },
+                "required": [
+                    "name",
+                    "voiceId"
+                ]
+            },
+            "AdventureStart": {
+                "type": "object",
+                "description": "The response to `POST /children/{id}/adventures` (§18.4).",
+                "properties": {
+                    "adventureId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "streamUrl": {
+                        "type": "string"
+                    },
+                    "companion": {
+                        "$ref": "#/components/schemas/AdventureCompanion"
+                    },
+                    "estimatedBeats": {
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "adventureId",
+                    "companion",
+                    "estimatedBeats",
+                    "streamUrl"
+                ]
+            },
+            "AdventureStartRequestRequest": {
+                "type": "object",
+                "description": "The optional client hints on `POST /adventures` (§18.4).\n\nValidated but not yet used: mood- and time-of-day-aware planning is Day 11's\nwork. Declared now so a client can send it from the start, and so a malformed\n`context` is rejected today rather than on the day we begin reading it.\n\nThe field is built in `get_fields` rather than declared as a class attribute\nbecause §18.4 names it `context`, and a class attribute by that name shadows\n`Serializer.context` — the request/view dictionary every serializer relies on.\nThe wire name is what the spec fixes; where the field object lives is ours.",
+                "properties": {
+                    "context": {
+                        "type": "object",
+                        "additionalProperties": {},
+                        "description": "e.g. {timeOfDay, mood_hint}"
+                    }
+                }
+            },
             "ArchetypeEnum": {
                 "enum": [
                     "dragon",
@@ -1202,19 +1290,6 @@
                     "version"
                 ]
             },
-            "LogoutRequest": {
-                "type": "object",
-                "properties": {
-                    "refresh": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "The refresh token to blacklist."
-                    }
-                },
-                "required": [
-                    "refresh"
-                ]
-            },
             "Me": {
                 "type": "object",
                 "description": "The parent as the client sees them. No permission or staff flags leak out.",
@@ -1470,39 +1545,18 @@
             },
             "SignupResponse": {
                 "type": "object",
-                "description": "Response shape for signup — documented for the generated TS client.",
+                "description": "Response shape for signup — documented for the generated TS client.\n\nNo `refresh` field, deliberately. The refresh token leaves as an `httpOnly`\ncookie (`apps.accounts.cookies`); declaring it here would put it back in the\ngenerated client's type and invite someone to store it.",
                 "properties": {
                     "user": {
                         "$ref": "#/components/schemas/User"
                     },
                     "access": {
                         "type": "string"
-                    },
-                    "refresh": {
-                        "type": "string"
                     }
                 },
                 "required": [
                     "access",
-                    "refresh",
                     "user"
-                ]
-            },
-            "TokenObtainPair": {
-                "type": "object",
-                "properties": {
-                    "access": {
-                        "type": "string",
-                        "readOnly": true
-                    },
-                    "refresh": {
-                        "type": "string",
-                        "readOnly": true
-                    }
-                },
-                "required": [
-                    "access",
-                    "refresh"
                 ]
             },
             "TokenObtainPairRequest": {
@@ -1522,34 +1576,6 @@
                 "required": [
                     "email",
                     "password"
-                ]
-            },
-            "TokenRefresh": {
-                "type": "object",
-                "properties": {
-                    "access": {
-                        "type": "string",
-                        "readOnly": true
-                    },
-                    "refresh": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "access",
-                    "refresh"
-                ]
-            },
-            "TokenRefreshRequest": {
-                "type": "object",
-                "properties": {
-                    "refresh": {
-                        "type": "string",
-                        "minLength": 1
-                    }
-                },
-                "required": [
-                    "refresh"
                 ]
             },
             "User": {

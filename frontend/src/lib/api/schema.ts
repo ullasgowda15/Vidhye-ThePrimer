@@ -35,7 +35,7 @@ export interface paths {
         put?: never;
         /**
          * Log in
-         * @description Exchange email + password for an access/refresh pair.
+         * @description Exchange email + password for an access token and a refresh cookie.
          *
          *     `TokenViewBase` already sets `permission_classes = ()` and
          *     `authentication_classes = ()`, which is what a credential endpoint needs;
@@ -60,7 +60,7 @@ export interface paths {
         put?: never;
         /**
          * Log out
-         * @description Blacklist a refresh token.
+         * @description End the session: blacklist the refresh token and delete its cookie.
          */
         post: operations["auth_logout"];
         delete?: never;
@@ -79,15 +79,22 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Rotate tokens
-         * @description Rotate a refresh token.
+         * Rotate the session using the refresh cookie
+         * @description Rotate the session, using the cookie as the credential.
          *
-         *     With `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION` the response
-         *     carries a *new* refresh token and the presented one is blacklisted, so the
-         *     client must replace both halves of the pair, not just the access token.
+         *     With `ROTATE_REFRESH_TOKENS` + `BLACKLIST_AFTER_ROTATION` a *new* refresh
+         *     token is issued and the presented one is blacklisted, so the cookie must be
+         *     replaced on every call — which `move_to_cookie` does, in the same place it
+         *     strips the token from the body.
          *
-         *     Unauthenticated by inheritance, as in `LoginView` — the refresh token *is*
-         *     the credential.
+         *     The token is read from the cookie and **only** from the cookie: accepting a
+         *     body as well would leave the old, script-readable path open forever, and a
+         *     client that still worked without the cookie is a client that never had to stop
+         *     storing the token.
+         *
+         *     Unauthenticated by inheritance, as in `LoginView` — the refresh token *is* the
+         *     credential. `SameSite=Lax` on the cookie is what stops that from being a CSRF
+         *     hole; see `apps.accounts.cookies`.
          */
         post: operations["auth_refresh"];
         delete?: never;
@@ -144,6 +151,28 @@ export interface paths {
          * @description Requires an active consent record; returns 403 without one.
          */
         post: operations["children_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/adventures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begin an adventure
+         * @description Generates and persists the story plan, then returns the SSE URL that streams the beats. The first beat is generated inside the stream, not here, so the client can open the stream and start the companion's thinking animation immediately.
+         *
+         *     The stream itself is not in this schema: it is a raw `text/event-stream` endpoint (`GET /api/v1/adventures/{id}/stream`) rather than a DRF view. Its frames are documented in `apps/story/streaming.py`.
+         */
+        post: operations["adventure_begin"];
         delete?: never;
         options?: never;
         head?: never;
@@ -300,6 +329,52 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description What login and refresh return: the access token, and nothing else.
+         *
+         *     The refresh half of the pair travels in a cookie the client cannot read, so
+         *     this really is the whole body — see `apps.accounts.views`.
+         */
+        AccessToken: {
+            access: string;
+        };
+        /**
+         * @description The companion, reduced to what the story client needs up front (§18.4).
+         *
+         *     `voiceId` so the client can pre-warm audio; `name` so the loading scene can
+         *     say who is thinking. Nothing else — the portrait and expressions are already
+         *     on the companion endpoint.
+         */
+        AdventureCompanion: {
+            name: string;
+            voiceId: string | null;
+        };
+        /** @description The response to `POST /children/{id}/adventures` (§18.4). */
+        AdventureStart: {
+            /** Format: uuid */
+            adventureId: string;
+            streamUrl: string;
+            companion: components["schemas"]["AdventureCompanion"];
+            estimatedBeats: number;
+        };
+        /**
+         * @description The optional client hints on `POST /adventures` (§18.4).
+         *
+         *     Validated but not yet used: mood- and time-of-day-aware planning is Day 11's
+         *     work. Declared now so a client can send it from the start, and so a malformed
+         *     `context` is rejected today rather than on the day we begin reading it.
+         *
+         *     The field is built in `get_fields` rather than declared as a class attribute
+         *     because §18.4 names it `context`, and a class attribute by that name shadows
+         *     `Serializer.context` — the request/view dictionary every serializer relies on.
+         *     The wire name is what the spec fixes; where the field object lives is ours.
+         */
+        AdventureStartRequestRequest: {
+            /** @description e.g. {timeOfDay, mood_hint} */
+            context?: {
+                [key: string]: unknown;
+            };
+        };
         /**
          * @description * `dragon` - dragon
          *     * `fox` - fox
@@ -471,10 +546,6 @@ export interface components {
             service: string;
             version: string;
         };
-        LogoutRequest: {
-            /** @description The refresh token to blacklist. */
-            refresh: string;
-        };
         /** @description The parent as the client sees them. No permission or staff flags leak out. */
         Me: {
             /** Format: uuid */
@@ -570,26 +641,20 @@ export interface components {
             display_name?: string;
             locale?: string;
         };
-        /** @description Response shape for signup — documented for the generated TS client. */
+        /**
+         * @description Response shape for signup — documented for the generated TS client.
+         *
+         *     No `refresh` field, deliberately. The refresh token leaves as an `httpOnly`
+         *     cookie (`apps.accounts.cookies`); declaring it here would put it back in the
+         *     generated client's type and invite someone to store it.
+         */
         SignupResponse: {
             user: components["schemas"]["User"];
             access: string;
-            refresh: string;
-        };
-        TokenObtainPair: {
-            readonly access: string;
-            readonly refresh: string;
         };
         TokenObtainPairRequest: {
             email: string;
             password: string;
-        };
-        TokenRefresh: {
-            readonly access: string;
-            refresh: string;
-        };
-        TokenRefreshRequest: {
-            refresh: string;
         };
         /** @description The parent as the client sees them. No permission or staff flags leak out. */
         User: {
@@ -650,7 +715,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TokenObtainPair"];
+                    "application/json": components["schemas"]["AccessToken"];
                 };
             };
         };
@@ -662,15 +727,9 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LogoutRequest"];
-                "application/x-www-form-urlencoded": components["schemas"]["LogoutRequest"];
-                "multipart/form-data": components["schemas"]["LogoutRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Refresh token blacklisted. */
+            /** @description Session ended and cookie cleared. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -686,21 +745,22 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TokenRefreshRequest"];
-                "application/x-www-form-urlencoded": components["schemas"]["TokenRefreshRequest"];
-                "multipart/form-data": components["schemas"]["TokenRefreshRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TokenRefresh"];
+                    "application/json": components["schemas"]["AccessToken"];
                 };
+            };
+            /** @description No refresh cookie, or it is no longer valid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -769,6 +829,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Child"];
+                };
+            };
+        };
+    };
+    adventure_begin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdventureStartRequestRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["AdventureStartRequestRequest"];
+                "multipart/form-data": components["schemas"]["AdventureStartRequestRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdventureStart"];
                 };
             };
         };

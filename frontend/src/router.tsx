@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom';
 
 import ChildHome from './routes/child/ChildHome';
 import MeetCompanion from './routes/child/MeetCompanion';
+import StoryPage from './routes/child/StoryPage';
 import AdultGateRoute from './routes/parent/AdultGateRoute';
 import Login from './routes/parent/Login';
 import Onboarding from './routes/parent/Onboarding';
@@ -33,6 +34,10 @@ export const router = createBrowserRouter(
     // unauthenticated request could obtain — without a session it stays a
     // sleeping companion.
     { path: '/meet/:childId', element: <MeetCompanion /> },
+    // The story, in the child tree and outside the parent guards for the same
+    // reason: the child is the one holding the tablet. It runs under the parent's
+    // restored session; without one it stays a companion thinking, never a form.
+    { path: '/story/:childId', element: <StoryPage /> },
     {
       path: '/parent',
       children: [

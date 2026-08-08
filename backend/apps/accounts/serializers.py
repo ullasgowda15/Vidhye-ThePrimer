@@ -57,15 +57,25 @@ class SignupSerializer(serializers.ModelSerializer):
 
 
 class SignupResponseSerializer(serializers.Serializer):
-    """Response shape for signup — documented for the generated TS client."""
+    """Response shape for signup — documented for the generated TS client.
+
+    No `refresh` field, deliberately. The refresh token leaves as an `httpOnly`
+    cookie (`apps.accounts.cookies`); declaring it here would put it back in the
+    generated client's type and invite someone to store it.
+    """
 
     user = UserSerializer()
     access = serializers.CharField()
-    refresh = serializers.CharField()
 
 
-class LogoutSerializer(serializers.Serializer):
-    refresh = serializers.CharField(help_text="The refresh token to blacklist.")
+class AccessTokenSerializer(serializers.Serializer):
+    """What login and refresh return: the access token, and nothing else.
+
+    The refresh half of the pair travels in a cookie the client cannot read, so
+    this really is the whole body — see `apps.accounts.views`.
+    """
+
+    access = serializers.CharField()
 
 
 class ConsentRecordSerializer(serializers.ModelSerializer):

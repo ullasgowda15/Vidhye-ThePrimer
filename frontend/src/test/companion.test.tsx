@@ -121,7 +121,7 @@ function renderWith(ui: React.ReactElement, path = '/') {
 }
 
 beforeEach(() => {
-  useAuthStore.setState({ accessToken: 'access-token', refreshToken: null, user: null });
+  useAuthStore.setState({ accessToken: 'access-token', status: 'authenticated', user: null });
 });
 
 afterEach(() => {

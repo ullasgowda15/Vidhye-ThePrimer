@@ -119,6 +119,31 @@ class Beat(_Strict):
     )
 
 
+class StoryPlan(_Strict):
+    """The skeleton one adventure is generated against (§8.1).
+
+    Generated **once**, before the first beat, and then held constant. It is
+    deliberately thin — a title, an ordered list of stages, and a few candidate
+    directions — because a plan detailed enough to be a script would make the
+    child's choices cosmetic, and because most of a pre-generated story is
+    thrown away the moment they choose something else.
+
+    `skeleton` is a list of plain sentences rather than typed stages: it is
+    rendered into the prompt as prose (`prompting.assembler._plan_block`), never
+    dispatched on, so structure here would be structure nothing consumes.
+    """
+
+    title: str = Field(description="The adventure's name, in words a 4-year-old would use.")
+    skeleton: list[str] = Field(
+        description=(
+            "5-7 one-line stages in order, covering hook -> challenge -> climax -> resolution."
+        ),
+    )
+    branch_themes: list[str] = Field(
+        description="2-3 candidate directions the child's choices could take the story.",
+    )
+
+
 def strip_unsupported_keywords(node: Any) -> Any:
     """Recursively drop keywords the structured-output subset rejects.
 
@@ -145,4 +170,15 @@ def beat_json_schema() -> dict[str, Any]:
     0-1 bound on `difficulty` is enforced when the response is validated
     (`Beat.model_validate`), not asked of the provider.
     """
-    return cast("dict[str, Any]", strip_unsupported_keywords(Beat.model_json_schema()))
+    return json_schema_for(Beat)
+
+
+def json_schema_for(model: type[BaseModel]) -> dict[str, Any]:
+    """JSON Schema for any generated contract, shaped for provider APIs.
+
+    Same treatment as `beat_json_schema`, for the other things we ask a model to
+    return in a fixed shape — today `StoryPlan`, tomorrow whatever Day 5 needs.
+    Sharing one function means a constraint added anywhere is stripped in every
+    schema we send, not only in the beat's.
+    """
+    return cast("dict[str, Any]", strip_unsupported_keywords(model.model_json_schema()))

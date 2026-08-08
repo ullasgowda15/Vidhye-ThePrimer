@@ -1,21 +1,31 @@
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
-import { useHealth } from '@/lib/api/queries';
+import { useHealth, useMe } from '@/lib/api/queries';
 
 /**
  * The child landing surface — Storyland theme (PRODUCT.md §15.1).
  *
- * Placeholder for Day 1: no story, no companion, no interaction. What it does
- * prove is the shell — routing, tokens, and a live typed call to the backend.
+ * The star begins today's adventure. It can do that because the parent session
+ * now survives a cold start (the httpOnly refresh cookie, §18.2): the child taps,
+ * and the request goes out under their parent's session without anybody having to
+ * log in — which is the only version of this that works, since a three-year-old
+ * cannot pass a login form (§14.5).
  *
- * Note what is deliberately absent even in a placeholder: no text the child is
- * expected to read for navigation, no error state, no spinner. The health
- * signal is a dot in the corner, because a four-year-old must never be shown a
- * system failure (§14.5).
+ * One child per account at MVP, so the first child on `/me` is *the* child. A
+ * picker belongs here when siblings do.
+ *
+ * Note what is deliberately absent. No text the child must read to navigate, no
+ * error state, no spinner. If there is no session or no child yet, the star simply
+ * stays a star — a four-year-old must never be shown a system failure (§14.5), and
+ * "nothing happened" is a far better answer than an explanation they cannot read.
  */
 export default function ChildHome() {
+  const navigate = useNavigate();
   const { data, isError } = useHealth();
+  const { data: me } = useMe();
   const ok = data?.status === 'ok';
+
+  const child = me?.children?.[0];
 
   return (
     <main className="min-h-full bg-bg text-text flex flex-col items-center justify-center p-6 text-center">
@@ -32,8 +42,12 @@ export default function ChildHome() {
             touch targets later is how you end up with a frustrated toddler. */}
         <button
           type="button"
+          onClick={() => {
+            if (child) navigate(`/story/${child.id}`);
+          }}
           className="mt-6 min-h-target min-w-target rounded-full bg-accent px-7 text-5 font-display text-surface shadow-card transition-transform duration-base hover:scale-[1.03] active:scale-95"
           aria-label="Begin the story"
+          data-testid="begin-story"
         >
           ★
         </button>

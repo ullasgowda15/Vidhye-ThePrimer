@@ -218,6 +218,10 @@ REST_FRAMEWORK = {
         # couple of attempts an hour is a bug or an attack, and either way it is
         # spending real money.
         "companion": env("THROTTLE_COMPANION", default="20/hour"),
+        # Beginning an adventure costs a plan call, a beat call, an illustration
+        # and a TTS call before the child has done anything (§22.4). A family
+        # starts a few a day; a loop that starts one a second is a bug.
+        "adventure": env("THROTTLE_ADVENTURE", default="60/hour"),
     },
 }
 
@@ -237,6 +241,35 @@ SIMPLE_JWT = {
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
 }
+
+# ---------------------------------------------------------------------------
+# The refresh cookie (PRODUCT.md §18.2, §14.5)
+# ---------------------------------------------------------------------------
+# The child experience runs under a parent session and **a child cannot log in**
+# (§18.2). So the session has to survive a cold start — a morning, a reboot, a
+# tab the OS evicted — or a three-year-old is dropped at a login form, which is a
+# fail state and not an inconvenience (§14.5).
+#
+# It is persisted in an `httpOnly` cookie rather than `localStorage` because we
+# control the backend and therefore have no reason to choose the option that any
+# script on the origin can read: an XSS on a page showing a child's memories must
+# not also hand over a fourteen-day refresh token.
+#
+# `SameSite=Lax` is the **load-bearing CSRF control** here, not a hardening
+# extra. The refresh endpoint is unauthenticated by design (the cookie *is* the
+# credential), so without it any page on the internet could POST to it in a
+# signed-in parent's browser and rotate their session. Lax withholds the cookie
+# from cross-site POSTs, which is exactly that attack. It requires the API and the
+# app to be same-site in production (`api.theprimer.app` / `theprimer.app`) — see
+# DEPLOY.md. Scoped CORS is its defence-in-depth pair.
+REFRESH_COOKIE_NAME = env("REFRESH_COOKIE_NAME", default="primer_refresh")
+# Path-scoped to the two endpoints that need it (refresh, logout) rather than
+# sent with every API call. The access token is a header; this is not.
+REFRESH_COOKIE_PATH = "/api/v1/auth"
+REFRESH_COOKIE_SAMESITE = "Lax"
+# Overridden to True in prod.py. False here so the cookie works over plain HTTP
+# on localhost; a `Secure` cookie is simply never stored by the browser in dev.
+REFRESH_COOKIE_SECURE = False
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "The Primer API",

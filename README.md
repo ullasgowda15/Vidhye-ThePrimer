@@ -99,6 +99,7 @@ make help
 | `hello-beat` | Generate one validated story Beat |
 | `smoke` | Live AI smoke test — real calls, asserted. Never in CI |
 | `smoke-media` | Live media smoke test — real Cloudflare + ElevenLabs calls. Never in CI |
+| `smoke-story` | Live story smoke test: plan + beat + art + voice for one child. Never in CI |
 | `render-companion` | Render a companion's reference set + 3 scenes |
 | `ping` | Round-trip a task through Celery |
 
@@ -248,6 +249,33 @@ against a real companion instead (read-only — `--fresh` is refused there).
 **Not in CI and not in `make test`.** It makes real, metered calls; `make test`
 stays hermetic. Run it by hand after any change to the adapters, the art
 direction, or the cache keys.
+
+## Smoke-testing the story loop
+
+```bash
+make smoke-story CHILD=<child-uuid>
+```
+
+Generates one real adventure end to end: the plan and beat one from Claude, the
+illustration and the narration from the media providers, running concurrently. It
+calls exactly what `GET /api/v1/adventures/{id}/stream` calls; the only thing it
+does differently is print.
+
+It exists because the automated tests use a stand-in model, and a stand-in cannot
+answer the two questions Day 4 is judged on:
+
+- **Is beat one personalised?** The child's seeds and the generated beat are
+  printed side by side. A frog-lover should get a frog.
+- **Do the illustration and the voice really overlap?** With the offline adapters
+  both finish in milliseconds and concurrency is unmeasurable. With real providers
+  it is seconds: compare the printed wall time against the two per-stage durations
+  in the `story.media.timing` log lines. Concurrency is working when the wall time
+  is close to the *slower* of the two, not their sum.
+
+The adventure is deleted again unless you pass `SMOKE_ARGS=--keep`. Run
+`make render-companion CHILD=<uuid>` first, or the illustration will not be
+on-model — the canonical visual descriptor is what holds a companion's look
+together (§8.2).
 
 ## The parent path
 

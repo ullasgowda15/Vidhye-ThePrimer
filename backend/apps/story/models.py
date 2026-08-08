@@ -1,14 +1,33 @@
-"""Play session (PRODUCT.md §17.4 `session`).
+"""Story state — sessions, adventures, beats, choices (PRODUCT.md §17.2, §17.4).
 
-A session is one sitting at the app; an *adventure* (Day 4) is the story told
+A **session** is one sitting at the app; an **adventure** is the story told
 inside it. They are separate because a session can contain zero or several
 adventures, and because `ended_reason` is a wellbeing signal we report to
 parents (§13.6) independent of narrative completion.
+
+A **beat** is the atomic unit the whole engine trades in (§8.1) — one narrated
+moment with an illustration, a voice line, and something for the child to do.
+Beats are persisted rather than held in memory for three reasons: the running
+summary and the parent's transparency log (§12.6) are built from them, the media
+rows have to hang off something durable, and a child who closes the tab mid-story
+must be able to come back to the same forest.
+
+The DB `Beat` deliberately **mirrors** the generated contract in
+`apps.story.ai.schemas` rather than embedding it whole: the generated object is
+what a model produced, and this is what we chose to keep. `continuity_refs` and
+`next_hint` are generation-time hints that steer the *next* call; they are not
+persisted today because nothing reads them until the branch loop lands.
 """
 
 from django.db import models
 
 from apps.common.models import UUIDModel
+
+# What a child is told to expect from one sitting (§8.1's 5-7 beat arc). The
+# bounds exist because `estimatedBeats` is a promise made to a client before a
+# single beat has been generated.
+MIN_ESTIMATED_BEATS = 5
+MAX_ESTIMATED_BEATS = 7
 
 
 class PlaySession(UUIDModel):
@@ -42,3 +61,181 @@ class PlaySession(UUIDModel):
 
     def __str__(self) -> str:
         return f"{self.child.first_name} @ {self.started_at:%Y-%m-%d %H:%M}"
+
+
+class Adventure(UUIDModel):
+    """One story, from hook to resolution (§8.1, §17.2 `adventure`)."""
+
+    class Status(models.TextChoices):
+        IN_PROGRESS = "in_progress", "In progress"
+        COMPLETED = "completed", "Completed"
+        ABANDONED = "abandoned", "Abandoned"
+
+    child = models.ForeignKey(
+        "profiles.Child",
+        on_delete=models.CASCADE,
+        related_name="adventures",
+    )
+    # SET_NULL rather than CASCADE: an adventure outlives the sitting it began
+    # in. A session row may be pruned by a retention job (§13.8) long before the
+    # story it contained stops mattering to the child who remembers it.
+    session = models.ForeignKey(
+        PlaySession,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="adventures",
+    )
+    title = models.CharField(max_length=200, blank=True)
+
+    #: The skeleton (§8.1): `{title, skeleton: [...], branch_themes: [...]}`.
+    #: Generated once, up front, and then held constant — every beat is generated
+    #: *against* it, which is what stops a branching story from wandering.
+    plan = models.JSONField(default=dict, blank=True)
+
+    # Nullable today: the Learning Engine's objective selector is Day 10, so a
+    # Day-4 adventure carries the placeholder objective and nothing chose it.
+    # "Nobody has selected an objective yet" and "the objective is the empty
+    # string" are different states, and only one of them is a bug.
+    primary_objective_id = models.CharField(max_length=64, null=True, blank=True)  # noqa: DJ001
+    secondary_objective_id = models.CharField(max_length=64, null=True, blank=True)  # noqa: DJ001
+    difficulty = models.FloatField(default=0.4)
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.IN_PROGRESS,
+    )
+
+    #: Compacted history, kept small so the live prompt stays cheap (§8.6).
+    #: Empty until Day 5 writes the first compaction.
+    running_summary = models.TextField(blank=True)
+    #: The emotional trajectory across the arc (§8.8), appended per beat.
+    emotion_arc = models.JSONField(default=list, blank=True)
+
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [models.Index(fields=["child", "-started_at"])]
+
+    def __str__(self) -> str:
+        return self.title or f"Adventure {self.id}"
+
+    @property
+    def estimated_beats(self) -> int:
+        """How many beats the plan expects (§18.4 `estimatedBeats`).
+
+        Read from the skeleton rather than stored, so it cannot disagree with the
+        plan it describes. Clamped, because it is shown to a client as a progress
+        hint and a model that returned a two-step skeleton must not make the
+        child's story look nearly over before it starts.
+        """
+        steps = len(self.plan.get("skeleton") or [])
+        return min(max(steps, MIN_ESTIMATED_BEATS), MAX_ESTIMATED_BEATS)
+
+
+class Beat(UUIDModel):
+    """One narrated moment (§8.1). Mirrors the generated beat contract."""
+
+    class SafetyStatus(models.TextChoices):
+        """Whether the runtime safety layer has seen this beat.
+
+        `UNCHECKED` is the Day-4 truth and it is written down rather than
+        implied: the output classifier lands on Day 7, and a column with no
+        unchecked state would make every unmoderated beat look moderated.
+        """
+
+        UNCHECKED = "unchecked", "Not yet checked"
+        PASSED = "passed", "Passed"
+        REWRITTEN = "rewritten", "Rewritten by the safety layer"
+        BLOCKED = "blocked", "Blocked"
+
+    adventure = models.ForeignKey(
+        Adventure,
+        on_delete=models.CASCADE,
+        related_name="beats",
+    )
+    seq = models.PositiveIntegerField()
+    narration = models.TextField()
+
+    #: `{setting, illustration_prompt, characters_present}` (§8.1).
+    scene = models.JSONField(default=dict, blank=True)
+    #: `{type, prompt_audio, expected, choices}` — null when the beat asks nothing.
+    interaction = models.JSONField(null=True, blank=True)
+    #: `{objective_id, difficulty, skill_evidence_key}` — null when nothing is
+    #: being practised. Day 10 reads these back as mastery evidence.
+    learning = models.JSONField(null=True, blank=True)
+    emotion = models.CharField(max_length=32, blank=True)
+
+    # `+` reverse names: a Media row is reached through its beat, never the other
+    # way round, and two FKs to the same table would otherwise collide.
+    media = models.ForeignKey(
+        "media.Media",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    audio = models.ForeignKey(
+        "media.Media",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    safety_status = models.CharField(
+        max_length=16,
+        choices=SafetyStatus.choices,
+        default=SafetyStatus.UNCHECKED,
+    )
+
+    class Meta:
+        ordering = ["adventure", "seq"]
+        constraints = [
+            # One beat per position. The stream generates beats sequentially, but
+            # a client that opens the stream twice (a reload mid-generation is the
+            # obvious way) would otherwise write two beat-1s into one story and
+            # the child would be told the opening twice.
+            models.UniqueConstraint(fields=["adventure", "seq"], name="beat_adventure_seq_uniq"),
+        ]
+
+    def __str__(self) -> str:
+        return f"beat {self.seq} of {self.adventure_id}"
+
+
+class Choice(UUIDModel):
+    """What the child picked, and what it cost them (§8.5).
+
+    Defined today, **written on Day 5**. It exists now because the beat that
+    offers a choice and the row that records it are one migration's worth of
+    schema, and because `latency_ms`/`retries`/`assisted` are the wellbeing and
+    difficulty signals (§8.9, §10.4) — recording them from the first choice ever
+    made is worth more than adding the columns once there is data to lose.
+    """
+
+    adventure = models.ForeignKey(
+        Adventure,
+        on_delete=models.CASCADE,
+        related_name="choices",
+    )
+    beat = models.ForeignKey(Beat, on_delete=models.CASCADE, related_name="choices")
+
+    options = models.JSONField(default=list, blank=True)
+    chosen_key = models.CharField(max_length=64, blank=True)
+    consequence_summary = models.TextField(blank=True)
+
+    #: How long the child took, how many attempts, and whether the companion
+    #: counted along. Never a score — struggle is scaffolded, never punished (§8.5).
+    latency_ms = models.IntegerField(null=True, blank=True)
+    retries = models.IntegerField(default=0)
+    assisted = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["adventure", "-created_at"])]
+
+    def __str__(self) -> str:
+        return f"{self.chosen_key or '(unanswered)'} on beat {self.beat_id}"

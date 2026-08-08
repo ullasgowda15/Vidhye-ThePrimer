@@ -27,13 +27,14 @@ export type ChildRequest = components['schemas']['ChildRequest'];
 export type PatchedChildRequest = components['schemas']['PatchedChildRequest'];
 export type SignupRequest = components['schemas']['SignupRequest'];
 export type SignupResponse = components['schemas']['SignupResponse'];
-export type TokenPair = components['schemas']['TokenObtainPair'];
-export type TokenRefresh = components['schemas']['TokenRefresh'];
+/** Login and refresh both return this: an access token, and nothing else. */
+export type AccessToken = components['schemas']['AccessToken'];
 export type ConsentRecord = components['schemas']['ConsentRecord'];
 export type ConsentRecordRequest = components['schemas']['ConsentRecordRequest'];
 export type Companion = components['schemas']['Companion'];
 export type CompanionRequest = components['schemas']['CompanionRequest'];
 export type CompanionCatalog = components['schemas']['CompanionCatalog'];
+export type AdventureStart = components['schemas']['AdventureStart'];
 export type PaletteColors = components['schemas']['PaletteColors'];
 export type ArchetypeOption = components['schemas']['ArchetypeOption'];
 /** Catalogue keys. Unions of literals, so a typo is a build error. */
@@ -100,6 +101,16 @@ interface RequestOptions {
   signal?: AbortSignal;
   /** Send the bearer token and retry once after a silent refresh. */
   authenticated?: boolean;
+  /**
+   * Send and accept the refresh cookie.
+   *
+   * Only the four `/auth/*` endpoints need this: the cookie is path-scoped
+   * server-side, so the browser would not attach it elsewhere anyway, and saying
+   * so per call documents which requests carry a credential the client cannot
+   * see. Without it `fetch` drops the `Set-Cookie` on a cross-origin deploy and
+   * the session silently stops surviving reloads.
+   */
+  withCookie?: boolean;
 }
 
 async function parseBody(response: Response): Promise<unknown> {
@@ -123,6 +134,7 @@ async function send(path: string, options: RequestOptions, token: string | null)
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal,
+    credentials: options.withCookie ? 'include' : 'same-origin',
   });
 }
 
@@ -157,25 +169,33 @@ export const api = {
       method: 'POST',
       body: payload,
       authenticated: false,
+      withCookie: true,
     }),
 
   login: (email: string, password: string) =>
-    request<TokenPair>(`${V1}/auth/login`, {
+    request<AccessToken>(`${V1}/auth/login`, {
       method: 'POST',
       body: { email, password },
       authenticated: false,
+      withCookie: true,
     }),
 
-  /** Rotation returns a *new* refresh token too; callers must store both. */
-  refresh: (refresh: string) =>
-    request<TokenRefresh>(`${V1}/auth/refresh`, {
+  /**
+   * Spend the refresh cookie for a new access token.
+   *
+   * No argument and no body: the credential is the `httpOnly` cookie, which the
+   * browser attaches and this code cannot read. Rotation replaces it via
+   * `Set-Cookie`, so there is nothing to store on the way back either.
+   */
+  refresh: () =>
+    request<AccessToken>(`${V1}/auth/refresh`, {
       method: 'POST',
-      body: { refresh },
       authenticated: false,
+      withCookie: true,
     }),
 
-  logout: (refresh: string) =>
-    request<null>(`${V1}/auth/logout`, { method: 'POST', body: { refresh } }),
+  /** Blacklist the session server-side and clear the cookie. */
+  logout: () => request<null>(`${V1}/auth/logout`, { method: 'POST', withCookie: true }),
 
   me: (signal?: AbortSignal) => request<Me>(`${V1}/me`, { signal }),
 
@@ -208,5 +228,19 @@ export const api = {
     request<Companion>(`${V1}/children/${childId}/companion`, {
       method: 'POST',
       body: payload,
+    }),
+
+  /**
+   * Begin an adventure (§18.4).
+   *
+   * Returns before the first beat exists: the plan is saved, and `streamUrl` is
+   * where the beats arrive. The client is meant to open that stream immediately —
+   * the generation latency is hidden behind the companion's thinking animation,
+   * not behind this request.
+   */
+  beginAdventure: (childId: string) =>
+    request<AdventureStart>(`${V1}/children/${childId}/adventures`, {
+      method: 'POST',
+      body: {},
     }),
 };
