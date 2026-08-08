@@ -8,7 +8,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -119,6 +119,9 @@ function renderWith(ui: React.ReactElement, path = '/') {
         <Routes>
           <Route path="/" element={ui} />
           <Route path="/meet/:childId" element={ui} />
+          {/* Stood in for rather than rendered: what matters here is that the
+              imprint scene *goes* somewhere, not what the story page does. */}
+          <Route path="/story/:childId" element={<div data-testid="story-route">story</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -131,6 +134,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // Several of these spy on `HTMLMediaElement.prototype.play`, which is shared
+  // across the whole file — a leaked spy would silently change a later test.
+  vi.restoreAllMocks();
 });
 
 describe('companion picker', () => {
@@ -272,7 +278,59 @@ describe('meeting the companion', () => {
 
     await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
   });
+
+  it('does not start the greeting over when the child touches the screen', async () => {
+    // The reported bug. The whole scene is a tap target so that a browser which
+    // refused autoplay still has a way in — but a child explores by touching, and
+    // while that handler stayed armed the companion repeated their one line every
+    // few seconds with nothing on screen to say why.
+    const user = userEvent.setup();
+    const play = await autoplayed();
+
+    fireEvent.ended(screen.getByTestId('companion-greeting-audio'));
+    await user.click(screen.getByRole('heading', { name: 'Pip' }));
+    await user.click(screen.getByText(/Hi Aarav!/));
+
+    expect(play).toHaveBeenCalledTimes(1);
+  });
+
+  it('will say it again, but only when asked', async () => {
+    // Repeating is a reasonable thing for a four-year-old to want. It just has to
+    // be a thing they chose, on a control that says so.
+    const user = userEvent.setup();
+    const play = await autoplayed();
+
+    fireEvent.ended(screen.getByTestId('companion-greeting-audio'));
+    await user.click(screen.getByRole('button', { name: /Hear Pip say hello again/ }));
+
+    expect(play).toHaveBeenCalledTimes(2);
+  });
+
+  it('leads into a story instead of dead-ending on the greeting', async () => {
+    // §4.3 hands off to §4.4. Without this the imprint had no exit at all: no
+    // link, no auto-advance, nothing but the browser's back button — which is not
+    // an affordance a child who cannot read is going to find.
+    const user = userEvent.setup();
+    await autoplayed();
+
+    await user.click(screen.getByTestId('begin-story'));
+
+    expect(await screen.findByTestId('story-route')).toBeInTheDocument();
+  });
 });
+
+/** Render the greeting scene with a working `play()`, and wait for autoplay. */
+async function autoplayed() {
+  const play = vi.fn().mockResolvedValue(undefined);
+  vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockImplementation(play);
+  stubApi({ companion: READY_COMPANION });
+
+  renderWith(<MeetCompanion />, '/meet/child-1');
+
+  await screen.findByTestId('companion-portrait');
+  await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+  return play;
+}
 
 /**
  * The poll's *rate*, which is the half of the bug that lived on this side.

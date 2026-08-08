@@ -18,19 +18,33 @@
  * Audio autoplays where the browser allows it, and where it does not — which is
  * most tablets on a fresh page — the whole scene is one enormous tap target
  * that starts it. A tap is something a four-year-old does anyway.
+ *
+ * That tap target is armed **only until the greeting has been heard**, and the
+ * distinction is the whole of it. A child explores a screen by touching it, so a
+ * live whole-screen handler after the greeting has finished means the companion
+ * restarts their one line every few seconds — the same sentence, forever, with
+ * no way to avoid triggering it and nothing on screen to explain why. Repeating
+ * is a fine thing to want; it just has to be asked for. So once the greeting has
+ * started, the scene stops listening and replay moves onto its own control.
+ *
+ * The scene also ends somewhere. The imprint hands off to the first story
+ * (§4.3 → §4.4): the star does here what it does on the home screen, so the
+ * gesture a child has already learned is the one that works.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { useCompanion } from '@/lib/api/queries';
 
 export default function MeetCompanion() {
   const { childId } = useParams();
+  const navigate = useNavigate();
   const { data: companion } = useCompanion(childId);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [spoken, setSpoken] = useState(false);
+  /** Has the greeting begun playing? Not "finished" — see `handleSceneTap`. */
+  const [heard, setHeard] = useState(false);
 
   const audioUrl = companion?.greeting.audio_url ?? null;
   const ready = Boolean(companion?.assets_ready);
@@ -42,14 +56,21 @@ export default function MeetCompanion() {
    * and on older engines returns nothing at all — so both shapes are handled.
    * Neither outcome may surface: the tap-to-begin affordance covers a refusal,
    * and a child is never shown a failure (§13).
+   *
+   * `force` is what the "again" control passes. Without it a call that lands
+   * mid-sentence is ignored rather than starting the line over: per the media
+   * spec `play()` on an element that has already ended seeks back to the top,
+   * which is exactly what replay wants and exactly what a stray tap must not do.
    */
-  function speak() {
-    if (!audioUrl) return;
+  function speak({ force = false }: { force?: boolean } = {}) {
+    const element = audioRef.current;
+    if (!element || !audioUrl) return;
+    if (!force && !element.paused) return;
     try {
-      const started = audioRef.current?.play();
+      const started = element.play();
       if (started && typeof started.then === 'function') {
         started.then(
-          () => setSpoken(true),
+          () => undefined,
           () => undefined,
         );
       }
@@ -58,17 +79,28 @@ export default function MeetCompanion() {
     }
   }
 
+  /**
+   * The fallback for a browser that refused autoplay, and only that.
+   *
+   * Disarmed as soon as the greeting is under way, so touching the scene
+   * afterwards does nothing at all.
+   */
+  function handleSceneTap() {
+    if (heard) return;
+    speak();
+  }
+
   // Speak the moment the voice exists. Autoplay is the intent; the tap is the
   // fallback, not the plan.
   useEffect(() => {
-    if (!audioUrl || spoken) return;
+    if (!audioUrl || heard) return;
     speak();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioUrl, spoken]);
+  }, [audioUrl, heard]);
 
   return (
     <main
-      onClick={speak}
+      onClick={handleSceneTap}
       className="min-h-full bg-bg text-text flex flex-col items-center justify-center p-6 text-center"
     >
       <div className="relative flex flex-col items-center">
@@ -92,21 +124,48 @@ export default function MeetCompanion() {
             {companion.greeting.text}
           </p>
 
-          {!spoken ? (
+          {/* Two glyphs, no words: the sun is this companion's hello and the
+              star is a story, which is what it already means on the home screen.
+              Whichever action is next carries the accent. */}
+          <div className="mt-7 flex items-center justify-center gap-5">
+            {audioUrl ? (
+              <button
+                type="button"
+                // The whole scene is a tap target too, so the click is stopped
+                // here rather than starting the greeting twice.
+                onClick={(event) => {
+                  event.stopPropagation();
+                  speak({ force: true });
+                }}
+                aria-label={
+                  heard
+                    ? `Hear ${companion.name} say hello again`
+                    : `Say hello to ${companion.name}`
+                }
+                data-testid="companion-greeting-replay"
+                className={`min-h-target min-w-target rounded-full px-8 text-6 font-display shadow-card transition-transform duration-base motion-safe:hover:scale-105 active:scale-95 ${
+                  heard ? 'bg-surface text-primary' : 'bg-accent text-surface'
+                }`}
+              >
+                ☀
+              </button>
+            ) : null}
+
             <button
               type="button"
-              // The whole scene is also a tap target, so the click is stopped
-              // here rather than starting the greeting twice.
               onClick={(event) => {
                 event.stopPropagation();
-                speak();
+                if (childId) navigate(`/story/${childId}`);
               }}
-              aria-label={`Say hello to ${companion.name}`}
-              className="mt-7 min-h-target min-w-target rounded-full bg-accent px-8 text-6 font-display text-surface shadow-card transition-transform duration-base motion-safe:hover:scale-105 active:scale-95"
+              aria-label={`Begin a story with ${companion.name}`}
+              data-testid="begin-story"
+              className={`min-h-target min-w-target rounded-full px-8 text-6 font-display shadow-card transition-transform duration-base motion-safe:hover:scale-105 active:scale-95 ${
+                heard || !audioUrl ? 'bg-accent text-surface' : 'bg-surface text-primary'
+              }`}
             >
-              ☀
+              ★
             </button>
-          ) : null}
+          </div>
         </>
       ) : (
         <p className="font-display text-4 mt-7 max-w-[30rem] text-text-muted">
@@ -120,7 +179,11 @@ export default function MeetCompanion() {
           src={audioUrl}
           data-testid="companion-greeting-audio"
           preload="auto"
-          onEnded={() => setSpoken(true)}
+          // `onPlay` rather than the `play()` promise: the element is the thing
+          // that knows, and it also covers a play the user started some other
+          // way (native controls, a media key).
+          onPlay={() => setHeard(true)}
+          onEnded={() => setHeard(true)}
         />
       ) : null}
 
