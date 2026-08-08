@@ -178,23 +178,39 @@ export function useCreateCompanion(childId: string) {
 }
 
 /**
- * Begin an adventure for this child (§18.4).
+ * The adventure this child is in, starting one only if they are not in any (§18.4).
  *
- * A `useQuery` for something that POSTs, deliberately. React Query holds one
- * in-flight request per key, and that is the property this call needs more than
- * mutation semantics: React 18 runs effects twice on mount in development, and
- * without deduplication that is two adventures — two plans, two beats, two
- * illustrations, two voice lines — every time a developer opens the story page.
+ * **Resume first, begin second.** This used to POST straight away and lean on the
+ * React Query cache to keep it from happening twice. That works within one mount
+ * and not one step further: the cache is memory-only — there is no
+ * `persistQueryClient` anywhere and deliberately so, since an adventure id is
+ * server state — so a hard refresh forgot which story was being told and the page
+ * began a new one. A plan, an opening beat, an illustration and a voice line, per
+ * reload. The backend's replay path was correct the whole time and was simply never
+ * asked for the same adventure twice.
  *
- * `staleTime: Infinity` for the same reason: within one mount, the adventure that
- * was started *is* the adventure. Starting a new one is navigating here again.
- * The backend replays an adventure's existing beat rather than regenerating it, so
- * a reload lands the child back in the same story either way.
+ * So the mount *asks*: `GET …/adventures/current` returns the in-progress adventure
+ * or a 204, and only a 204 leads to a POST. The reload then reopens the same stream
+ * and gets its beat from replay — no generation, no spend.
+ *
+ * Two belts remain, because this is the expensive thing to get wrong:
+ *
+ * - a `useQuery` rather than a mutation, so React Query holds one in-flight request
+ *   per key and React 18's development double-mount is deduplicated rather than
+ *   doubled;
+ * - the POST itself is idempotent server-side while an adventure is `in_progress`,
+ *   so even a client that skips the read entirely gets one story.
+ *
+ * `staleTime: Infinity`: within one mount, the adventure being told *is* the
+ * adventure. Getting a different one means the current one finished.
  */
-export function useBeginAdventure(childId: string | undefined) {
+export function useAdventure(childId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.adventure(childId ?? ''),
-    queryFn: () => api.beginAdventure(childId as string),
+    queryFn: async ({ signal }) => {
+      const resumed = await api.currentAdventure(childId as string, signal);
+      return resumed ?? (await api.beginAdventure(childId as string));
+    },
     enabled: Boolean(childId),
     staleTime: Infinity,
     // One retry. A story that silently starts three times over a flaky connection

@@ -247,6 +247,17 @@ REST_FRAMEWORK = {
         # and a TTS call before the child has done anything (§22.4). A family
         # starts a few a day; a loop that starts one a second is a bug.
         "adventure": env("THROTTLE_ADVENTURE", default="60/hour"),
+        # *Asking whether* a story is in progress is one indexed lookup, and the
+        # child surface does it on every mount so a reload rejoins the same story.
+        # Its own scope for the same reason `companion_read` has one: a read that
+        # spends the write budget locks the product out of its own feature.
+        "adventure_read": env("THROTTLE_ADVENTURE_READ", default="480/hour"),
+        # Opening the beat stream. This is where a beat is actually generated, so
+        # it needs a ceiling of its own — the `adventure` scope above never saw it,
+        # because the stream is a plain async view rather than a DRF one. Sized for
+        # reloads rather than for starts: a reload re-opens the stream and replays,
+        # which is cheap, and React StrictMode opens it twice per mount in dev.
+        "adventure_stream": env("THROTTLE_ADVENTURE_STREAM", default="180/hour"),
     },
 }
 

@@ -149,6 +149,8 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
   signal?: AbortSignal;
+  /** What we will take back. Only the beat stream wants anything but JSON. */
+  accept?: string;
   /** Send the bearer token and retry once after a silent refresh. */
   authenticated?: boolean;
   /**
@@ -175,7 +177,7 @@ async function parseBody(response: Response): Promise<unknown> {
 }
 
 async function send(path: string, options: RequestOptions, token: string | null) {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: options.accept ?? 'application/json' };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -218,6 +220,34 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     throw new ApiError(`${options.method ?? 'GET'} ${path} failed`, response.status, body);
   }
   return body as T;
+}
+
+/**
+ * Open an authenticated streaming GET, refreshing once on a 401.
+ *
+ * The beat stream is the one authenticated call that cannot go through
+ * `request()` — that function reads the whole body to parse it, which is exactly
+ * what a stream must not do. So it went out with a bare `fetch` and a token, and
+ * therefore had no silent refresh: an access token that expired in the seconds
+ * before the stream opened left the child looking at a thinking companion forever,
+ * with a 401 nobody could act on. Access tokens live fifteen minutes and a child's
+ * session is longer than that, so this is a routine event, not an edge case.
+ *
+ * The response is returned unread. The caller consumes `response.body`.
+ */
+export async function openStream(path: string, signal?: AbortSignal): Promise<Response> {
+  const options: RequestOptions = { accept: 'text/event-stream', signal };
+
+  let response = await send(path, options, bridge.accessToken());
+  if (response.status === 401) {
+    const refreshed = await bridge.refresh();
+    if (refreshed) {
+      response = await send(path, options, refreshed);
+    } else {
+      bridge.onSessionLost();
+    }
+  }
+  return response;
 }
 
 export const api = {
@@ -291,12 +321,29 @@ export const api = {
     }),
 
   /**
-   * Begin an adventure (§18.4).
+   * The adventure this child is in the middle of, or `null` (a 204) if there is
+   * none (§18.4).
+   *
+   * This is what makes a reload land back in the same story. The adventure id
+   * lives only in a React Query cache, which is memory-only, so a hard refresh
+   * forgets it — and a client that has forgotten which story it was telling used
+   * to start a new one. Asking is a read: it cannot cost a generation however
+   * often a buggy client does it.
+   */
+  currentAdventure: (childId: string, signal?: AbortSignal) =>
+    request<AdventureStart | null>(`${V1}/children/${childId}/adventures/current`, { signal }),
+
+  /**
+   * Begin an adventure — or rejoin the one already in progress (§18.4).
    *
    * Returns before the first beat exists: the plan is saved, and `streamUrl` is
    * where the beats arrive. The client is meant to open that stream immediately —
    * the generation latency is hidden behind the companion's thinking animation,
    * not behind this request.
+   *
+   * Idempotent server-side while the child has an `in_progress` adventure, which
+   * is the backstop under `currentAdventure`: even a client that skips the read
+   * and POSTs twice gets one story.
    */
   beginAdventure: (childId: string) =>
     request<AdventureStart>(`${V1}/children/${childId}/adventures`, {

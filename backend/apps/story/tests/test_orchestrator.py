@@ -25,6 +25,20 @@ from apps.story.models import Adventure
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def no_media_worker(monkeypatch) -> None:
+    """Keep the beat-media task out of these tests by default.
+
+    This file is about *generating* — prompts, plans, beats, and the two media
+    stages themselves. Handing every persisted beat to a worker as well would
+    attach media behind the back of the tests that assert on its absence (a failed
+    illustration must leave `beat.media_id` null) and would put traffic on a broker
+    the suite does not own. The scheduling rules have their own tests below, which
+    opt back in explicitly.
+    """
+    monkeypatch.setattr(orchestrator, "schedule_beat_media", lambda beat: None)
+
+
 @pytest.fixture
 def frog_lover(db: Any) -> Child:
     from django.contrib.auth import get_user_model
@@ -429,14 +443,19 @@ def test_a_beat_that_loses_the_position_race_adopts_the_winner(
 
 
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
-def test_two_streams_on_one_adventure_produce_one_opening_beat(frog_lover, fake_ai) -> None:
-    """Two clients opening the same stream at once.
+def test_two_streams_on_one_adventure_generate_the_opening_beat_once(frog_lover, fake_ai) -> None:
+    """Two clients opening the same stream at once — a reload mid-generation, two
+    devices, or React StrictMode mounting the effect twice in development.
 
-    Whichever way the two interleave — both finding nothing and racing to write,
-    or the second finding the first's beat and replaying it — the invariant is the
-    same and it is the one the child experiences: one opening.
+    The invariant the child experiences is one opening, and the unique constraint
+    always delivered that. What it could not deliver is the invariant the *bill*
+    experiences: both callers could check, both find nothing, and both call the
+    provider before either wrote, so one paid-for beat was generated and thrown
+    away. The lock in `_first_beat_or_generate` is what closes that window, and
+    `beat_calls` is the only assertion here that would have failed before it.
     """
     adventure = orchestrator.create_adventure(frog_lover)
+    before = fake_ai.beat_calls
 
     async def both():
         return await asyncio.gather(
@@ -448,3 +467,146 @@ def test_two_streams_on_one_adventure_produce_one_opening_beat(frog_lover, fake_
 
     assert left.id == right.id
     assert adventure.beats.count() == 1
+    assert fake_ai.beat_calls - before == 1, "both streams called the provider"
+
+
+# ---------------------------------------------------------------------------
+# Resuming an adventure by name (§18.4, §14.5)
+# ---------------------------------------------------------------------------
+def test_an_in_progress_adventure_is_resumed_rather_than_replaced(frog_lover, fake_ai) -> None:
+    first, created_first = orchestrator.resume_or_create_adventure(frog_lover)
+    plans = fake_ai.plan_calls
+
+    second, created_second = orchestrator.resume_or_create_adventure(frog_lover)
+
+    assert created_first is True
+    assert created_second is False
+    assert second.id == first.id
+    assert fake_ai.plan_calls == plans
+    assert Adventure.objects.count() == 1
+
+
+def test_only_an_in_progress_adventure_counts_as_current(frog_lover, fake_ai) -> None:
+    adventure, _ = orchestrator.resume_or_create_adventure(frog_lover)
+    assert orchestrator.current_adventure(frog_lover) == adventure
+
+    for finished in (Adventure.Status.COMPLETED, Adventure.Status.ABANDONED):
+        Adventure.objects.filter(pk=adventure.pk).update(status=finished)
+        assert orchestrator.current_adventure(frog_lover) is None, finished
+
+
+def test_one_child_s_story_is_never_another_child_s(frog_lover, fake_ai) -> None:
+    import datetime as dt
+
+    sibling = Child.objects.create(
+        parent=frog_lover.parent,
+        first_name="Nia",
+        birthdate=dt.date(dt.date.today().year - 3, 2, 2),
+    )
+    mine, _ = orchestrator.resume_or_create_adventure(frog_lover)
+
+    assert orchestrator.current_adventure(sibling) is None
+    theirs, created = orchestrator.resume_or_create_adventure(sibling)
+    assert created is True
+    assert theirs.id != mine.id
+
+
+# ---------------------------------------------------------------------------
+# Handing the media to a worker (§16.3)
+# ---------------------------------------------------------------------------
+def test_a_persisted_beat_is_handed_to_the_media_worker(frog_lover, fake_ai, monkeypatch) -> None:
+    """The enqueue is the whole fix for the orphaned beat, so it is asserted
+    directly rather than inferred from the media turning up."""
+    handed: list[Any] = []
+    monkeypatch.setattr(orchestrator, "schedule_beat_media", handed.append)
+
+    adventure = orchestrator.create_adventure(frog_lover)
+    beat = orchestrator.create_beat(adventure)
+
+    assert [b.id for b in handed] == [beat.id]
+
+
+def test_pending_stages_name_what_is_missing(frog_lover, fake_ai) -> None:
+    adventure = orchestrator.create_adventure(frog_lover)
+    beat = orchestrator.create_beat(adventure)
+
+    assert set(orchestrator.pending_media_stages(beat)) == {
+        orchestrator.ILLUSTRATION_STAGE,
+        orchestrator.VOICE_STAGE,
+    }
+
+    beat.audio = orchestrator.narrate_beat(beat)
+    beat.save(update_fields=["audio", "updated_at"])
+    assert orchestrator.pending_media_stages(beat) == (orchestrator.ILLUSTRATION_STAGE,)
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_a_repair_run_only_does_the_stage_that_is_missing(frog_lover, fake_ai) -> None:
+    """Half a beat's media is the state a dead worker leaves behind.
+
+    Finishing it must not re-run the half that landed: the media pipeline is
+    cache-first so a re-run is cheap rather than free, and "cheap" multiplied by
+    every reload is how the last cost leak got in.
+    """
+    adventure = orchestrator.create_adventure(frog_lover)
+    beat = orchestrator.create_beat(adventure)
+    beat.audio = orchestrator.narrate_beat(beat)
+    beat.save(update_fields=["audio", "updated_at"])
+
+    ran: list[str] = []
+    real_illustrate, real_narrate = orchestrator.illustrate_beat, orchestrator.narrate_beat
+
+    def record(label, fn):
+        def wrapped(target):
+            ran.append(label)
+            return fn(target)
+
+        return wrapped
+
+    orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
+        (orchestrator.ILLUSTRATION_STAGE, "media", record("illustration", real_illustrate)),
+        (orchestrator.VOICE_STAGE, "audio", record("voice", real_narrate)),
+    )
+    try:
+        async_to_sync(orchestrator.attach_media)(
+            beat, stages=orchestrator.pending_media_stages(beat)
+        )
+    finally:
+        orchestrator.MEDIA_STAGES = (  # type: ignore[misc]
+            (orchestrator.ILLUSTRATION_STAGE, "media", real_illustrate),
+            (orchestrator.VOICE_STAGE, "audio", real_narrate),
+        )
+
+    assert ran == ["illustration"]
+    beat.refresh_from_db()
+    assert beat.media_id is not None and beat.audio_id is not None
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_the_media_task_finishes_a_beat_nobody_is_watching(frog_lover, fake_ai) -> None:
+    """The task, called the way a worker calls it — no stream, no client."""
+    from apps.story.tasks import generate_beat_media
+
+    adventure = orchestrator.create_adventure(frog_lover)
+    beat = orchestrator.create_beat(adventure)
+    assert beat.media_id is None and beat.audio_id is None
+
+    assert generate_beat_media(str(beat.id)) == "complete"
+
+    beat.refresh_from_db()
+    assert beat.media_id is not None
+    assert beat.audio_id is not None
+    # Idempotent: a second open queueing a repair for a beat that is already whole
+    # must cost nothing at all.
+    assert generate_beat_media(str(beat.id)) == "skipped"
+
+
+def test_the_media_task_shrugs_at_a_deleted_beat(frog_lover, fake_ai, caplog) -> None:
+    """The child was deleted while the task was queued. The deletion is the newer
+    instruction, not an error to retry."""
+    from apps.story.tasks import generate_beat_media
+
+    with caplog.at_level("INFO", logger="apps.story.tasks"):
+        assert generate_beat_media("00000000-0000-4000-8000-000000000000") == "missing"
+
+    assert "story.media_task_skipped" in caplog.text

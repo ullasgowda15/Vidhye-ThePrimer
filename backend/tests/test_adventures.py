@@ -41,6 +41,23 @@ def adventures_url(child_id: Any) -> str:
     return f"/api/v1/children/{child_id}/adventures"
 
 
+def current_url(child_id: Any) -> str:
+    return f"/api/v1/children/{child_id}/adventures/current"
+
+
+@pytest.fixture(autouse=True)
+def media_worker(settings) -> None:
+    """Run the beat-media task inline, because the suite has no Celery worker.
+
+    The picture and the voice are a worker's job now (`apps/story/tasks.py`), and
+    a test that queued them into a broker nobody is draining would wait out the
+    stream's follow timeout and then assert on a beat with no media. Eager mode
+    still goes through `generate_beat_media`, so the path under test is the real
+    one — only the transport is short-circuited.
+    """
+    settings.CELERY_TASK_ALWAYS_EAGER = True
+
+
 @pytest.fixture
 def aarav(parent, consent) -> Child:
     """A five-year-old who loves frogs. The frogs are the point: they are the seed
@@ -113,6 +130,124 @@ def test_the_plan_call_carries_the_safety_layer_and_the_seeds(auth, aarav, pip, 
     assert '"title": "StoryPlan"' in system
 
 
+# ---------------------------------------------------------------------------
+# Resuming: the same story, by name (§18.4, §14.5)
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db
+def test_a_second_begin_rejoins_the_same_adventure(auth, aarav, pip, fake_ai) -> None:
+    """The reload leak, closed at the endpoint.
+
+    The client's cache is memory-only, so a hard refresh lost the adventure id and
+    the story page POSTed again — a new plan, a new opening beat, a new
+    illustration and a new voice line, every reload. The founder's dev database
+    grew to seven adventures for one child in twenty-three minutes.
+
+    Making "begin" mean "begin **or** rejoin" fixes the reload, React StrictMode's
+    double mount and a second device with one rule, and puts it where no client can
+    forget it.
+    """
+    first = auth.post(adventures_url(aarav.id), {}, format="json")
+    plans = fake_ai.plan_calls
+
+    second = auth.post(adventures_url(aarav.id), {}, format="json")
+
+    assert first.status_code == 201
+    # 200, not 201: nothing was created, and the client can tell.
+    assert second.status_code == 200, second.data
+    assert second.data["adventureId"] == first.data["adventureId"]
+    assert second.data["streamUrl"] == first.data["streamUrl"]
+    assert Adventure.objects.count() == 1
+    assert fake_ai.plan_calls == plans, "rejoining must not generate a second plan"
+
+
+@pytest.mark.django_db
+def test_a_finished_adventure_does_not_block_the_next_one(auth, aarav, pip, fake_ai) -> None:
+    """`in_progress` is the gate, not "has ever had an adventure".
+
+    Completion arrives with the choice loop on Day 5; this pins the rule the day
+    before, so the endpoint that decides is already the right one.
+    """
+    first = auth.post(adventures_url(aarav.id), {}, format="json")
+    Adventure.objects.update(status=Adventure.Status.COMPLETED)
+
+    second = auth.post(adventures_url(aarav.id), {}, format="json")
+
+    assert second.status_code == 201
+    assert second.data["adventureId"] != first.data["adventureId"]
+    assert Adventure.objects.count() == 2
+
+
+@pytest.mark.django_db
+def test_current_returns_the_in_progress_adventure(auth, aarav, pip, fake_ai) -> None:
+    started = auth.post(adventures_url(aarav.id), {}, format="json")
+    plans = fake_ai.plan_calls
+
+    response = auth.get(current_url(aarav.id))
+
+    assert response.status_code == 200, response.data
+    assert response.data == started.data
+    # A read, all the way down: asking where the child is must never cost a
+    # generation.
+    assert fake_ai.plan_calls == plans
+    assert Adventure.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_current_is_204_when_there_is_no_story_yet(auth, aarav, pip, fake_ai) -> None:
+    response = auth.get(current_url(aarav.id))
+
+    # 204 rather than 404: "this child is not in a story" is a normal state the
+    # child surface reaches on every first visit, not a missing resource.
+    assert response.status_code == 204
+    assert not Adventure.objects.exists()
+    assert fake_ai.plan_calls == 0
+
+
+@pytest.mark.django_db
+def test_current_is_scoped_to_the_owning_parent(api, other_parent, aarav, pip, fake_ai) -> None:
+    login = api.post(LOGIN_URL, {"email": other_parent.email, "password": PASSWORD}, format="json")
+    api.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+
+    # 403 rather than 204: the wrong parent must not learn whether stories exist.
+    assert api.get(current_url(aarav.id)).status_code == 403
+
+
+@pytest.mark.django_db
+def test_current_requires_authentication(api, aarav) -> None:
+    assert api.get(current_url(aarav.id)).status_code == 401
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_a_reload_resumes_the_same_story_from_replay(auth, aarav, pip, fake_ai) -> None:
+    """The founder's test, end to end: start, reload, land in the same forest.
+
+    The reload is modelled the way the browser does it — the client keeps nothing,
+    asks `current`, and reopens the stream it is handed. What must be true is that
+    the second visit reaches the *replay* path: same adventure, same beat, no
+    second plan and no second beat generation.
+    """
+    started = auth.post(adventures_url(aarav.id), {}, format="json")
+    token = auth._credentials["HTTP_AUTHORIZATION"].removeprefix("Bearer ")
+    first = frames_of(collect_stream(started.data["streamUrl"], token)[1])
+    spent = (fake_ai.plan_calls, fake_ai.beat_calls)
+
+    # The reload: nothing remembered, so the client asks who it was talking to.
+    resumed = auth.get(current_url(aarav.id))
+    second = frames_of(collect_stream(resumed.data["streamUrl"], token)[1])
+
+    assert resumed.status_code == 200
+    assert resumed.data["adventureId"] == started.data["adventureId"]
+    assert second[0][1]["beatId"] == first[0][1]["beatId"]
+    assert second[0][1]["narration"] == first[0][1]["narration"]
+    # Not one further provider call, and not one further row.
+    assert (fake_ai.plan_calls, fake_ai.beat_calls) == spent
+    assert Adventure.objects.count() == 1
+    assert Beat.objects.count() == 1
+    # Replayed complete: the media was already on the beat, so it rode in on the
+    # `beat` frame and no `media` frames were needed at all.
+    assert [name for name, _ in second] == ["beat", "done"]
+
+
 @pytest.mark.django_db
 def test_beginning_an_adventure_requires_a_companion(auth, aarav, fake_ai) -> None:
     response = auth.post(adventures_url(aarav.id), {}, format="json")
@@ -173,6 +308,30 @@ def collect_stream(url: str, token: str | None) -> tuple[Any, list[str]]:
             async for chunk in response.streaming_content  # type: ignore[attr-defined]
         ]
         return response, chunks
+
+    return async_to_sync(run)()
+
+
+def abandon_stream(url: str, token: str, *, after: int) -> list[str]:
+    """Read `after` chunks, then drop the connection — a closed tab, a slept tablet.
+
+    Closing the async iterator throws `GeneratorExit` into the view's generator at
+    whichever `yield` it is parked on, which is exactly what Django does when the
+    client goes away. Everything the stream had *started* by then has to finish
+    without it.
+    """
+
+    async def run() -> list[str]:
+        client = AsyncClient()
+        response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        chunks: list[str] = []
+        iterator = response.streaming_content.__aiter__()  # type: ignore[attr-defined]
+        try:
+            for _ in range(after):
+                chunks.append((await iterator.__anext__()).decode())
+        finally:
+            await iterator.aclose()
+        return chunks
 
     return async_to_sync(run)()
 
@@ -381,3 +540,105 @@ def test_an_unknown_adventure_is_a_404(started) -> None:
     unknown = "/api/v1/adventures/00000000-0000-4000-8000-000000000000/stream"
     response, _ = collect_stream(unknown, started["token"])
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Media outlives the connection (§16.3, §18.5)
+# ---------------------------------------------------------------------------
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_a_client_that_leaves_mid_beat_does_not_orphan_it(started) -> None:
+    """The bleed the Day-4 review measured, closed.
+
+    A `curl -N` killed after two seconds still logged `story.beat … gen_ms=26375`
+    twenty-four seconds later: the beat finished on its own offloaded thread and
+    was persisted, but the coroutine that would have started the illustration and
+    the voice never got that far. Of six beats in the founder's database, three
+    were missing at least one asset — permanently, because the same adventure was
+    never reopened either (see the resume tests above).
+
+    The media is a task keyed on the beat now, enqueued the moment the beat is
+    committed. So the connection is allowed to die: this reads the open comment and
+    the beat, then hangs up before the `media` frames, and the beat still ends up
+    whole.
+    """
+    chunks = abandon_stream(started["body"]["streamUrl"], started["token"], after=2)
+
+    assert chunks[0] == ": open\n\n"
+    assert "event: beat" in chunks[1]
+
+    beat = Beat.objects.select_related("media", "audio").get()
+    assert beat.media is not None, "the picture was lost with the connection"
+    assert beat.audio is not None, "the voice was lost with the connection"
+    assert beat.media.is_servable and beat.audio.is_servable
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_a_beat_left_without_media_is_repaired_on_the_next_open(
+    started, monkeypatch, caplog
+) -> None:
+    """A worker that died, or a broker that was down when the beat was written.
+
+    The old code healed this by accident — `if not (image_url and audio_url)` re-ran
+    the stages, which also double-paid whenever two clients did it at once. The
+    repair is deliberate now, and it is a *queue*, not a generation inside the
+    response.
+
+    The beat is aged past `MEDIA_RETRY_AFTER_S` first, because a beat that was
+    touched a moment ago is assumed to be in a live worker's hands and must **not**
+    be queued a second time — that assumption is what stops a reload from paying
+    twice for one picture.
+    """
+    import datetime as dt
+
+    from django.utils import timezone
+
+    from apps.story import orchestrator
+
+    # A beat written while nothing was listening for it.
+    monkeypatch.setattr(orchestrator, "schedule_beat_media", lambda beat: None)
+    orphan = orchestrator.create_beat(Adventure.objects.get(), seq=1)
+    monkeypatch.undo()
+
+    assert orphan.media_id is None and orphan.audio_id is None
+    Beat.objects.filter(pk=orphan.pk).update(
+        updated_at=timezone.now() - dt.timedelta(seconds=orchestrator.MEDIA_RETRY_AFTER_S + 60)
+    )
+
+    with caplog.at_level("INFO", logger="apps.story.orchestrator"):
+        _, chunks = collect_stream(started["body"]["streamUrl"], started["token"])
+    events = frames_of(chunks)
+
+    assert "story.media_repair" in caplog.text
+    # Both assets reach this client, and both are on the beat for the next one.
+    assert sorted("scene" in payload for name, payload in events if name == "media") == [
+        False,
+        True,
+    ]
+    orphan.refresh_from_db()
+    assert orphan.media_id is not None
+    assert orphan.audio_id is not None
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_a_beat_still_being_worked_on_is_not_queued_again(started, caplog) -> None:
+    """The other half of the repair rule, and the expensive half.
+
+    A stream that reopens ten seconds into a twenty-five-second generation must
+    trust the worker that already owns the beat. Queueing a second copy would miss
+    the media cache on both sides and charge twice for one picture and one clip —
+    which is the shape of every cost leak this pass exists to close.
+    """
+    from apps.story import orchestrator
+
+    collect_stream(started["body"]["streamUrl"], started["token"])
+    beat = Beat.objects.get()
+    # Strip the media back off, leaving a beat that looks freshly written.
+    Beat.objects.filter(pk=beat.pk).update(media=None, audio=None)
+    beat.refresh_from_db()
+
+    with caplog.at_level("INFO", logger="apps.story.orchestrator"):
+        queued = orchestrator.ensure_media_scheduled(beat)
+
+    assert queued is False
+    assert "story.media_in_flight" in caplog.text
+    assert "story.media_repair" not in caplog.text

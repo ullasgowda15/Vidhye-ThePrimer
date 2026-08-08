@@ -1,15 +1,25 @@
 """Adventure endpoints (PRODUCT.md §18.4, §18.5, §16.4).
 
-    POST /api/v1/children/{id}/adventures   begin an adventure (plan + stream url)
-    GET  /api/v1/adventures/{id}/stream     SSE: the beats
+    POST /api/v1/children/{id}/adventures           begin *or rejoin* an adventure
+    GET  /api/v1/children/{id}/adventures/current   the in-progress one, or 204
+    GET  /api/v1/adventures/{id}/stream             SSE: the beats
 
-The two are deliberately different kinds of view.
+The three are deliberately different kinds of view.
 
-**The POST is an ordinary DRF view.** It is a normal request/response: check
-ownership and consent, generate the plan, persist, answer. It returns *before*
-the first beat is generated so the client can open the stream immediately and
-put the companion's thinking animation on screen — the wait is the same either
-way, and this way the child is looking at something during it (§14.5).
+**The POST is an ordinary DRF view, and it is idempotent.** It is a normal
+request/response: check ownership and consent, find or generate the plan, persist,
+answer. It returns *before* the first beat is generated so the client can open the
+stream immediately and put the companion's thinking animation on screen — the wait
+is the same either way, and this way the child is looking at something during it
+(§14.5).
+
+"Idempotent" here means: while a child has an `in_progress` adventure, this
+endpoint returns **that** adventure (200) rather than starting a second one (201).
+Without it, a client that lost the adventure id — a hard refresh does exactly that,
+since the client's cache is memory-only — began a whole new story, and the backend's
+replay path was never reachable in practice. `GET …/adventures/current` is the same
+answer without the possibility of a write, and is what the child surface asks on
+mount.
 
 **The stream is a plain async Django view.** DRF has no async handler support, and
 this endpoint's whole job is to not buffer, so it authenticates by hand and yields
@@ -43,7 +53,7 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.throttling import ScopedRateThrottle, SimpleRateThrottle
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from apps.accounts.consent import require_consent
@@ -78,35 +88,13 @@ class CompanionRequired(APIException):
     default_code = "companion_required"
 
 
-@extend_schema_view(
-    post=extend_schema(
-        operation_id="adventure_begin",
-        summary="Begin an adventure",
-        description=(
-            "Generates and persists the story plan, then returns the SSE URL that "
-            "streams the beats. The first beat is generated inside the stream, not "
-            "here, so the client can open the stream and start the companion's "
-            "thinking animation immediately.\n\n"
-            "The stream itself is not in this schema: it is a raw "
-            "`text/event-stream` endpoint (`GET /api/v1/adventures/{id}/stream`) "
-            "rather than a DRF view. Its frames are documented in "
-            "`apps/story/streaming.py`."
-        ),
-        request=AdventureStartRequestSerializer,
-        responses={201: AdventureStartSerializer},
-    )
-)
-class AdventureStartView(GenericAPIView):
-    serializer_class = AdventureStartRequestSerializer
+class AdventureChildView(GenericAPIView):
+    """Shared plumbing for the two child-scoped adventure endpoints."""
+
     permission_classes = [IsAuthenticated, IsParentOwner]
-    # An adventure costs a plan call, a beat call, an illustration and a TTS
-    # call before the child has done anything (§22.4). A family starts a handful
-    # a day; anything past a couple of dozen an hour is a bug or an attack.
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "adventure"
     queryset = Adventure.objects.none()
 
-    def post(self, request: Request, child_id: str, *args: Any, **kwargs: Any) -> Response:
+    def child_for(self, request: Request, child_id: str) -> Child:
         child = get_object_or_404(Child, pk=child_id)
         # Against the *child*, before any adventure row is read or written: a
         # request from the wrong parent must not learn whether stories exist.
@@ -115,21 +103,130 @@ class AdventureStartView(GenericAPIView):
 
         if not Companion.objects.filter(child=child).exists():
             raise CompanionRequired
+        return child
+
+    def payload_for(self, adventure: Adventure) -> dict[str, Any]:
+        return start_payload(
+            adventure,
+            stream_url=reverse("adventure-stream", kwargs={"adventure_id": adventure.id}),
+        )
+
+
+@extend_schema_view(
+    post=extend_schema(
+        operation_id="adventure_begin",
+        summary="Begin or rejoin an adventure",
+        description=(
+            "Returns the child's in-progress adventure if they have one (**200**), "
+            "and otherwise generates and persists a story plan and returns the new "
+            "adventure (**201**). Either way the body carries the SSE URL that "
+            "streams the beats.\n\n"
+            "It is idempotent on purpose: a client that has lost the adventure id — "
+            "a hard refresh, a remount, a second device — must rejoin the same story "
+            "rather than pay for a new one. A child gets a new adventure once the "
+            "current one is no longer `in_progress`.\n\n"
+            "The first beat is generated inside the stream, not here, so the client "
+            "can open the stream and start the companion's thinking animation "
+            "immediately.\n\n"
+            "The stream itself is not in this schema: it is a raw "
+            "`text/event-stream` endpoint (`GET /api/v1/adventures/{id}/stream`) "
+            "rather than a DRF view. Its frames are documented in "
+            "`apps/story/streaming.py`."
+        ),
+        request=AdventureStartRequestSerializer,
+        responses={200: AdventureStartSerializer, 201: AdventureStartSerializer},
+    )
+)
+class AdventureStartView(AdventureChildView):
+    serializer_class = AdventureStartRequestSerializer
+    # An adventure costs a plan call, a beat call, an illustration and a TTS
+    # call before the child has done anything (§22.4). A family starts a handful
+    # a day; anything past a couple of dozen an hour is a bug or an attack.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "adventure"
+
+    def post(self, request: Request, child_id: str, *args: Any, **kwargs: Any) -> Response:
+        child = self.child_for(request, child_id)
 
         # Validated even though nothing reads it yet, so a client that sends a
         # malformed `context` is told now rather than on the day we start using it.
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        adventure = orchestrator.create_adventure(child)
-        payload = start_payload(
-            adventure,
-            stream_url=reverse("adventure-stream", kwargs={"adventure_id": adventure.id}),
-        )
+        adventure, created = orchestrator.resume_or_create_adventure(child)
         return Response(
-            AdventureStartSerializer(payload).data,
-            status=status.HTTP_201_CREATED,
+            AdventureStartSerializer(self.payload_for(adventure)).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="adventure_current",
+        summary="The adventure this child is in the middle of",
+        description=(
+            "**200** with the same body as `POST /adventures` when the child has an "
+            "`in_progress` adventure, **204** when they do not.\n\n"
+            "This is what the child surface calls on mount: it resumes a story "
+            "across a reload without the possibility of starting one, so a client "
+            "bug can cost a request but never a generation."
+        ),
+        responses={200: AdventureStartSerializer, 204: None},
+    )
+)
+class AdventureCurrentView(AdventureChildView):
+    serializer_class = AdventureStartSerializer
+    # Its own scope, sized for a read. Sharing `adventure` would let a page that
+    # merely *asks* whether a story is in progress spend the budget for starting
+    # one — the same mistake `companion_read` exists to undo, one endpoint over.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "adventure_read"
+
+    def get(self, request: Request, child_id: str, *args: Any, **kwargs: Any) -> Response:
+        child = self.child_for(request, child_id)
+
+        adventure = orchestrator.current_adventure(child)
+        if adventure is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        return Response(AdventureStartSerializer(self.payload_for(adventure)).data)
+
+
+class StreamRateThrottle(SimpleRateThrottle):
+    """A per-parent ceiling on stream opens, applied by hand.
+
+    DRF's throttles are attached to DRF views, and this endpoint is not one — so
+    the `adventure` scope guarded only the POST, and opening the stream, which is
+    where a beat is actually generated, was unlimited. A client stuck in a retry
+    loop on a beatless adventure could run N generations and throw all but one away.
+
+    Keyed on the parent, never the IP: a family behind one NAT is one address, and
+    the thing worth bounding is a runaway client rather than a guessable secret.
+    The user is passed in because this runs after hand-rolled authentication, so
+    `request.user` has not been populated by any middleware.
+    """
+
+    scope = "adventure_stream"
+
+    def __init__(self, user: Any) -> None:
+        self.user = user
+        super().__init__()
+
+    def get_cache_key(self, request: Any = None, view: Any = None) -> str:
+        return self.cache_format % {"scope": self.scope, "ident": self.user.pk}
+
+    def allow(self) -> bool:
+        """`allow_request` without the DRF request/view it never looks at.
+
+        The base class reads neither argument once `get_cache_key` stops asking
+        for them, and this endpoint has neither to give — the request here is a
+        plain `HttpRequest` and there is no `APIView` at all.
+        """
+        return self.allow_request(None, None)  # type: ignore[arg-type]
+
+
+def _within_stream_rate(user: Any) -> bool:
+    return StreamRateThrottle(user).allow()
 
 
 async def adventure_stream(request: HttpRequest, adventure_id: str) -> HttpResponseBase:
@@ -145,6 +242,12 @@ async def adventure_stream(request: HttpRequest, adventure_id: str) -> HttpRespo
     user = await sync_to_async(_authenticated_user)(request)
     if user is None:
         return _error(status.HTTP_401_UNAUTHORIZED, "Authentication credentials were not provided.")
+
+    # After authentication, so the limit is per parent — and before the adventure
+    # is loaded, so a hammering client costs one cache read.
+    if not await sync_to_async(_within_stream_rate)(user):
+        logger.warning("story.stream_throttled parent=%s adventure=%s", user.pk, adventure_id)
+        return _error(status.HTTP_429_TOO_MANY_REQUESTS, "Too many story streams just now.")
 
     adventure, owned = await sync_to_async(_load_adventure)(adventure_id, user)
     if adventure is None:

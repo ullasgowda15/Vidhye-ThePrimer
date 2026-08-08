@@ -175,12 +175,38 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Begin an adventure
-         * @description Generates and persists the story plan, then returns the SSE URL that streams the beats. The first beat is generated inside the stream, not here, so the client can open the stream and start the companion's thinking animation immediately.
+         * Begin or rejoin an adventure
+         * @description Returns the child's in-progress adventure if they have one (**200**), and otherwise generates and persists a story plan and returns the new adventure (**201**). Either way the body carries the SSE URL that streams the beats.
+         *
+         *     It is idempotent on purpose: a client that has lost the adventure id — a hard refresh, a remount, a second device — must rejoin the same story rather than pay for a new one. A child gets a new adventure once the current one is no longer `in_progress`.
+         *
+         *     The first beat is generated inside the stream, not here, so the client can open the stream and start the companion's thinking animation immediately.
          *
          *     The stream itself is not in this schema: it is a raw `text/event-stream` endpoint (`GET /api/v1/adventures/{id}/stream`) rather than a DRF view. Its frames are documented in `apps/story/streaming.py`.
          */
         post: operations["adventure_begin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/adventures/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The adventure this child is in the middle of
+         * @description **200** with the same body as `POST /adventures` when the child has an `in_progress` adventure, **204** when they do not.
+         *
+         *     This is what the child surface calls on mount: it resumes a story across a reload without the possibility of starting one, so a client bug can cost a request but never a generation.
+         */
+        get: operations["adventure_current"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -858,6 +884,14 @@ export interface operations {
             };
         };
         responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdventureStart"];
+                };
+            };
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -865,6 +899,34 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AdventureStart"];
                 };
+            };
+        };
+    };
+    adventure_current: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdventureStart"];
+                };
+            };
+            /** @description No response body */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

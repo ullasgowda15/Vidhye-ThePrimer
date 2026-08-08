@@ -9,6 +9,7 @@ import pytest
 from rest_framework.throttling import SimpleRateThrottle
 
 from tests.conftest import CHILDREN_URL, LOGIN_URL, PASSWORD, REFRESH_URL, SIGNUP_URL
+from tests.test_adventures import collect_stream
 
 pytestmark = pytest.mark.django_db
 
@@ -163,6 +164,95 @@ def test_reading_a_companion_is_still_bounded(companion_urls, split_companion_ra
 
     assert statuses[:3] == [404, 404, 404]
     assert statuses[3] == 429
+
+
+# ---------------------------------------------------------------------------
+# The beat stream has a ceiling of its own (§18.5, §22.4)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def story_child(auth, parent, consent, settings):
+    """A child with a companion, and an adventure to stream."""
+    import datetime
+
+    from apps.companion.service import create_companion
+    from apps.profiles.models import Child
+
+    # No Celery worker in the suite; the stream would otherwise wait out its media
+    # follow timeout. See `tests/test_adventures.media_worker`.
+    settings.CELERY_TASK_ALWAYS_EAGER = True
+
+    child = Child.objects.create(
+        parent=parent,
+        first_name="Aarav",
+        birthdate=datetime.date(datetime.date.today().year - 5, 5, 4),
+        interests=["frogs"],
+    )
+    companion = create_companion(
+        child=child,
+        archetype="dragon",
+        name="Pip",
+        palette="ember",
+        personality_preset="brave_spark",
+    )
+    companion.visual_descriptor = "a small round friendly dragon"
+    companion.save(update_fields=["visual_descriptor"])
+    return auth, child
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_opening_the_beat_stream_is_capped(story_child, monkeypatch, fake_ai) -> None:
+    """The gap the Day-4 review found.
+
+    `GET /adventures/{id}/stream` is a plain async view, so DRF's throttles never
+    saw it — the 60/hour `adventure` scope guarded the POST, which is the cheap
+    half. The stream is where a beat is generated, so N concurrent opens on one
+    beatless adventure ran N generations and threw away all but one.
+    """
+    from rest_framework.throttling import SimpleRateThrottle
+
+    auth, child = story_child
+    monkeypatch.setattr(
+        SimpleRateThrottle,
+        "THROTTLE_RATES",
+        {"anon": "100/min", "user": "100/min", "adventure": "100/min", "adventure_stream": "2/min"},
+    )
+
+    started = auth.post(f"/api/v1/children/{child.id}/adventures", {}, format="json")
+    assert started.status_code == 201, started.data
+    url = started.data["streamUrl"]
+    token = auth._credentials["HTTP_AUTHORIZATION"].removeprefix("Bearer ")
+
+    statuses = [collect_stream(url, token)[0].status_code for _ in range(3)]
+
+    # A normal single open is untouched; a client in a retry loop meets a wall
+    # before it can spend a third generation.
+    assert statuses[:2] == [200, 200]
+    assert statuses[2] == 429
+
+
+def test_asking_where_the_child_is_does_not_spend_the_start_budget(
+    story_child, monkeypatch, fake_ai
+) -> None:
+    """`GET /adventures/current` is called on every mount so a reload rejoins the
+    same story. Sharing the `adventure` scope would make the feature that saves a
+    generation the thing that runs out of them — the `companion_read` lesson, one
+    endpoint over."""
+    from rest_framework.throttling import SimpleRateThrottle
+
+    auth, child = story_child
+    monkeypatch.setattr(
+        SimpleRateThrottle,
+        "THROTTLE_RATES",
+        {"anon": "100/min", "user": "100/min", "adventure": "1/min", "adventure_read": "3/min"},
+    )
+    url = f"/api/v1/children/{child.id}/adventures/current"
+
+    assert [auth.get(url).status_code for _ in range(3)] == [204, 204, 204]
+
+    started = auth.post(f"/api/v1/children/{child.id}/adventures", {}, format="json")
+    assert started.status_code == 201, started.data
+    # Its own scope, not no scope.
+    assert auth.get(url).status_code == 429
 
 
 def test_creating_a_companion_is_capped_independently(

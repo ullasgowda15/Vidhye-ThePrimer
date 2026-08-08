@@ -30,7 +30,7 @@ Three processes and two managed services:
 | Process | Command | Notes |
 |---|---|---|
 | Web | `uvicorn config.asgi:application --host 0.0.0.0 --port $PORT` | **Must be ASGI.** SSE streaming (§16.4) does not work under WSGI. |
-| Worker | `celery -A config worker -l info` | Same image, different command |
+| Worker | `celery -A config worker -l info` | Same image, different command. **Not optional.** Companion art and every beat's illustration and voice line are produced here — a deployment without a running worker tells stories with no pictures and no narration. |
 | Static PWA | `frontend/dist/` on a CDN or static host | `npm run build` output |
 
 | Service | Notes |

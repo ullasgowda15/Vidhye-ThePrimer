@@ -41,10 +41,12 @@ from asgiref.sync import sync_to_async
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, transaction
 from django.db import connection as db_connection
+from django.utils import timezone
 
 from apps.companion import service as companion_service
 from apps.media import service as media_service
 from apps.media.exceptions import MediaError
+from apps.profiles.models import Child
 from apps.safety.prompting import assembler
 from apps.safety.prompting.layers import render as render_layers
 from apps.story.ai import router as ai_router
@@ -55,7 +57,6 @@ from apps.story.models import Adventure, Beat
 
 if TYPE_CHECKING:
     from apps.media.models import Media
-    from apps.profiles.models import Child
     from apps.story.models import PlaySession
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,21 @@ FALLBACK_BRANCH_THEMES: tuple[str, ...] = ("explore further", "help someone else
 
 #: Beats are 1-indexed, because `seq` is a position in a story and not an offset.
 FIRST_BEAT_SEQ = 1
+
+#: How long a beat's media may sit untouched before another stream open assumes
+#: the worker that owned it is gone and queues a replacement. Comfortably longer
+#: than a slow illustration + voice pair (tens of seconds), because queueing a
+#: second copy of work that is merely slow is a double charge.
+MEDIA_RETRY_AFTER_S = 120.0
+
+#: How the stream watches for media a worker is producing. The wait backs off from
+#: `MIN` to `MAX`; `FOLLOW_TIMEOUT` is when the stream stops waiting and ends with
+#: `done` — the child keeps their narration and their companion, and the task is
+#: free to finish into the beat for the next open.
+MEDIA_POLL_MIN_S = 0.3
+MEDIA_POLL_MAX_S = 2.0
+MEDIA_POLL_BACKOFF = 1.5
+MEDIA_FOLLOW_TIMEOUT_S = 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +230,66 @@ async def begin_adventure(child: Child, *, session: PlaySession | None = None) -
     return await _offload(create_adventure, child, session=session)
 
 
+def current_adventure(child: Child) -> Adventure | None:
+    """The story this child is in the middle of, if there is one (§18.4).
+
+    "In the middle of" is `status=in_progress` and nothing more subtle. Completion
+    arrives with the choice loop on Day 5; until then an adventure stays open until
+    something explicitly closes it, which is the conservative direction — the cost
+    of resuming a story the child had drifted away from is that they see the same
+    forest, and the cost of the opposite mistake is a second paid-for adventure on
+    every reload.
+    """
+    return (
+        Adventure.objects.select_related("child", "child__companion")
+        .filter(child=child, status=Adventure.Status.IN_PROGRESS)
+        .first()
+    )
+
+
+def resume_or_create_adventure(
+    child: Child,
+    *,
+    session: PlaySession | None = None,
+) -> tuple[Adventure, bool]:
+    """This child's in-progress adventure, starting one only if there is none.
+
+    Returns `(adventure, created)`.
+
+    **Why the POST is idempotent.** The client had no way to name the adventure it
+    was already in: React Query's cache is memory-only, so a hard refresh lost the
+    id and the story page began a brand-new story — a new plan, a new opening beat,
+    a new illustration and a new voice line, every reload. The backend's replay path
+    was correct and simply never asked. Making "begin" mean "begin **or** rejoin"
+    fixes the reload, the StrictMode double-mount and the second device with one
+    rule, and it puts the rule where it cannot be forgotten by a client.
+
+    The child row is locked for the check-then-create, because two POSTs landing
+    together is exactly the case this exists for and `filter().first()` on its own
+    would let both of them find nothing. The lock is held across the plan call,
+    which is seconds — deliberately, since the whole point is that the second
+    caller waits and is handed the first caller's adventure rather than paying for
+    its own. It is scoped to one child, so it can only ever make that child's own
+    second request wait.
+    """
+    with transaction.atomic():
+        # The lock is on the child, not the adventure: the row we are protecting
+        # against is one that does not exist yet.
+        Child.objects.select_for_update().get(pk=child.pk)
+
+        existing = current_adventure(child)
+        if existing is not None:
+            logger.info(
+                "story.adventure_resumed adventure=%s child=%s beats=%d",
+                existing.id,
+                child.id,
+                existing.beats.count(),
+            )
+            return existing, False
+
+        return create_adventure(child, session=session), True
+
+
 # ---------------------------------------------------------------------------
 # Generating a beat
 # ---------------------------------------------------------------------------
@@ -301,6 +377,10 @@ def create_beat(
         contract.emotion,
         contract.interaction.type,
     )
+    # The picture and the voice are a worker's job from here (§16.3). Handing them
+    # over at the moment the beat is persisted is what stops a client that
+    # disconnects mid-generation from leaving a paid-for beat with no media.
+    schedule_beat_media(beat)
     return beat
 
 
@@ -414,22 +494,62 @@ def _servable_url(media: Media | None) -> str | None:
     return media.url if media is not None and media.is_servable else None
 
 
-async def ensure_first_beat(adventure: Adventure) -> tuple[Beat, str | None, str | None]:
-    """The opening beat: replayed if it exists, generated if it does not.
+def resolve_first_beat(adventure: Adventure) -> tuple[Beat, str | None, str | None]:
+    """The opening beat and its media URLs: replayed if it exists, generated once
+    if it does not. Synchronous core of `ensure_first_beat`.
 
-    Replay is not a nicety. A child who reloads mid-story — which the founder
-    test does deliberately, and which a tablet does by itself when the OS evicts
-    a tab — must land back in the *same* forest, and must not cost a second plan,
-    beat, illustration and voice line to get there. Generating on every stream
-    open would also mean two clients on one adventure racing to write beat 1.
+    Replay is not a nicety. A child who reloads mid-story — which the founder test
+    does deliberately, and which a tablet does by itself when the OS evicts a tab —
+    must land back in the *same* forest, and must not cost a second plan, beat,
+    illustration and voice line to get there.
     """
-    if existing := await _offload(first_beat_state, adventure):
-        logger.info("story.beat_replayed adventure=%s beat=%s", adventure.id, existing[0].id)
-        return existing
+    beat, image_url, audio_url = _first_beat_or_generate(adventure)
 
-    # `seq=1` explicitly, not "the next one": see `create_beat`.
-    beat = await _offload(create_beat, adventure, seq=FIRST_BEAT_SEQ)
-    return beat, None, None
+    # An explicit repair rather than an accident. The old code re-ran the media
+    # stages whenever a URL was missing, which happened to heal an orphaned beat
+    # and happened to double-pay when two clients did it at once. Saying "this
+    # beat's media never finished — make sure something is producing it" out loud
+    # is what makes the difference visible in the log and testable.
+    if not (image_url and audio_url):
+        ensure_media_scheduled(beat)
+    return beat, image_url, audio_url
+
+
+def _first_beat_or_generate(adventure: Adventure) -> tuple[Beat, str | None, str | None]:
+    """Beat one, generating it at most once across every concurrent stream.
+
+    The unique constraint on `(adventure, seq)` is the backstop and stays; it
+    cannot stop the thing that actually costs money, because two callers can both
+    check, both find nothing, and both call the provider before either writes. The
+    lock closes that window: the second caller waits, then finds the first's beat.
+
+    Taken only when there is nothing to replay, so the ordinary reload — the case
+    this endpoint serves most often — never touches it.
+    """
+    if state := first_beat_state(adventure):
+        logger.info("story.beat_replayed adventure=%s beat=%s", adventure.id, state[0].id)
+        return state
+
+    with transaction.atomic():
+        Adventure.objects.select_for_update().get(pk=adventure.pk)
+
+        if state := first_beat_state(adventure):
+            # Someone else generated it while we were waiting for the lock. This
+            # is the double-pay that used to happen here, now costing one query.
+            logger.info(
+                "story.beat_replayed adventure=%s beat=%s waited_for_lock=1",
+                adventure.id,
+                state[0].id,
+            )
+            return state
+
+        # `seq=1` explicitly, not "the next one": see `create_beat`.
+        return create_beat(adventure, seq=FIRST_BEAT_SEQ), None, None
+
+
+async def ensure_first_beat(adventure: Adventure) -> tuple[Beat, str | None, str | None]:
+    """`resolve_first_beat` for an async caller, off the event loop (§16.4)."""
+    return await _offload(resolve_first_beat, adventure)
 
 
 # ---------------------------------------------------------------------------
@@ -492,16 +612,169 @@ def _companion_or_none(beat: Beat) -> Any:
         return None
 
 
+#: Stage labels. Named constants because three files agree about them: the stream
+#: frame builder, the timing log and the `Beat` columns.
+ILLUSTRATION_STAGE = "illustration"
+VOICE_STAGE = "voice"
+
 #: The two media stages of a beat, as `(label, field, producer)`. Named in one
 #: place so the stream, the timing log and the `Beat` columns cannot disagree
 #: about what "illustration" means.
 MEDIA_STAGES: tuple[tuple[str, str, Callable[[Beat], Media | None]], ...] = (
-    ("illustration", "media", illustrate_beat),
-    ("voice", "audio", narrate_beat),
+    (ILLUSTRATION_STAGE, "media", illustrate_beat),
+    (VOICE_STAGE, "audio", narrate_beat),
 )
 
 
-async def stream_media(beat: Beat) -> AsyncIterator[tuple[str, Media | None]]:
+def pending_media_stages(beat: Beat) -> tuple[str, ...]:
+    """Which of this beat's assets are still missing.
+
+    Reads the FK id columns rather than following the relations, so it is safe to
+    call on a beat loaded without `select_related` and from inside an async
+    generator.
+    """
+    return tuple(label for label, field, _ in MEDIA_STAGES if getattr(beat, f"{field}_id") is None)
+
+
+def schedule_beat_media(beat: Beat) -> None:
+    """Hand a beat's media to a worker (§16.3).
+
+    Enqueued **on commit** so the worker cannot look up a beat that its own
+    transaction has not written yet — the classic way a task keyed on a fresh row
+    fails a fraction of the time and nowhere reproducibly. Outside a transaction
+    `on_commit` runs the callback immediately, so this is correct either way.
+
+    A broker that is down is logged, not raised. The beat exists and is tellable;
+    only its picture and voice are missing, and the next open repairs that
+    (`ensure_media_scheduled`). This is exactly the failure that must never reach a
+    child — the same posture as `companion.views._enqueue_assets`.
+    """
+    # Imported here rather than at module scope: `tasks` imports this module.
+    from apps.story.tasks import generate_beat_media
+
+    beat_id = str(beat.id)
+
+    def enqueue() -> None:
+        try:
+            generate_beat_media.delay(beat_id)
+        except Exception:
+            logger.exception("story.media_enqueue_failed beat=%s", beat_id)
+
+    transaction.on_commit(enqueue)
+
+
+def ensure_media_scheduled(beat: Beat) -> bool:
+    """Make sure *something* is producing this beat's missing assets.
+
+    Returns whether a task was queued.
+
+    The staleness check is the whole point. A stream that reopens ten seconds into
+    a twenty-five-second generation must not queue a second copy of the same work:
+    both would miss the media cache, both would call the image and voice providers,
+    and the beat would cost twice for one picture. So a beat that has been touched
+    recently is assumed to be in a worker's hands, and only one that has sat
+    untouched past `MEDIA_RETRY_AFTER_S` — a worker that died, a broker that was
+    down when the beat was written — is queued again.
+
+    `updated_at` is the signal because `_produce_and_attach` writes it as each
+    stage lands, so a task that is making progress keeps the beat looking fresh.
+    """
+    pending = pending_media_stages(beat)
+    if not pending:
+        return False
+
+    age_s = (timezone.now() - beat.updated_at).total_seconds()
+    if age_s < MEDIA_RETRY_AFTER_S:
+        logger.info(
+            "story.media_in_flight beat=%s pending=%s age_s=%d",
+            beat.id,
+            ",".join(pending),
+            int(age_s),
+        )
+        return False
+
+    logger.warning(
+        "story.media_repair beat=%s pending=%s age_s=%d",
+        beat.id,
+        ",".join(pending),
+        int(age_s),
+    )
+    schedule_beat_media(beat)
+    return True
+
+
+def media_urls(beat_id: Any) -> dict[str, str | None]:
+    """This beat's servable asset URLs, by stage label. One query."""
+    row = Beat.objects.select_related("media", "audio").filter(pk=beat_id).first()
+    if row is None:
+        return {}
+    return {label: _servable_url(getattr(row, field)) for label, field, _ in MEDIA_STAGES}
+
+
+def _poll_wait(attempt: int) -> float:
+    """How long to wait before the next look, after `attempt` completed polls.
+
+    Backs off for the same reason the companion poll does: the thing being waited
+    for takes tens of seconds, and a flat fast poll would spend the whole wait
+    asking. Starting short keeps the picture arriving promptly once it lands.
+    """
+    return min(MEDIA_POLL_MIN_S * MEDIA_POLL_BACKOFF**attempt, MEDIA_POLL_MAX_S)
+
+
+async def follow_media(
+    beat: Beat,
+    *,
+    image_url: str | None,
+    audio_url: str | None,
+) -> AsyncIterator[tuple[str, str]]:
+    """Yield each of the beat's assets as it lands, wherever it was produced.
+
+    The stream used to *run* the media stages inside the response coroutine, which
+    is why a client that vanished mid-generation left a paid-for beat with no
+    picture and no voice: the generation finished on its offloaded thread, but the
+    coroutine that would have started the media never got that far. The work now
+    belongs to a Celery task keyed on the beat, and this only watches for the
+    result — so a disconnect costs the *view*, never the beat.
+
+    `image_url`/`audio_url` are what the `beat` frame already carried, so a replay
+    of a finished beat does no work at all.
+    """
+    emitted = {
+        label for label, url in ((ILLUSTRATION_STAGE, image_url), (VOICE_STAGE, audio_url)) if url
+    }
+    expected = {label for label, _, _ in MEDIA_STAGES}
+    if emitted >= expected:
+        return
+
+    deadline = time.monotonic() + MEDIA_FOLLOW_TIMEOUT_S
+    attempt = 0
+    while True:
+        urls = await _offload(media_urls, beat.pk)
+        for label, _, _ in MEDIA_STAGES:
+            url = urls.get(label)
+            if url and label not in emitted:
+                emitted.add(label)
+                yield label, url
+
+        if emitted >= expected:
+            return
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "story.media_unfinished beat=%s missing=%s",
+                beat.id,
+                ",".join(sorted(expected - emitted)),
+            )
+            return
+
+        await asyncio.sleep(_poll_wait(attempt))
+        attempt += 1
+
+
+async def stream_media(
+    beat: Beat,
+    *,
+    stages: Sequence[str] | None = None,
+) -> AsyncIterator[tuple[str, Media | None]]:
     """Generate the illustration and the voice **at the same time**, yielding each
     as it lands (§16.4, §18.5).
 
@@ -520,7 +793,11 @@ async def stream_media(beat: Beat) -> AsyncIterator[tuple[str, Media | None]]:
     the child can still hear; a beat that raised would be a story that stopped.
     Media failures are the most likely thing to go wrong in this pipeline and the
     least worth interrupting a child for.
+
+    `stages` narrows the work to the labels named, which is how a repair run
+    finishes a half-generated beat without re-doing the half that already landed.
     """
+    specs = MEDIA_STAGES if stages is None else tuple(s for s in MEDIA_STAGES if s[0] in stages)
     base = time.monotonic()
     timings: list[tuple[str, float, float]] = []
 
@@ -541,7 +818,7 @@ async def stream_media(beat: Beat) -> AsyncIterator[tuple[str, Media | None]]:
         timings.append((label, start, time.monotonic() - base))
         return label, media
 
-    tasks = [asyncio.create_task(stage(*spec)) for spec in MEDIA_STAGES]
+    tasks = [asyncio.create_task(stage(*spec)) for spec in specs]
     try:
         for finished in asyncio.as_completed(tasks):
             yield await finished
@@ -576,14 +853,19 @@ def _log_timings(beat: Beat, base: float, timings: list[tuple[str, float, float]
     )
 
 
-async def attach_media(beat: Beat) -> dict[str, Media | None]:
+async def attach_media(
+    beat: Beat,
+    *,
+    stages: Sequence[str] | None = None,
+) -> dict[str, Media | None]:
     """Both media stages, awaited to completion. For callers that do not stream.
 
-    The stream consumes `stream_media` directly; this is what the smoke command
-    and the tests use, and it exists so "generate a beat's media" has one
-    obvious answer rather than two half-answers.
+    This is what the Celery task, the smoke command and the tests use; the stream
+    no longer produces media at all, it only watches for it (`follow_media`). It
+    exists so "generate a beat's media" has one obvious answer rather than two
+    half-answers.
     """
-    return {label: media async for label, media in stream_media(beat)}
+    return {label: media async for label, media in stream_media(beat, stages=stages)}
 
 
 def _produce_and_attach(

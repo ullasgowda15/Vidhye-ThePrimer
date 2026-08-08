@@ -20,6 +20,8 @@ cd backend && pytest apps/story -q
 5. `StoryPage` renders narration first, swaps media in; **no spinner** ever (companion idle covers the gap).
 6. Repair path fires on malformed output (force it); persistent failure ends the stream gracefully, not a crash.
 7. lint/test/CI green; an SSE test asserts a valid streamed beat.
+8. **Session survives a reload (§4.6):** verify the *written clause* (refresh cookie `HttpOnly`+`SameSite=Lax`, `access` only in the body, no login-screen flash, parent gate NOT restored) **and** the *founder test* (a hard refresh mid-story returns the child to **the same** adventure — not a freshly generated one). These can diverge: the cookie can be perfect while the client still POSTs a new adventure on reload. Check both, and check the DB for duplicate adventures/opening beats per child as the tell.
+9. **Dev CORS is scoped (§4.6):** a preflight from `https://evil.example` gets **no** `access-control-allow-origin`; `http://localhost:5173` is allowed with credentials. Also check a **simple** (non-preflight) `GET`/`POST` carrying the evil `Origin` — a preflight-only test misses it. Confirm `CORS_ALLOW_ALL_ORIGINS` is gone from `dev.py`.
 
 ## 3. Cross-cutting checks
 - **Streaming correctness (§16.4):** is the response truly chunked? Inspect headers + observe incremental arrival. This is the #1 thing to get wrong — buffering is P0.
@@ -31,7 +33,7 @@ cd backend && pytest apps/story -q
 Same structure as `reports/Day1-report.md`, titled "Day 4 Review Report — Story Orchestrator v0". Paste a sample streamed beat JSON and the parallel‑timing log as evidence.
 
 ## 5. Verdict rules
-**NOT‑READY** if any P0: stream buffers instead of streaming, beat invalid against schema, spinner shown to child, malformed output reaches the UI, CI red. **FIX‑THEN‑SHIP** if no P0 but ≥1 P1. **SHIP** only if all 7 ✅.
+**NOT‑READY** if any P0: stream buffers instead of streaming, beat invalid against schema, spinner shown to child, malformed output reaches the UI, refresh token readable by JS, CI red. **FIX‑THEN‑SHIP** if no P0 but ≥1 P1. **SHIP** only if all 9 ✅ (a written clause passing while its founder test fails is a 🟡, not a ✅).
 
 ## 6. After writing
 Print a 5‑line summary. Do not fix; do not proceed to Day 5.

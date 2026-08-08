@@ -12,6 +12,12 @@ with `scene.status: "pending"`. The picture and the voice follow as separate
 `media` events as they resolve. The child starts hearing their story while the
 image model is still drawing (§18.5's design note).
 
+**The stream owns nothing it cannot afford to lose.** The beat and its media are
+produced elsewhere — the beat under a lock in the orchestrator, the media by a
+Celery task keyed on the beat — and this file only relays them. That is what makes
+a disconnect free: the child's tablet going to sleep costs the connection, not the
+generation that had already been paid for.
+
 **Nothing is buffered.** Every frame is yielded as it is produced, the response
 carries the headers that stop a proxy from collecting them, and the whole thing
 runs as an async view under ASGI. Under WSGI this file produces one blob at the
@@ -106,7 +112,7 @@ def media_payload(beat_id: str, stage: str, url: str) -> dict[str, Any]:
     several different beats, and a client that had to tell "a new beat" from "an
     update to a beat" by comparing ids is a client that will get it wrong.
     """
-    if stage == "illustration":
+    if stage == orchestrator.ILLUSTRATION_STAGE:
         return {"beatId": beat_id, "scene": {"imageUrl": url, "status": "ready"}}
     return {"beatId": beat_id, "audioUrl": url}
 
@@ -134,13 +140,13 @@ async def stream_first_beat(adventure: Adventure) -> AsyncIterator[bytes]:
 
     yield frame("beat", beat_payload(beat, image_url=image_url, audio_url=audio_url))
 
-    # A replayed beat that already has both assets is complete; re-running the
-    # media stages would only re-read the cache and re-emit URLs the client just
-    # received in the `beat` frame.
-    if not (image_url and audio_url):
-        async for stage, media in orchestrator.stream_media(beat):
-            if media is None:
-                continue
-            yield frame("media", media_payload(str(beat.id), stage, media.url))
+    # The media is a worker's job (`apps.story.tasks`); this only watches for it,
+    # and returns at once for a replayed beat that already carries both assets.
+    # Producing it here is what used to make a disconnected client an orphaned,
+    # paid-for beat.
+    async for stage, url in orchestrator.follow_media(
+        beat, image_url=image_url, audio_url=audio_url
+    ):
+        yield frame("media", media_payload(str(beat.id), stage, url))
 
     yield frame("done", {"status": "awaiting_choice"})

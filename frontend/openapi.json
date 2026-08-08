@@ -244,8 +244,8 @@
         "/api/v1/children/{child_id}/adventures": {
             "post": {
                 "operationId": "adventure_begin",
-                "description": "Generates and persists the story plan, then returns the SSE URL that streams the beats. The first beat is generated inside the stream, not here, so the client can open the stream and start the companion's thinking animation immediately.\n\nThe stream itself is not in this schema: it is a raw `text/event-stream` endpoint (`GET /api/v1/adventures/{id}/stream`) rather than a DRF view. Its frames are documented in `apps/story/streaming.py`.",
-                "summary": "Begin an adventure",
+                "description": "Returns the child's in-progress adventure if they have one (**200**), and otherwise generates and persists a story plan and returns the new adventure (**201**). Either way the body carries the SSE URL that streams the beats.\n\nIt is idempotent on purpose: a client that has lost the adventure id — a hard refresh, a remount, a second device — must rejoin the same story rather than pay for a new one. A child gets a new adventure once the current one is no longer `in_progress`.\n\nThe first beat is generated inside the stream, not here, so the client can open the stream and start the companion's thinking animation immediately.\n\nThe stream itself is not in this schema: it is a raw `text/event-stream` endpoint (`GET /api/v1/adventures/{id}/stream`) rather than a DRF view. Its frames are documented in `apps/story/streaming.py`.",
+                "summary": "Begin or rejoin an adventure",
                 "parameters": [
                     {
                         "in": "path",
@@ -288,6 +288,16 @@
                     }
                 ],
                 "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AdventureStart"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
                     "201": {
                         "content": {
                             "application/json": {
@@ -297,6 +307,50 @@
                             }
                         },
                         "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/adventures/current": {
+            "get": {
+                "operationId": "adventure_current",
+                "description": "**200** with the same body as `POST /adventures` when the child has an `in_progress` adventure, **204** when they do not.\n\nThis is what the child surface calls on mount: it resumes a story across a reload without the possibility of starting one, so a client bug can cost a request but never a generation.",
+                "summary": "The adventure this child is in the middle of",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AdventureStart"
+                                }
+                            }
+                        },
+                        "description": ""
+                    },
+                    "204": {
+                        "description": "No response body"
                     }
                 }
             }

@@ -22,9 +22,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import { useBeginAdventure, useCompanion } from '@/lib/api/queries';
+import { useAdventure, useCompanion } from '@/lib/api/queries';
 import { consumeBeatStream, type BeatEvent } from '@/lib/sse';
-import { useAuthStore } from '@/store/auth';
 
 const collapse = (text: string) => text.split(/\s+/).join(' ').toLowerCase();
 
@@ -52,8 +51,9 @@ function askedSeparately(beat: BeatEvent | null): string | null {
 export default function StoryPage() {
   const { childId } = useParams();
   const { data: companion } = useCompanion(childId);
-  const { data: adventure } = useBeginAdventure(childId);
-  const accessToken = useAuthStore((state) => state.accessToken);
+  // Resumes the story in progress before it would ever start a new one, so a
+  // reload lands the child back in the same forest (§14.5).
+  const { data: adventure } = useAdventure(childId);
 
   const [beat, setBeat] = useState<BeatEvent | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -70,7 +70,6 @@ export default function StoryPage() {
     const controller = new AbortController();
 
     void consumeBeatStream(streamUrl, {
-      accessToken,
       signal: controller.signal,
       onBeat: (event) => {
         setBeat(event);
@@ -86,9 +85,10 @@ export default function StoryPage() {
     });
 
     return () => controller.abort();
-    // `accessToken` is read once per stream on purpose: re-opening the stream
-    // because a token rotated mid-beat would restart the narration.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Keyed on the stream URL alone. The token is read inside the client at the
+    // moment the connection opens — and refreshed there if it has expired — so it
+    // is not a dependency here: re-opening the stream because a token rotated
+    // mid-beat would restart the narration.
   }, [streamUrl]);
 
   /**

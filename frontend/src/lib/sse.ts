@@ -18,7 +18,16 @@
  * runs on the child surface, where there is no error state: the caller keeps
  * showing the companion thinking (§13, §14.5). Errors are reported to the console
  * for a developer, never to the screen.
+ *
+ * **The connection is opened by `client.ts`, not here.** This used to take an
+ * access token and call `fetch` itself, which made it the one authenticated call
+ * in the app with no silent refresh — an access token that expired in the seconds
+ * before the stream opened turned into a 401, and a 401 on the child surface is a
+ * companion who thinks forever. `openStream` gives it the same
+ * refresh-then-retry-once path every other authenticated call has.
  */
+
+import { openStream } from './api/client';
 
 /** The `beat` frame (§18.5). */
 export interface BeatEvent {
@@ -106,11 +115,7 @@ export function parseFrames(buffer: string): { frames: Frame[]; rest: string } {
  */
 export async function consumeBeatStream(
   url: string,
-  {
-    accessToken,
-    signal,
-    ...handlers
-  }: StreamHandlers & { accessToken: string | null; signal?: AbortSignal },
+  { signal, ...handlers }: StreamHandlers & { signal?: AbortSignal },
 ): Promise<void> {
   let ended = false;
   const end = (done: DoneEvent | null) => {
@@ -120,13 +125,7 @@ export async function consumeBeatStream(
   };
 
   try {
-    const response = await fetch(url, {
-      headers: {
-        Accept: 'text/event-stream',
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      },
-      signal,
-    });
+    const response = await openStream(url, signal);
 
     if (!response.ok || !response.body) {
       // A 401, a 403, a 502 — all the same to a four-year-old. The caller keeps
