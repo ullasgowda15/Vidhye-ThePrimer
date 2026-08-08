@@ -75,7 +75,12 @@ class Interaction(_Strict):
     # the `$ref`, which strict schema validators are inconsistent about accepting.
     type: InteractionType
     prompt_audio: str | None = Field(
-        description="What the companion says aloud to invite the interaction; null if none.",
+        description=(
+            "The single short question the companion asks to invite the interaction, "
+            "spoken *after* the narration. One sentence. It must not repeat, restate "
+            "or summarise the narration — the child has just heard that. Null if the "
+            "narration already asks, or if type is 'none'."
+        ),
     )
     expected: int | str | None = Field(
         description="The expected answer, if there is a single one; null otherwise.",

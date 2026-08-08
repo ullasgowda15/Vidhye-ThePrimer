@@ -10,7 +10,8 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -100,6 +101,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // One test spies on `HTMLMediaElement.prototype.play`, which is shared across
+  // the file — a leaked spy would silently change a later test.
+  vi.restoreAllMocks();
 });
 
 describe('frame parser', () => {
@@ -189,6 +193,61 @@ describe('StoryPage', () => {
     // read a status and cannot interpret a rotating arc.
     expect(document.body.textContent).not.toMatch(/loading|please wait|error|failed/i);
     expect(document.querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  it('does not caption the question twice when a beat repeats itself', async () => {
+    // What reached the child: the provider filled `prompt_audio` with the whole
+    // narration, so the same sentences were on the page twice — and, because both
+    // go into one clip, said twice in a row.
+    const repeated = {
+      ...BEAT,
+      interaction: { ...BEAT.interaction, prompt_audio: BEAT.narration },
+    };
+    vi.stubGlobal('fetch', streamingFetch([': open\n\n', frame('beat', repeated)]));
+
+    renderStory();
+
+    const narration = await screen.findByTestId('beat-narration');
+    expect(narration).toHaveTextContent('Three little frogs');
+    expect(screen.queryByTestId('beat-question')).toBeNull();
+  });
+
+  it('still captions a question the narration has not already asked', async () => {
+    // The guard must not eat a real question: a child asked nothing is worse than
+    // one asked clumsily.
+    vi.stubGlobal('fetch', streamingFetch([': open\n\n', frame('beat', BEAT)]));
+
+    renderStory();
+
+    expect(await screen.findByTestId('beat-question')).toHaveTextContent('How many frogs');
+  });
+
+  it('does not start the story over when the child touches the screen', async () => {
+    const user = userEvent.setup();
+    const play = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockImplementation(play);
+    vi.stubGlobal(
+      'fetch',
+      streamingFetch([
+        ': open\n\n',
+        frame('beat', BEAT),
+        frame('media', { beatId: 'beat-1', audioUrl: '/media/frogs.mp3' }),
+      ]),
+    );
+
+    renderStory();
+
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+    fireEvent.ended(screen.getByTestId('beat-audio'));
+
+    // A child explores a screen by touching it. While this handler stayed armed,
+    // every touch restarted the narration from the first line.
+    await user.click(screen.getByTestId('beat-narration'));
+    expect(play).toHaveBeenCalledTimes(1);
+
+    // Told again on request, though — that is a reasonable thing to want.
+    await user.click(screen.getByTestId('beat-replay'));
+    expect(play).toHaveBeenCalledTimes(2);
   });
 
   it('stays a scene when the stream ends with no beat at all', async () => {

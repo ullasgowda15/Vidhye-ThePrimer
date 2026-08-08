@@ -26,6 +26,29 @@ import { useBeginAdventure, useCompanion } from '@/lib/api/queries';
 import { consumeBeatStream, type BeatEvent } from '@/lib/sse';
 import { useAuthStore } from '@/store/auth';
 
+const collapse = (text: string) => text.split(/\s+/).join(' ').toLowerCase();
+
+/**
+ * The beat's question, but only when it is not already in the narration.
+ *
+ * `interaction.prompt_audio` is contracted to be the short question asked after
+ * the narration, and it is captioned on its own line because it is the thing the
+ * child has to answer. When a model fills it with the narration again instead, the
+ * same sentences appear twice on the page — which is what a child and their parent
+ * actually reported.
+ *
+ * The backend now normalises this away when it writes a beat, so this is the guard
+ * for beats written before it did, and for a provider that finds a new way to
+ * repeat itself. Cheap, and the alternative is a duplicate on a child's screen.
+ */
+function askedSeparately(beat: BeatEvent | null): string | null {
+  const prompt = beat?.interaction?.prompt_audio?.trim();
+  if (!prompt || !beat) return null;
+  const narration = collapse(beat.narration);
+  const asked = collapse(prompt);
+  return narration.includes(asked) || asked.includes(narration) ? null : prompt;
+}
+
 export default function StoryPage() {
   const { childId } = useParams();
   const { data: companion } = useCompanion(childId);
@@ -35,7 +58,8 @@ export default function StoryPage() {
   const [beat, setBeat] = useState<BeatEvent | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [spoken, setSpoken] = useState(false);
+  /** Has the narration begun playing? Not "finished" — see `handleSceneTap`. */
+  const [heard, setHeard] = useState(false);
   const [awaitingChoice, setAwaitingChoice] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -74,14 +98,21 @@ export default function StoryPage() {
    * returns nothing at all, so both shapes are handled. Neither outcome may
    * surface: the tap-anywhere affordance covers a refusal, and a child is never
    * shown a failure (§13).
+   *
+   * `force` is what the "again" control passes. Without it a call that lands
+   * mid-sentence is ignored rather than restarting the beat: per the media spec
+   * `play()` on an element that has ended seeks back to the top, which replay
+   * wants and a stray tap must not have.
    */
-  function speak() {
-    if (!audioUrl) return;
+  function speak({ force = false }: { force?: boolean } = {}) {
+    const element = audioRef.current;
+    if (!element || !audioUrl) return;
+    if (!force && !element.paused) return;
     try {
-      const started = audioRef.current?.play();
+      const started = element.play();
       if (started && typeof started.then === 'function') {
         started.then(
-          () => setSpoken(true),
+          () => undefined,
           () => undefined,
         );
       }
@@ -90,20 +121,32 @@ export default function StoryPage() {
     }
   }
 
+  /**
+   * The fallback for a browser that refused autoplay, and only that.
+   *
+   * Disarmed once the narration is under way. A child explores a screen by
+   * touching it, and a handler that stays armed turns every touch into the story
+   * starting over from the first line.
+   */
+  function handleSceneTap() {
+    if (heard) return;
+    speak();
+  }
+
   // Speak the moment the voice exists. Autoplay is the intent; the tap is the
   // fallback, not the plan.
   useEffect(() => {
-    if (!audioUrl || spoken) return;
+    if (!audioUrl || heard) return;
     speak();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioUrl, spoken]);
+  }, [audioUrl, heard]);
 
   const companionName = companion?.name ?? adventure?.companion.name ?? 'Your friend';
-  const question = beat?.interaction?.prompt_audio ?? null;
+  const question = askedSeparately(beat);
 
   return (
     <main
-      onClick={speak}
+      onClick={handleSceneTap}
       className="min-h-full bg-bg text-text flex flex-col items-center justify-center p-6 text-center"
     >
       <div className="w-full max-w-[44rem]">
@@ -139,17 +182,24 @@ export default function StoryPage() {
               </p>
             ) : null}
 
-            {!spoken && audioUrl ? (
+            {audioUrl ? (
               <button
                 type="button"
                 // The whole scene is a tap target too, so the click is stopped
                 // here rather than starting the narration twice.
                 onClick={(event) => {
                   event.stopPropagation();
-                  speak();
+                  speak({ force: true });
                 }}
-                aria-label={`Hear ${companionName} tell the story`}
-                className="mt-6 min-h-target min-w-target rounded-full bg-accent px-8 text-6 font-display text-surface shadow-card transition-transform duration-base motion-safe:hover:scale-105 active:scale-95"
+                aria-label={
+                  heard
+                    ? `Hear ${companionName} tell it again`
+                    : `Hear ${companionName} tell the story`
+                }
+                data-testid="beat-replay"
+                className={`mt-6 min-h-target min-w-target rounded-full px-8 text-6 font-display shadow-card transition-transform duration-base motion-safe:hover:scale-105 active:scale-95 ${
+                  heard ? 'bg-surface text-primary' : 'bg-accent text-surface'
+                }`}
               >
                 ▶
               </button>
@@ -179,7 +229,10 @@ export default function StoryPage() {
           src={audioUrl}
           data-testid="beat-audio"
           preload="auto"
-          onEnded={() => setSpoken(true)}
+          // `onPlay` rather than the `play()` promise: the element is the thing
+          // that knows, and it covers a play started some other way too.
+          onPlay={() => setHeard(true)}
+          onEnded={() => setHeard(true)}
         />
       ) : null}
 

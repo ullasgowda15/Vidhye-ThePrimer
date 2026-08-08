@@ -304,6 +304,41 @@ def create_beat(
     return beat
 
 
+def _normalised(text: str) -> str:
+    """Casefolded, whitespace-collapsed text, for comparing two sentences by content."""
+    return " ".join(text.split()).casefold()
+
+
+def dedupe_prompt_audio(narration: str, interaction: dict[str, Any]) -> dict[str, Any]:
+    """Drop a `prompt_audio` that only repeats the narration.
+
+    The contract says this field is the short question asked *after* the narration,
+    and both are spoken in one clip (`spoken_line`) and captioned separately on
+    screen. When a model fills it with the narration over again — which it does,
+    because "restate the scene, then ask" is a natural way to write a prompt — the
+    child hears the entire beat twice in a row and sees the same sentences twice on
+    the page. That is the defect this exists to make impossible.
+
+    Deliberately narrow: only containment either way, after normalising case and
+    whitespace. A paraphrase is left alone, because the alternative is a similarity
+    threshold that would eventually swallow a legitimate question — and a lost
+    question is a child asked nothing, which is worse than one said clumsily. The
+    prompt and the field description are what discourage the paraphrase; this is
+    what catches the repeat.
+
+    Returns a new mapping; the input is not modified.
+    """
+    interaction = dict(interaction)
+    prompt = str(interaction.get("prompt_audio") or "").strip()
+    if not prompt:
+        return interaction
+
+    said, asked = _normalised(narration), _normalised(prompt)
+    if asked and (asked in said or said in asked):
+        interaction["prompt_audio"] = None
+    return interaction
+
+
 @transaction.atomic
 def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Beat:
     """Write the beat and extend the adventure's emotion arc, together.
@@ -312,12 +347,26 @@ def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Bea
     that has recorded a beat which does not exist would make the wellbeing
     down-shift fire on a story that was never told.
     """
+    # Normalised here, at the boundary where a model's output becomes our data, so
+    # that everything downstream — the voice clip, the caption, the transcript a
+    # parent reads, Day 5's memory — trusts one clean record instead of each
+    # re-deriving what the contract already promised.
+    interaction = dedupe_prompt_audio(
+        contract.narration, contract.interaction.model_dump(mode="json")
+    )
+    if interaction["prompt_audio"] != contract.interaction.prompt_audio:
+        logger.info(
+            "story.prompt_audio_deduped adventure=%s seq=%d — it repeated the narration",
+            adventure.id,
+            seq,
+        )
+
     beat = Beat.objects.create(
         adventure=adventure,
         seq=seq,
         narration=contract.narration,
         scene=contract.scene.model_dump(mode="json"),
-        interaction=contract.interaction.model_dump(mode="json"),
+        interaction=interaction,
         learning=contract.learning.model_dump(mode="json"),
         emotion=contract.emotion,
     )

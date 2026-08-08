@@ -8,6 +8,8 @@ stages really do overlap rather than merely being written as if they do.
 
 import asyncio
 import datetime
+import json
+import logging
 import time
 from typing import Any
 
@@ -204,6 +206,83 @@ def test_the_spoken_line_is_the_narration_plus_the_invitation(frog_lover, fake_a
     # asked a question.
     assert line.startswith(beat.narration)
     assert line.endswith("How many can you count?")
+
+
+class TestPromptAudioIsNotTheNarrationAgain:
+    """The contract says `prompt_audio` is the short question asked *after* the
+    narration. Providers fill it with the narration over again — "restate the
+    scene, then ask" is a natural way to write a prompt — and the result reached a
+    child: the companion said the whole beat twice in one clip, and the same
+    sentences were captioned twice on the page.
+
+    Normalised where a model's output becomes our data, so the voice, the caption,
+    the transcript and Day 5's memory all read one clean record.
+    """
+
+    def test_an_exact_repeat_is_dropped(self) -> None:
+        narration = "Hi, Spidey! We are in a bright jungle! Do you want to walk or look?"
+        interaction = {"type": "choose", "prompt_audio": narration}
+
+        assert orchestrator.dedupe_prompt_audio(narration, interaction)["prompt_audio"] is None
+
+    def test_case_and_spacing_do_not_hide_a_repeat(self) -> None:
+        narration = "Look, three frogs!\nHow many can you count?"
+        interaction = {"prompt_audio": "look, three   frogs! HOW MANY CAN YOU COUNT?"}
+
+        assert orchestrator.dedupe_prompt_audio(narration, interaction)["prompt_audio"] is None
+
+    def test_a_question_already_inside_the_narration_is_dropped(self) -> None:
+        # The narration ends by asking, and the field repeats just that sentence.
+        narration = "Pip peeks over the log. How many frogs can you count?"
+        interaction = {"prompt_audio": "How many frogs can you count?"}
+
+        assert orchestrator.dedupe_prompt_audio(narration, interaction)["prompt_audio"] is None
+
+    def test_a_real_question_survives(self) -> None:
+        # The property that matters most: a lost question is a child asked nothing,
+        # which is worse than one asked clumsily. Only containment is dropped.
+        narration = "Pip peeks over the log. Three little frogs sit in a row!"
+        interaction = {"prompt_audio": "How many can you count?"}
+
+        kept = orchestrator.dedupe_prompt_audio(narration, interaction)
+        assert kept["prompt_audio"] == "How many can you count?"
+
+    def test_a_paraphrase_is_left_alone_on_purpose(self) -> None:
+        # A similarity threshold would eventually swallow a legitimate question.
+        # The prompt and the field description discourage the paraphrase; this
+        # function only catches the repeat.
+        narration = "Three frogs sit on the log."
+        interaction = {"prompt_audio": "Can you count the frogs on that log?"}
+
+        assert orchestrator.dedupe_prompt_audio(narration, interaction)["prompt_audio"] is not None
+
+    def test_nothing_to_do_when_there_is_no_question(self) -> None:
+        for prompt in (None, "", "   "):
+            interaction = {"type": "none", "prompt_audio": prompt}
+            assert orchestrator.dedupe_prompt_audio("A quiet beat.", interaction) == interaction
+
+    def test_the_input_is_not_modified(self) -> None:
+        interaction = {"prompt_audio": "Same words."}
+        orchestrator.dedupe_prompt_audio("Same words.", interaction)
+
+        assert interaction["prompt_audio"] == "Same words."
+
+    def test_a_repeating_provider_cannot_reach_the_child(self, frog_lover, fake_ai, caplog) -> None:
+        """End to end, through the real router and the real write path."""
+        beat_json = fake_ai.beat("loves frogs.")
+        beat_json["interaction"]["prompt_audio"] = beat_json["narration"]
+        fake_ai.queue_beat_response(json.dumps(beat_json))
+
+        adventure = orchestrator.create_adventure(frog_lover)
+        with caplog.at_level(logging.INFO):
+            beat = orchestrator.create_beat(adventure)
+
+        assert beat.interaction is not None
+        assert beat.interaction["prompt_audio"] is None
+        # The clip is one TTS call over `spoken_line`, so this is what the child
+        # would have heard twice in a row.
+        assert orchestrator.spoken_line(beat) == beat.narration
+        assert "story.prompt_audio_deduped" in caplog.text
 
 
 def test_a_beat_with_no_provider_raises_rather_than_inventing_one(

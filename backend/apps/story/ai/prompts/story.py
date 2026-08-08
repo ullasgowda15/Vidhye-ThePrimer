@@ -79,4 +79,12 @@ def beat_request(
         "place, light, what each character is doing. Do not name a style; the "
         "art direction is applied downstream."
     )
+    # Said out loud, one clip, narration first. Models reach for "restate the
+    # scene, then ask" here, and the result is a companion who tells the child the
+    # whole beat twice in a row — so what this field is *not* has to be said.
+    lines.append(
+        "interaction.prompt_audio is spoken straight after the narration, in the "
+        "same breath. Make it the question alone — one short sentence, nothing the "
+        "narration already said. If the narration has already asked, use null."
+    )
     return "\n\n".join(lines)
