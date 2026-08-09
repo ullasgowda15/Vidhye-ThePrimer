@@ -11,6 +11,8 @@
 ## 1. Yesterday's expected end state
 Full branching story loop works end to end (2–3 illustrated choices, specific remembered consequences, bounded continuity, no fail states, warm close, prefetch, no spinner). **M1 complete.** Visuals still generic‑ish; no memory, safety hardening, or learning engine.
 
+> **Carried over from the Day 5 founder test (F6) — in scope today.** Latency-hiding has a real hole this day owns: when the image provider is **unavailable** (not merely slow), the child gets narration + voice but **nothing to tap for up to `MEDIA_FOLLOW_TIMEOUT_S = 120s`**, because `done`/`awaiting_choice` is gated on the illustration being an *essential* stage. This was hit for real — Cloudflare returned `429 daily allocation exhausted` — and a 2-minute dead screen flatly violates §4.9. **Fix here:** make the illustration **non-essential to answering** — gate the child's turn on **voice + narration**, not the picture (the question is spoken and the choice cards carry labels the companion reads aloud), so a missing/slow image yields a picture-*less but playable* beat instead of a dead screen. Keep a short budget for the image and let it arrive late or not at all. Note the exposure grows if `AI_BEAT_MODEL` returns 3 choices (4 images/beat), so don't let per-beat image count block the turn. This is the highest-priority item of the day — it's a child-facing safety/UX failure, not a polish nicety.
+
 ## 2. Today's goal (one sentence)
 Make the story **look and feel like one coherent world**: the companion + any recurring characters are visually consistent across every beat, and all generation latency is fully masked by narration/motion so the child never perceives a wait.
 
