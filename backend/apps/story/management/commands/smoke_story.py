@@ -137,7 +137,19 @@ class Command(BaseCommand):
     def _options(self, beat: Beat) -> None:
         """The illustrated choices, if this beat offers any (§14.4)."""
         if not beat.options:
-            self.stdout.write("  choices:     (none — this beat only asks them to carry on)")
+            interaction = beat.interaction or {}
+            asked = interaction.get("type")
+            # A beat with no cards is not necessarily a beat with nothing to do:
+            # a `count` asks for a number and answers on the number pad instead
+            # (§10.3). Saying "carry on" there would misreport the one beat that
+            # exercises the no-fail-states path.
+            if asked in {"count", "say"}:
+                self.stdout.write(
+                    f"  choices:     (none — this beat asks the child to {asked}; "
+                    f"expected {interaction.get('expected')!r})"
+                )
+            else:
+                self.stdout.write("  choices:     (none — this beat only asks them to carry on)")
             return
         self.stdout.write("  choices:")
         for option in beat.options:

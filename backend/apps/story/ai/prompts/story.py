@@ -68,6 +68,35 @@ and an icon_prompt describing one simple picture of it: a place, an object, an \
 action, no characters and no writing in the image.\
 """
 
+#: Said instead of `CHOICE_RULE` on the one beat that asks the child to count
+#: (§10.3's objective, `orchestrator.asks_to_count`).
+#:
+#: This exists because `CHOICE_RULE` says "prefer choose", and a model given that
+#: on every beat picks `choose` every time — which left the numeracy objective
+#: riding along in the prompt as data that nothing ever acted on, and left §8.5's
+#: no-fail-states guarantee with nothing that *can* be answered wrongly and so no
+#: way to be exercised. A `choose` has no wrong answer; that is the point of it,
+#: and it is also why it cannot be the only thing a beat ever asks.
+#:
+#: The count is small and visible on purpose: the child answers by looking at the
+#: picture, not by knowing arithmetic, and the illustration has to actually show
+#: the things or the question is unanswerable.
+COUNT_RULE = """\
+End this beat by asking the child to count something. Set interaction.type to \
+"count", set interaction.expected to how many there are as a whole number of \
+three or fewer, and set interaction.choices to null — this beat asks for a \
+number, not a pick.
+
+The things being counted must be in the scene and named in \
+scene.illustration_prompt, so the child can answer by looking at the picture. \
+interaction.prompt_audio is the companion asking how many there are, in one \
+short sentence.
+
+There is no wrong answer here. Do not hint at what happens if they miscount, do \
+not praise the right number in advance, and do not make the counting sound like \
+a test.\
+"""
+
 #: Said only on the last beat (§8.8). The hook is the reason a child asks to come
 #: back, and it is the one thing a model will not produce unless asked.
 FINAL_BEAT_RULE = """\
@@ -87,6 +116,7 @@ def beat_request(
     beat_id: str,
     is_first: bool,
     is_final: bool = False,
+    ask_to_count: bool = False,
     stage: str = "",
     prev_choice: Mapping[str, Any] | None = None,
     characters: Sequence[str] = (),
@@ -120,7 +150,10 @@ def beat_request(
         if prev_choice.get("assisted") or prev_choice.get("retries"):
             lines.append(SCAFFOLD_RULE)
 
-    lines.append(FINAL_BEAT_RULE if is_final else CHOICE_RULE)
+    if is_final:
+        lines.append(FINAL_BEAT_RULE)
+    else:
+        lines.append(COUNT_RULE if ask_to_count else CHOICE_RULE)
 
     if characters:
         lines.append(

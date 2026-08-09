@@ -25,6 +25,7 @@ from asgiref.sync import async_to_sync
 from apps.companion.service import create_companion
 from apps.profiles.models import Child
 from apps.story import orchestrator
+from apps.story.ai.prompts import story as story_prompts
 from apps.story.ai.router import AIConfigurationError
 from apps.story.models import Adventure, Beat
 
@@ -611,6 +612,61 @@ class TestTheChoicesAChildIsOffered:
         # One sentence, one TTS call, and it scans as a question.
         assert line.rstrip().endswith("?")
         assert " or " in line
+
+
+class TestOneBeatAsksTheChildToCount:
+    """§8.5's no-fail-states guarantee needs something that *can* be missed.
+
+    `CHOICE_RULE` says "prefer choose" on every non-final beat, and a `choose` has
+    no wrong answer — so before this, every beat in the database was a `choose`,
+    the numeracy objective was prompt data nothing acted on, and the scaffolding
+    path could never run in real play.
+    """
+
+    def test_the_midpoint_beat_asks_for_a_number(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        asked = [
+            seq
+            for seq in range(1, adventure.estimated_beats + 1)
+            if orchestrator.asks_to_count(adventure, seq)
+        ]
+
+        # Exactly one, and never the opening or the close: the first beat has a
+        # world to establish and the last one asks for nothing at all (§8.8).
+        assert len(asked) == 1
+        assert asked[0] not in (1, adventure.estimated_beats)
+
+    def test_the_counting_rule_replaces_the_choice_rule(self) -> None:
+        counting = story_prompts.beat_request(
+            seq=3, beat_id="b3", is_first=False, ask_to_count=True
+        )
+
+        assert story_prompts.COUNT_RULE in counting
+        assert story_prompts.CHOICE_RULE not in counting
+
+    def test_the_close_is_still_an_ending_even_at_the_midpoint(self) -> None:
+        # `is_final` outranks the count: the last beat says goodnight (§8.8).
+        final = story_prompts.beat_request(
+            seq=3, beat_id="b3", is_first=False, is_final=True, ask_to_count=True
+        )
+
+        assert story_prompts.FINAL_BEAT_RULE in final
+        assert story_prompts.COUNT_RULE not in final
+
+    def test_a_counting_beat_never_keeps_choice_cards(self) -> None:
+        # The client picks the number pad by the *absence* of options, so cards on
+        # a count beat would leave the child with no way to answer it.
+        interaction = {
+            "type": "count",
+            "expected": 3,
+            "choices": [{"key": "three", "label": "Three", "icon_prompt": "three frogs"}],
+        }
+
+        normalised = orchestrator.normalise_choices(interaction, is_final=False)
+
+        assert normalised["choices"] is None
+        assert normalised["expected"] == 3
 
 
 class TestABeatStoredInAnOlderShapeStillPlays:

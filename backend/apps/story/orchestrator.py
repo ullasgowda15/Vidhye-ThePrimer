@@ -150,6 +150,28 @@ def objective_for(adventure: Adventure) -> dict[str, Any]:
     return {**PLACEHOLDER_OBJECTIVE, "difficulty": adventure.difficulty}
 
 
+def asks_to_count(adventure: Adventure, seq: int) -> bool:
+    """Is this the beat that asks the child to count something (§10.3, §8.5)?
+
+    One beat per adventure, at its midpoint. Deliberately decided here rather
+    than left to the model: `CHOICE_RULE` tells every other beat to prefer
+    `choose`, and a model reading "prefer" on every beat picks it every time —
+    which is how the numeracy objective ended up riding in the prompt as data
+    nothing acted on, and how §8.5's no-fail-states guarantee ended up with
+    nothing that *could* be answered wrongly and so no way to be exercised.
+
+    The midpoint because the opening has to establish the world before it can ask
+    anything of the child, and the close asks for nothing at all (§8.8).
+
+    A stand-in for Day 10's selector, not a small version of it: there is no skill
+    model here, no spaced retrieval and no difficulty-driven demand. When the
+    Learning Engine lands it decides *what* to ask and *when*, and this goes.
+    """
+    if seq <= 1 or is_final_seq(adventure, seq):
+        return False
+    return seq == (adventure.estimated_beats + 1) // 2
+
+
 def _known_characters(child: Child) -> list[str]:
     """Names the model may use as if already established (§8.2).
 
@@ -408,6 +430,7 @@ def build_beat_context(
         beat_id=f"b{seq}",
         is_first=seq == 1,
         is_final=is_final_seq(adventure, seq),
+        ask_to_count=asks_to_count(adventure, seq),
         stage=stage,
         prev_choice=prev_choice,
         characters=_known_characters(child),
@@ -545,6 +568,18 @@ def normalise_choices(interaction: dict[str, Any], *, is_final: bool) -> dict[st
         if interaction.get("choices"):
             logger.info("story.final_beat_choices_dropped count=%d", len(interaction["choices"]))
         interaction["type"] = InteractionType.NONE.value
+        interaction["choices"] = None
+        return interaction
+
+    # A beat that asks for a number must not also show cards. The client picks its
+    # answer control by the *absence* of options (`StoryPage`: cards when there are
+    # options, the number pad when there are none), so options on a `count` beat
+    # do not merely clutter it — they replace the only control that can answer it,
+    # and the child is asked to count with no way to say three.
+    asked = interaction.get("type")
+    if asked in {InteractionType.COUNT.value, InteractionType.SAY.value}:
+        if interaction.get("choices"):
+            logger.info("story.choices_dropped_from_answer_beat type=%s", asked)
         interaction["choices"] = None
         return interaction
 
