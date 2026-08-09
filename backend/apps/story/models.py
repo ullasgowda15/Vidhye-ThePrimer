@@ -21,11 +21,16 @@ consequence beat is conditioned on the hint the beat before it left behind
 round trip through the child's tap.
 """
 
+import logging
+from collections.abc import Mapping
 from typing import Any
 
 from django.db import models
+from django.utils.text import slugify
 
 from apps.common.models import UUIDModel
+
+logger = logging.getLogger(__name__)
 
 # What a child is told to expect from one sitting (§8.1's 5-7 beat arc). The
 # bounds exist because `estimatedBeats` is a promise made to a client before a
@@ -140,6 +145,35 @@ class Adventure(UUIDModel):
         return min(max(steps, MIN_ESTIMATED_BEATS), MAX_ESTIMATED_BEATS)
 
 
+def _as_option(option: Any) -> dict[str, Any] | None:
+    """One stored choice, read as the structured option the client expects.
+
+    A generated option has been `{key, label, icon_prompt}` since choices became
+    illustrated (§14.4, `ai.schemas.ChoiceOption`), and that is what this returns
+    untouched. Beats written before that stored the choices as bare strings, and
+    those rows are still on disk and still replayable — a child mid-adventure
+    when the shape changed keeps their forest.
+
+    A legacy string becomes an option with no `icon_prompt`, which is what makes
+    it safe rather than merely non-crashing: `orchestrator.media_stages` skips an
+    option with no prompt, so nothing tries to illustrate a card from a label
+    that was never written to be drawn, and `choice_payload` renders it with a
+    null `imageUrl` — the picture-less card it already handles.
+
+    Anything else is dropped with a warning rather than guessed at. An option the
+    engine cannot describe is one the child cannot be asked to take.
+    """
+    if isinstance(option, Mapping):
+        return dict(option)
+    if isinstance(option, str) and option.strip():
+        label = option.strip()
+        # `chosen_key` is 64 chars, and the key is what a tap sends back.
+        key = slugify(label).replace("-", "_")[:64]
+        return {"key": key or "option", "label": label, "icon_prompt": ""}
+    logger.warning("story.choice_option_unreadable type=%s", type(option).__name__)
+    return None
+
+
 class Beat(UUIDModel):
     """One narrated moment (§8.1). Mirrors the generated beat contract."""
 
@@ -232,8 +266,17 @@ class Beat(UUIDModel):
         Read off `interaction` rather than stored twice: the generated beat is the
         only place options are decided, and a second copy is a second thing that
         can disagree about what the child was shown.
+
+        Tolerant of a stored shape that is not the current one, because this is
+        read on the SSE path (`streaming.choice_payload`,
+        `orchestrator.media_stages`) where raising would abort a half-sent
+        response and leave the child looking at a dead screen (§13). Beats
+        written before options became structured hold bare strings here; those
+        are read as label-only options rather than dropped, so an old adventure
+        still plays instead of silently losing its branch.
         """
-        return [dict(option) for option in (self.interaction or {}).get("choices") or []]
+        coerced = (_as_option(option) for option in (self.interaction or {}).get("choices") or [])
+        return [option for option in coerced if option is not None]
 
     def option(self, key: str) -> dict[str, Any] | None:
         """The option with this key, if this beat offered it."""

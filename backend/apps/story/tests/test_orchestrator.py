@@ -26,7 +26,7 @@ from apps.companion.service import create_companion
 from apps.profiles.models import Child
 from apps.story import orchestrator
 from apps.story.ai.router import AIConfigurationError
-from apps.story.models import Adventure
+from apps.story.models import Adventure, Beat
 
 pytestmark = pytest.mark.django_db
 
@@ -611,6 +611,43 @@ class TestTheChoicesAChildIsOffered:
         # One sentence, one TTS call, and it scans as a question.
         assert line.rstrip().endswith("?")
         assert " or " in line
+
+
+class TestABeatStoredInAnOlderShapeStillPlays:
+    """Options were bare strings before they were illustrated (§14.4).
+
+    Those rows are still on disk. Reading one used to raise out of
+    `Beat.options`, and because every read of it is on the SSE path — the media
+    stages, the choice payload — the exception surfaced as a half-sent stream and
+    a dead screen for a child who was mid-adventure when the shape changed.
+    """
+
+    def test_a_legacy_string_option_is_read_as_a_label(self) -> None:
+        beat = Beat(interaction={"type": "choose", "choices": ["the big slide", "the tall swing"]})
+
+        assert [option["key"] for option in beat.options] == ["the_big_slide", "the_tall_swing"]
+        assert [option["label"] for option in beat.options] == ["the big slide", "the tall swing"]
+        # The key is what a tap sends back, so it has to round-trip.
+        chosen = beat.option("the_big_slide")
+        assert chosen is not None
+        assert chosen["label"] == "the big slide"
+
+    def test_a_legacy_option_is_never_sent_to_be_illustrated(self) -> None:
+        # A label was not written to be drawn. Rendering a card from one would
+        # spend a provider call on a picture nobody chose the words for, so the
+        # card goes out picture-less instead (`choice_payload` handles that).
+        beat = Beat(interaction={"type": "choose", "choices": ["the big slide"]})
+
+        # The beat's own illustration and voice are still owed; no *choice* icon is.
+        assert orchestrator.pending_media_stages(beat) == (
+            orchestrator.ILLUSTRATION_STAGE,
+            orchestrator.VOICE_STAGE,
+        )
+
+    def test_an_unreadable_option_is_dropped_rather_than_raised(self) -> None:
+        beat = Beat(interaction={"type": "choose", "choices": [42, None, {"key": "river"}]})
+
+        assert [option["key"] for option in beat.options] == ["river"]
 
 
 class TestNoChoiceCanLose:
