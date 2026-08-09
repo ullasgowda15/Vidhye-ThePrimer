@@ -22,14 +22,29 @@ from typing import Any
 import pytest
 from asgiref.sync import async_to_sync
 
+from apps.companion import cast
 from apps.companion.service import create_companion
+from apps.media import prompts as media_prompts
+from apps.media import service as media_service
 from apps.profiles.models import Child
 from apps.story import orchestrator
 from apps.story.ai.prompts import story as story_prompts
 from apps.story.ai.router import AIConfigurationError
 from apps.story.models import Adventure, Beat
+from conftest import ScriptedAIProvider
 
 pytestmark = pytest.mark.django_db
+
+#: A recurring character, described the way a beat that introduces one describes
+#: it (`ai.schemas.CastMember`). Shared by the consistency tests below.
+BRAMBLE = {
+    "key": "bramble",
+    "name": "Bramble",
+    "visual_descriptor": (
+        "a small round frog, moss-green with a paler belly, large friendly amber "
+        "eyes, and one cream stripe down its back"
+    ),
+}
 
 
 @pytest.fixture(autouse=True)
@@ -132,14 +147,41 @@ def test_the_first_beat_is_told_it_is_the_opening(frog_lover, fake_ai) -> None:
     assert "This is the opening" in orchestrator.build_beat_context(adventure, seq=1)["user"]
 
 
-def test_only_the_companion_may_be_named(frog_lover, fake_ai) -> None:
+def test_a_character_we_can_draw_may_be_named_and_a_new_one_must_be_described(
+    frog_lover, fake_ai
+) -> None:
+    """The two halves of §8.2, which have to stay in step.
+
+    A name offered to the model is a promise that the illustration pipeline holds
+    that character's canonical appearance. So the prompt may only name characters
+    we have a descriptor for, and everyone else has to be introduced through
+    `scene.new_characters` — where it is persisted and reused, rather than
+    re-invented from prose on every appearance.
+    """
+    from apps.companion.models import Character
+
     adventure = orchestrator.create_adventure(frog_lover)
     user = orchestrator.build_beat_context(adventure, seq=1)["user"]
 
-    # A recurring cast lives in world state, which does not exist yet — so any
-    # other character has to be described rather than named (§8.2, §8.3).
     assert "Pip" in user
-    assert "must be described in scene.illustration_prompt" in user
+    assert "add an entry to scene.new_characters" in user
+    # Nobody else yet, so the companion is the whole of the known cast.
+    assert "Bramble" not in user
+
+    Character.objects.create(
+        child=frog_lover,
+        key="bramble",
+        name="Bramble",
+        visual_descriptor="a small round frog, moss-green, with one cream stripe",
+        first_seen_adventure=adventure,
+    )
+    later = orchestrator.build_beat_context(adventure, seq=2)["user"]
+
+    # Now that we hold Bramble's appearance, the model may use the name — and is
+    # told not to describe them, because describing them again is what made them
+    # a different frog every time.
+    assert "Bramble" in later
+    assert "do not describe what they look like" in later
 
 
 # ---------------------------------------------------------------------------
@@ -1023,6 +1065,9 @@ class TestABeatStoredInAnOlderShapeStillPlays:
             },
             emotion="playful_curious",
         )
+        # Both budgets: the short one is what actually applies here, because the
+        # voice is the stage the turn waits on and nothing is producing it.
+        monkeypatch.setattr(orchestrator, "MEDIA_TURN_BUDGET_S", 0.1)
         monkeypatch.setattr(orchestrator, "MEDIA_FOLLOW_TIMEOUT_S", 0.1)
 
         async def collect() -> list[bytes]:
@@ -1049,6 +1094,378 @@ class TestABeatStoredInAnOlderShapeStillPlays:
         assert sent["beat"]["interaction"]["choices"] == [
             {"key": "the_big_slide", "label": "the big slide", "icon_prompt": ""},
             {"key": "the_tall_swing", "label": "the tall swing", "icon_prompt": ""},
+        ]
+
+
+# ---------------------------------------------------------------------------
+# One coherent world: every picture has the same cast in it (§8.2, §9.6)
+# ---------------------------------------------------------------------------
+class TestEveryIllustrationCarriesItsCast:
+    """Criteria 1-3, asserted on the prompts that actually reach the provider.
+
+    The thing being defended is not expressible as "the code calls the right
+    function": it is that across a whole adventure, every illustration asks for
+    the *same creature*. So these capture the real prompt strings and compare
+    them, which is the closest a test can get to the founder opening six images
+    side by side.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch) -> list[str]:
+        """Record every positive prompt handed to the image pipeline."""
+        prompts: list[str] = []
+        original = media_service.get_or_generate_image
+
+        def spy(**kwargs):
+            prompts.append(kwargs["prompt"])
+            return original(**kwargs)
+
+        monkeypatch.setattr(media_service, "get_or_generate_image", spy)
+        return prompts
+
+    def test_the_companion_is_in_every_beat_of_a_whole_adventure(
+        self, frog_lover, fake_ai, monkeypatch
+    ) -> None:
+        """Criterion 1, and it used to be true only of beat one by accident.
+
+        The companion reached the prompt because `illustrate_beat` went through
+        `companion.service.illustrate`, which took a companion and nothing else.
+        This asserts it for every beat of a full adventure, which is the sequence
+        a child actually sees.
+        """
+        prompts = self._capture(monkeypatch)
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        for seq in range(1, adventure.estimated_beats + 1):
+            beat = orchestrator.create_beat(adventure, seq=seq)
+            orchestrator.illustrate_beat(beat)
+            orchestrator.record_choice(beat, chosen_key="follow_river")
+
+        assert len(prompts) == adventure.estimated_beats
+        for prompt in prompts:
+            # The same canonical sentence, verbatim, in all of them — this is what
+            # "recognisably the same character" reduces to for a text-only model.
+            assert "Pip: a small round friendly dragon with warm ember scales" in prompt
+            assert "soft painterly children's storybook illustration" in prompt
+
+    def test_a_character_met_in_beat_two_looks_the_same_in_beat_four(
+        self, frog_lover, fake_ai, monkeypatch
+    ) -> None:
+        """Criterion 2, driven the way it happens: through a generated beat.
+
+        Beat 2 introduces Bramble and is the only beat that describes it. Beat 4
+        merely *names* it — and must still get the identical description, because
+        it was written down in between.
+        """
+        prompts = self._capture(monkeypatch)
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        def with_bramble(seq: int, introduce: bool) -> str:
+            beat = ScriptedAIProvider.beat(system="", user=f"Write beat {seq}")
+            beat["scene"]["characters_present"] = ["pip", "bramble"]
+            beat["scene"]["new_characters"] = [BRAMBLE] if introduce else []
+            return json.dumps(beat)
+
+        orchestrator.create_beat(adventure, seq=1)
+        fake_ai.queue_beat_response(with_bramble(2, introduce=True))
+        second = orchestrator.create_beat(adventure, seq=2)
+        orchestrator.illustrate_beat(second)
+
+        orchestrator.create_beat(adventure, seq=3)
+        fake_ai.queue_beat_response(with_bramble(4, introduce=False))
+        fourth = orchestrator.create_beat(adventure, seq=4)
+        orchestrator.illustrate_beat(fourth)
+
+        # Beat 4 never described Bramble; the persisted row did.
+        assert fourth.scene["new_characters"] == []
+        assert "cream stripe" in prompts[0]
+        assert "cream stripe" in prompts[1]
+
+        def cast_block(prompt: str) -> str:
+            return media_prompts.parse_sections(prompt)[media_prompts.CHARACTERS_LABEL]
+
+        # Byte-identical, not merely similar: the descriptor is hashed into
+        # `character_hash`, so a one-word difference is a second cache entry and
+        # therefore a second, different-looking frog.
+        assert cast_block(prompts[0]) == cast_block(prompts[1])
+
+    def test_a_beat_s_emotion_puts_the_matching_canonical_face_in_the_prompt(
+        self, frog_lover, fake_ai, monkeypatch
+    ) -> None:
+        """Criterion 3's §9.6 half: the five pre-rendered faces are actually used."""
+        prompts = self._capture(monkeypatch)
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        sleepy = ScriptedAIProvider.beat(system="", user="Write beat 1")
+        sleepy["emotion"] = "sleepy_content"
+        fake_ai.queue_beat_response(json.dumps(sleepy))
+        beat = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.illustrate_beat(beat)
+
+        assert "In this picture: mid-yawn with drooping eyelids" in prompts[0]
+
+    def test_the_cast_never_carries_a_storage_path_into_the_picture(
+        self, frog_lover, fake_ai, monkeypatch
+    ) -> None:
+        """A regression guard the Day-3 review paid for once already.
+
+        `flux-1-schnell` is text-only, so an anchor URL in a positive prompt is a
+        filename asked to be painted. Adding recurring characters added a second
+        source of anchor URLs, and this is the assertion that stops the same bug
+        arriving through the new door.
+        """
+        prompts = self._capture(monkeypatch)
+        cast.remember(frog_lover, [BRAMBLE])
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        beat_json = ScriptedAIProvider.beat(system="", user="Write beat 1")
+        beat_json["scene"]["characters_present"] = ["pip", "bramble"]
+        fake_ai.queue_beat_response(json.dumps(beat_json))
+        beat = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.illustrate_beat(beat)
+
+        assert "Bramble:" in prompts[0]
+        assert "REFERENCES" not in prompts[0]
+        assert "/media/" not in prompts[0]
+
+
+class TestWhatAnAdventureCostsToIllustrate:
+    """Criterion 4, measured rather than asserted (§16.6, §16.7, §22.4).
+
+    The consistency work of Day 6 puts more into the illustration prompt — every
+    present character's descriptor, and the companion's canonical expression — and
+    all of it is hashed into `character_hash`. That is a cache key getting wider,
+    which is the classic way a quality improvement quietly becomes a cost
+    regression. So the count is pinned here.
+    """
+
+    @pytest.mark.django_db(transaction=True, serialized_rollback=True)
+    def test_an_adventure_pays_once_per_picture_and_never_twice(self, frog_lover, fake_ai) -> None:
+        media_service.STATS.reset()
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        beats = []
+        for seq in range(1, adventure.estimated_beats + 1):
+            beat = orchestrator.create_beat(adventure, seq=seq)
+            async_to_sync(orchestrator.attach_media)(beat)
+            beats.append(beat)
+            orchestrator.record_choice(beat, chosen_key="follow_river")
+
+        from apps.media.models import Media
+
+        asked = sum(len(orchestrator.media_stages(beat)) for beat in beats)
+        generated = media_service.STATS.generated
+
+        # **Nothing was paid for twice.** One provider call per distinct row, which
+        # is the invariant a widened `character_hash` would break — the failure
+        # mode is not "fewer hits" in the abstract, it is the same picture bought
+        # again under a slightly different key.
+        assert generated == Media.objects.filter(child=frog_lover).count()
+
+        # And the cache is genuinely carrying load: this adventure wanted more
+        # assets than it bought. (The scripted provider repeats a scene across
+        # beats, which is why the margin here is large; a real adventure varies its
+        # scene text and the saving comes mostly from choice icons and replays.)
+        assert generated < asked
+        assert media_service.STATS.hit_rate() > 0
+
+        # The whole thing replayed — a child reloading, a worker repairing — costs
+        # nothing at all.
+        media_service.STATS.reset()
+        for beat in beats:
+            async_to_sync(orchestrator.attach_media)(beat)
+
+        assert media_service.STATS.generated == 0
+        assert media_service.STATS.hit_rate() == 1.0
+
+    def test_the_same_scene_with_the_same_cast_is_rendered_once(self, frog_lover, fake_ai) -> None:
+        """The property the cache is *for*, stated directly.
+
+        Two beats that want the same characters in the same scene share a render.
+        It is also what makes the companion's own reference set free after the
+        first build, and what `render_consistency` reports on its second run.
+        """
+        from apps.companion.service import render_scene
+
+        pip = frog_lover.companion
+        references = cast.refs_for(frog_lover, companion=pip, present=["pip"], emotion="proud")
+
+        media_service.STATS.reset()
+        first = render_scene(frog_lover, "a mossy riverbank at dawn", references)
+        second = render_scene(frog_lover, "a mossy riverbank at dawn", list(reversed(references)))
+
+        assert first.id == second.id
+        assert media_service.STATS.generated == 1
+        assert media_service.STATS.cache_hits == 1
+
+    def test_a_different_face_in_the_same_place_is_a_different_picture(
+        self, frog_lover, fake_ai
+    ) -> None:
+        """The other side of the same coin, and the reason expression is in the key.
+
+        Without it, a sleepy companion and a proud one on the same riverbank would
+        share a cache entry — and the second beat would be handed the first one's
+        face, which is a consistency bug wearing a cost saving's clothes.
+        """
+        from apps.companion.service import render_scene
+
+        pip = frog_lover.companion
+        scene = "a mossy riverbank at dawn"
+
+        proud = render_scene(
+            frog_lover, scene, cast.refs_for(frog_lover, companion=pip, present=[], emotion="proud")
+        )
+        sleepy = render_scene(
+            frog_lover,
+            scene,
+            cast.refs_for(frog_lover, companion=pip, present=[], emotion="sleepy"),
+        )
+
+        assert proud.id != sleepy.id
+        assert proud.scene_hash == sleepy.scene_hash
+        assert proud.character_hash != sleepy.character_hash
+
+
+# ---------------------------------------------------------------------------
+# A missing picture never blocks the child (§4.9) — Day-5 founder test, F6
+# ---------------------------------------------------------------------------
+class TestAMissingPictureNeverBlocksTheChild:
+    """The failure these exist for happened to a real child on a real tablet.
+
+    Cloudflare answered `429 daily allocation exhausted`, so no illustration was
+    ever coming — and because `done` was gated on one, the beat was narrated, the
+    question was asked aloud, and then nothing on the screen would accept an answer
+    for two minutes. Not a missing picture: a dead screen, which §4.9 does not
+    permit for any reason including a vendor being down.
+
+    Each test below is one half of the rule that replaced it. A beat is answerable
+    when it can be *heard*, and the wait for even that is bounded.
+    """
+
+    @pytest.mark.django_db(transaction=True, serialized_rollback=True)
+    def test_the_child_gets_their_turn_with_the_voice_and_no_picture(
+        self, frog_lover, fake_ai, monkeypatch
+    ) -> None:
+        """The exact outage, end to end: voice in, illustration never coming.
+
+        The assertion that matters is the *timing*. Reaching `done` at all was
+        always going to happen eventually — it did, after 120 seconds — so a test
+        that only checked the frames would have passed against the broken code.
+        """
+        from apps.story import streaming
+        from tests.test_adventures import frames_of
+
+        adventure = orchestrator.create_adventure(frog_lover)
+        # A decision point rather than the opening, so the beat owes four pictures
+        # and not one: the scene plus an icon per card. That is the case the founder
+        # test called out — three choices means four ways for the turn to hang — and
+        # none of them may.
+        beat = orchestrator.create_beat(adventure, seq=2)
+        beat.audio = orchestrator.narrate_beat(beat)
+        beat.save(update_fields=["audio", "updated_at"])
+        assert orchestrator.ILLUSTRATION_STAGE in orchestrator.pending_media_stages(beat)
+        assert len(orchestrator.pending_media_stages(beat)) > 1
+
+        # Pictures that are never coming, and a generous budget for them. The child
+        # must not be made to wait out either number.
+        monkeypatch.setattr(orchestrator, "MEDIA_TURN_BUDGET_S", 10.0)
+        monkeypatch.setattr(orchestrator, "MEDIA_FOLLOW_TIMEOUT_S", 0.4)
+
+        async def collect() -> list[tuple[float, str]]:
+            started = time.monotonic()
+            return [
+                (time.monotonic() - started, chunk.decode())
+                async for chunk in streaming.stream_beat(adventure)
+            ]
+
+        timed = async_to_sync(collect)()
+        frames = frames_of([chunk for _, chunk in timed])
+        sent = dict(frames)
+
+        assert [event for event, _ in frames] == ["beat", "prefetch", "done"]
+        assert sent["done"]["status"] == streaming.AWAITING_CHOICE
+
+        # The child was handed their turn essentially at once — not after the
+        # illustration budget expired, and nowhere near the turn budget.
+        done_at = next(at for at, chunk in timed if "event: done" in chunk)
+        assert done_at < 0.4, f"the child waited {done_at:.2f}s for a picture"
+
+        # And what they were handed is playable: the scene is honestly pending, the
+        # narration is there, the voice can read it — and every card carries the
+        # label that voice speaks aloud, with no picture on any of them.
+        assert sent["beat"]["scene"] == {"imageUrl": None, "status": "pending"}
+        assert sent["beat"]["narration"]
+        assert sent["beat"]["audioUrl"]
+        cards = sent["beat"]["choices"]
+        assert len(cards) >= 2
+        assert all(option["label"] for option in cards)
+        assert all(option["imageUrl"] is None for option in cards)
+
+    @pytest.mark.django_db(transaction=True, serialized_rollback=True)
+    def test_the_wait_for_the_voice_is_bounded_too(self, frog_lover, fake_ai, monkeypatch) -> None:
+        """A TTS outage must not reopen the same hole through a different door.
+
+        The voice is what the turn is gated on now, so "the voice never arrives" is
+        the shape this fix would otherwise have moved the dead screen into. It is
+        the short budget that applies here, not the long one — which is what the
+        two numbers being far apart proves.
+        """
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        monkeypatch.setattr(orchestrator, "MEDIA_TURN_BUDGET_S", 0.2)
+        monkeypatch.setattr(orchestrator, "MEDIA_FOLLOW_TIMEOUT_S", 30.0)
+
+        async def follow() -> list[tuple[str, str]]:
+            return [
+                pair
+                async for pair in orchestrator.follow_media(
+                    beat, known={}, essential={orchestrator.VOICE_STAGE}
+                )
+            ]
+
+        started = time.monotonic()
+        assert async_to_sync(follow)() == []
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 5.0, f"waited {elapsed:.1f}s on the short budget"
+
+    def test_the_picture_is_still_followed_after_the_turn_is_handed_over(
+        self, frog_lover, fake_ai, monkeypatch
+    ) -> None:
+        """Non-essential is not the same as abandoned.
+
+        The illustration stops *blocking* the child; it must still reach them when
+        it lands, or the fix would have traded a dead screen for a story with no
+        pictures in it.
+        """
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        voice_only = {orchestrator.VOICE_STAGE: "/media/voice.mp3"}
+        polls = [
+            voice_only,
+            {**voice_only, orchestrator.ILLUSTRATION_STAGE: "/media/scene.png"},
+        ]
+        monkeypatch.setattr(
+            orchestrator, "media_urls", lambda pk: polls[0] if len(polls) == 1 else polls.pop(0)
+        )
+        monkeypatch.setattr(orchestrator, "MEDIA_POLL_MIN_S", 0.01)
+        # Beat 1 is the counting beat, so it offers no cards and its stages are
+        # exactly the two the poll sequence above covers.
+        assert orchestrator.pending_media_stages(beat) == orchestrator.MEDIA_STAGE_LABELS
+
+        async def follow() -> list[str]:
+            return [
+                label
+                async for label, _ in orchestrator.follow_media(
+                    beat, known={}, essential={orchestrator.VOICE_STAGE}
+                )
+            ]
+
+        assert async_to_sync(follow)() == [
+            orchestrator.VOICE_STAGE,
+            orchestrator.ILLUSTRATION_STAGE,
         ]
 
 

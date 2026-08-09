@@ -45,6 +45,37 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CastMember(_Strict):
+    """A character appearing for the first time, described well enough to redraw.
+
+    This exists because §8.2 requires recurring characters to be persisted
+    entities with a canonical descriptor, and the beat that *invents* one is the
+    only place that descriptor can come from cheaply. Asking a second model call
+    "what did that frog look like?" would pay twice and, worse, would be a guess
+    at something already decided; deriving it from the illustration prompt would
+    mean parsing prose for a noun.
+
+    So the writer says it outright, in the same call, and
+    `companion.cast.remember` persists it. The next beat this character appears
+    in gets the descriptor back verbatim, which is what makes them the same
+    creature on their second appearance rather than a new one wearing the same
+    name (§23.1).
+    """
+
+    key: str = Field(
+        description=("The same stable snake_case id used in characters_present, e.g. 'bramble'."),
+    )
+    name: str = Field(description="What the companion calls them out loud, e.g. 'Bramble'.")
+    visual_descriptor: str = Field(
+        description=(
+            "Permanent appearance only, for every future picture of them: body shape, "
+            "size, colours, markings, one or two distinctive details. Never a pose, an "
+            "expression, an action, a background or an art style — those change per "
+            "picture. Not a human child."
+        ),
+    )
+
+
 class Scene(_Strict):
     setting: str = Field(description="Where this beat happens, in one line.")
     illustration_prompt: str = Field(
@@ -52,6 +83,13 @@ class Scene(_Strict):
     )
     characters_present: list[str] = Field(
         description="Stable character keys visible in this beat, e.g. ['pip', 'frogs'].",
+    )
+    new_characters: list[CastMember] = Field(
+        description=(
+            "Every character in characters_present who is appearing for the first "
+            "time and whose appearance we do not already hold. Empty list if there "
+            "are none — which is the usual case."
+        ),
     )
 
 

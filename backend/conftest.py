@@ -205,6 +205,12 @@ class ScriptedAIProvider:
                 "setting": "mossy riverbank at dawn",
                 "illustration_prompt": f"a mossy riverbank at dawn with three {subject} on a log",
                 "characters_present": ["pip"],
+                # The companion and nobody else, so the default scripted adventure
+                # introduces no recurring cast. Tests that want one queue a beat
+                # that names it (`TestARecurringCharacterIsTheSameCharacter`) —
+                # keeping it out of the default keeps every other test's prompt and
+                # character-hash stable.
+                "new_characters": [],
             },
             "interaction": interaction,
             "learning": {

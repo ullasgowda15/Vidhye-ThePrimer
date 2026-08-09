@@ -25,6 +25,19 @@ VALID_BEAT: dict[str, Any] = {
         "setting": "mossy riverbank, dawn light, three green frogs on a log",
         "illustration_prompt": "storybook watercolor, mossy riverbank at dawn, three frogs",
         "characters_present": ["pip", "frogs"],
+        # Pip's appearance is held; the frogs are met here for the first time, so
+        # this beat is what writes down what they look like (§8.2).
+        "new_characters": [
+            {
+                "key": "frogs",
+                "name": "the frog chorus",
+                "visual_descriptor": (
+                    "three small round frogs, moss-green with paler bellies and "
+                    "large friendly amber eyes; one has a single cream stripe down "
+                    "its back"
+                ),
+            }
+        ],
     },
     "interaction": {
         "type": "count",

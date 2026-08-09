@@ -42,7 +42,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -52,7 +52,10 @@ from django.db import IntegrityError, transaction
 from django.db import connection as db_connection
 from django.utils import timezone
 
+from apps.companion import cast
+from apps.companion import scenes as companion_scenes
 from apps.companion import service as companion_service
+from apps.companion.models import Character
 from apps.media import prompts as media_prompts
 from apps.media import service as media_service
 from apps.media.exceptions import MediaError
@@ -105,6 +108,15 @@ FIRST_BEAT_SEQ = 1
 #: for. Four cards on a tablet is four things a four-year-old is holding at once.
 MAX_CHOICES = 3
 
+#: How many recurring characters are offered to the model as already-known names.
+#:
+#: Bounded because this list grows for the lifetime of the friendship and it is
+#: pasted into every beat prompt — the flat prompt size §8.6 exists to protect is
+#: not something a two-year-old account gets to grow out of. Newest first, which
+#: is the cheap stand-in for salience until §11's graph lands on Days 8-9 and
+#: decides properly which characters are worth recalling.
+KNOWN_CHARACTER_LIMIT = 8
+
 #: How long a beat's media may sit untouched before another stream open assumes
 #: the worker that owned it is gone and queues a replacement. Comfortably longer
 #: than a slow illustration + voice pair (tens of seconds), because queueing a
@@ -112,13 +124,31 @@ MAX_CHOICES = 3
 MEDIA_RETRY_AFTER_S = 120.0
 
 #: How the stream watches for media a worker is producing. The wait backs off from
-#: `MIN` to `MAX`; `FOLLOW_TIMEOUT` is when the stream stops waiting and ends with
-#: `done` — the child keeps their narration and their companion, and the task is
-#: free to finish into the beat for the next open.
+#: `MIN` to `MAX`.
 MEDIA_POLL_MIN_S = 0.3
 MEDIA_POLL_MAX_S = 2.0
 MEDIA_POLL_BACKOFF = 1.5
-MEDIA_FOLLOW_TIMEOUT_S = 120.0
+
+#: **The longest a child may sit with nothing to do.** `follow_media` gives up on
+#: the assets the child's turn is gated on (`streaming.ESSENTIAL_STAGES`) after
+#: this, and the stream hands the turn over with whatever exists.
+#:
+#: This number is the second half of the Day-5 founder-test failure. The first half
+#: was that the *picture* gated the turn; with that fixed the voice still does, and
+#: a voice provider having the same bad day the image provider had would reproduce
+#: the same dead screen through a different door. §4.9 does not say "no spinner
+#: unless a vendor is down" — so the wait is bounded whatever is missing. Twenty
+#: seconds because that is already past a slow-but-working TTS call, so reaching
+#: this deadline means something is wrong rather than merely slow.
+MEDIA_TURN_BUDGET_S = 20.0
+
+#: How much longer the stream keeps watching once the child has their turn — the
+#: budget for a picture that is merely slow. Deliberately short of the two minutes
+#: this used to be: past the point where the child is already playing, a held
+#: connection buys only a picture they have most likely already tapped past, and
+#: the asset lands on the beat either way for the next open. Must be at least
+#: `MEDIA_TURN_BUDGET_S`, since it is the overall cap on one follow.
+MEDIA_FOLLOW_TIMEOUT_S = 45.0
 
 
 # ---------------------------------------------------------------------------
@@ -175,14 +205,33 @@ def asks_to_count(adventure: Adventure, seq: int) -> bool:
 def _known_characters(child: Child) -> list[str]:
     """Names the model may use as if already established (§8.2).
 
-    Only the companion today. A recurring cast lives in the world state (§8.3),
-    which is not built yet — so any *other* character in a beat has to be
-    described rather than named, and the prompt says so.
+    The companion, then every recurring character this child has met — because
+    from Day 6 those are persisted entities with canonical descriptors
+    (`companion.Character`), and a name in this list is a promise that the
+    illustration pipeline can draw that character the same way it did last time.
+
+    The two halves of that promise have to stay together. A name here whose
+    descriptor we did not hold would let the model reintroduce a character it
+    cannot redraw; a descriptor we hold whose name is missing here would leave the
+    model describing "a small frog" afresh in a story that already has Bramble in
+    it. So this reads from the same rows `cast.refs_for` reads.
+
+    Places are still not in here: §8.3's world map is a later day, and the prompt
+    tells the model to describe anything it is not handed.
     """
+    names: list[str] = []
     try:
-        return [child.companion.name]
+        names.append(child.companion.name)
     except ObjectDoesNotExist:
-        return []
+        pass
+
+    names.extend(
+        Character.objects.filter(child=child)
+        .exclude(visual_descriptor="")
+        .order_by("-created_at")
+        .values_list("name", flat=True)[:KNOWN_CHARACTER_LIMIT]
+    )
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -806,11 +855,12 @@ def _persist_beat(
         )
     interaction = normalise_choices(interaction, is_final=is_final_seq(adventure, seq))
 
+    scene = contract.scene.model_dump(mode="json")
     beat = Beat.objects.create(
         adventure=adventure,
         seq=seq,
         narration=contract.narration,
-        scene=contract.scene.model_dump(mode="json"),
+        scene=scene,
         interaction=interaction,
         learning=contract.learning.model_dump(mode="json"),
         emotion=contract.emotion,
@@ -818,6 +868,13 @@ def _persist_beat(
         next_hint=contract.next_hint,
         continuity_refs=list(contract.continuity_refs),
     )
+    # Anyone this beat has just invented becomes a persisted entity in the same
+    # transaction that persists the beat (§8.2). Written *here*, at the boundary
+    # where a model's output becomes our data, rather than at illustration time:
+    # the descriptor arrives with the beat and the beat is the only thing that has
+    # it, so a media task that ran late — or never — would otherwise lose the one
+    # record of what this character looks like.
+    cast.remember(adventure.child, scene.get("new_characters") or [], adventure_id=adventure.pk)
     locked = Adventure.objects.select_for_update().get(pk=adventure.pk)
     locked.emotion_arc = [*locked.emotion_arc, contract.emotion]
     locked.save(update_fields=["emotion_arc", "updated_at"])
@@ -1176,13 +1233,24 @@ def _read_out(labels: Sequence[str]) -> str:
 
 
 def illustrate_beat(beat: Beat) -> Media | None:
-    """Render this beat's picture through the Day-3 pipeline (§16.6).
+    """Render this beat's picture with everyone who is in it (§8.2, §16.6).
 
-    Goes through `companion.service.illustrate` rather than calling the media
-    service directly, so the style tokens, the companion's canonical descriptor
-    and the cache key are computed exactly as they were for the reference set. A
-    beat that happens to describe the same scene as an existing render costs
-    nothing.
+    Goes through `companion.service.render_scene` rather than calling the media
+    service directly, so the style tokens, every present character's canonical
+    descriptor and the cache key are computed exactly as they were for the
+    reference set. A beat that happens to want the same cast in the same scene as
+    an existing render costs nothing.
+
+    **The cast, not just the companion.** Until Day 6 this passed the companion
+    alone, so a beat about Bramble the frog carried Pip's descriptor and left
+    Bramble to be re-imagined from the scene prose on every appearance — the exact
+    inconsistency §8.2 calls uncanny. Now `cast.refs_for` resolves the companion
+    (wearing this beat's canonical expression, §9.6) plus each persisted character
+    the beat names, and all of them reach the prompt.
+
+    The picture, once drawn, is recorded as the reference asset for any character
+    that had none — this render is what established their look, and it is already
+    paid for.
     """
     prompt = str((beat.scene or {}).get("illustration_prompt") or "").strip()
     if not prompt:
@@ -1193,7 +1261,24 @@ def illustrate_beat(beat: Beat) -> Media | None:
     if companion is None:
         logger.warning("story.illustration_skipped beat=%s reason=no_companion", beat.id)
         return None
-    return companion_service.illustrate(companion, prompt)
+
+    child = beat.adventure.child
+    present = [str(key) for key in (beat.scene or {}).get("characters_present") or []]
+    references = cast.refs_for(child, companion=companion, present=present, emotion=beat.emotion)
+
+    logger.info(
+        "story.illustration_cast beat=%s cast=%s expression=%s",
+        beat.id,
+        ",".join(ref.name for ref in references),
+        companion_scenes.canonical_expression(beat.emotion) or "-",
+    )
+    media = companion_service.render_scene(child, prompt, references)
+
+    if introduced := [
+        row for row in cast.characters_for(child, present) if not row.reference_asset_ids
+    ]:
+        cast.record_reference(introduced, media)
+    return media
 
 
 def illustrate_choice(beat: Beat, icon_prompt: str) -> Media | None:
@@ -1570,6 +1655,7 @@ async def follow_media(
     beat: Beat,
     *,
     known: Mapping[str, str | None],
+    essential: Collection[str] = (),
 ) -> AsyncIterator[tuple[str, str]]:
     """Yield each of the beat's assets as it lands, wherever it was produced.
 
@@ -1582,19 +1668,31 @@ async def follow_media(
 
     `known` is what the `beat` frame already carried, so a replay of a finished
     beat does no work at all.
+
+    **`essential` names the assets a child is still waiting on**, and it is what
+    makes this bounded twice rather than once. While any of them is outstanding the
+    deadline is `MEDIA_TURN_BUDGET_S`, because the child has nothing to do; once
+    they are all in, the deadline is the longer `MEDIA_FOLLOW_TIMEOUT_S`, because
+    from then on the only thing still arriving is a picture and the child is already
+    playing. A caller that passes nothing gets the single long deadline, which is
+    the right answer for a caller with nobody waiting.
     """
     # Ordered, not a set, and the order is `media_stages`': the scene, the voice,
     # then the choice icons. It is what decides which asset the client is told
     # about first when several land in the same poll, and the stream hands the
-    # child their turn as soon as the first two are through (`streaming`) — so an
-    # alphabetical order here would put three card icons in front of the question.
+    # child their turn as soon as the essential ones are through (`streaming`) — so
+    # an alphabetical order here would put three card icons in front of the voice.
     order = [stage.label for stage in media_stages(beat)]
     expected = set(order)
     emitted = {label for label, url in known.items() if url and label in expected}
     if emitted >= expected:
         return
 
-    deadline = time.monotonic() + MEDIA_FOLLOW_TIMEOUT_S
+    # Intersected with what this beat actually has: a caller naming the voice for a
+    # beat with no companion would otherwise wait out the short budget on a stage
+    # nothing is producing.
+    waited_on = set(essential) & expected
+    started = time.monotonic()
     attempt = 0
     while True:
         urls = await _offload(media_urls, beat.pk)
@@ -1607,11 +1705,16 @@ async def follow_media(
 
         if emitted >= expected:
             return
-        if time.monotonic() >= deadline:
+
+        outstanding = waited_on - emitted
+        budget = MEDIA_TURN_BUDGET_S if outstanding else MEDIA_FOLLOW_TIMEOUT_S
+        if time.monotonic() - started >= budget:
             logger.warning(
-                "story.media_unfinished beat=%s missing=%s",
+                "story.media_unfinished beat=%s missing=%s blocking=%s budget_s=%d",
                 beat.id,
                 ",".join(sorted(expected - emitted)),
+                ",".join(sorted(outstanding)) or "-",
+                int(budget),
             )
             return
 

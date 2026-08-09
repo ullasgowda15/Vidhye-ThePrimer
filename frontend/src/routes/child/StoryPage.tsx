@@ -36,8 +36,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
+import SceneTransition from '@/components/SceneTransition';
 import { api } from '@/lib/api/client';
 import { useAdventure, useCompanion, useResetAdventure } from '@/lib/api/queries';
+import { waitingLine } from '@/lib/motion';
 import { consumeBeatStream, type BeatEvent, type ChoiceOption } from '@/lib/sse';
 
 import ChoiceCards from './ChoiceCard';
@@ -127,6 +129,16 @@ export default function StoryPage() {
    * between beats — one open delivers one beat — so something has to say "again".
    */
   const [turn, setTurn] = useState(0);
+  /**
+   * Has the child acted, with the consequence not yet on screen?
+   *
+   * This is the gap §4.9 exists to cover, and it is deliberately *not* derived
+   * from `status`: it opens the instant the tap lands, before the POST is even
+   * sent, because the whole point is that the motion starts with the child's
+   * finger rather than with the network. It closes when the next `beat` frame
+   * replaces the scene.
+   */
+  const [awaitingNext, setAwaitingNext] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   /** When this beat became answerable, for `latencyMs`. */
@@ -173,6 +185,9 @@ export default function StoryPage() {
         setChosen(null);
         setScaffold(null);
         setStatus('thinking');
+        // The consequence is here; the path-walk that covered its generation
+        // stops, and `SceneTransition` turns the page over to it.
+        setAwaitingNext(false);
         attempts.current = 0;
         assisted.current = false;
         answered.current = false;
@@ -266,6 +281,9 @@ export default function StoryPage() {
       answered.current = true;
       setChosen(choiceKey);
       playTapChime();
+      // Before the request, not after it: §14.7 wants the world to respond within
+      // ~100ms, and a round trip is not within 100ms.
+      setAwaitingNext(true);
 
       if (adventureId) {
         try {
@@ -360,20 +378,35 @@ export default function StoryPage() {
       className="min-h-full bg-bg text-text flex flex-col items-center justify-center p-6 text-center"
     >
       <div className="w-full max-w-[44rem]">
-        {/* The picture's slot is reserved from the start so the narration does not
-            jump down the page when the illustration lands. */}
-        <div className="relative mx-auto flex min-h-[14rem] w-full items-center justify-center">
-          {imageUrl ? (
-            <img
-              src={imageUrl}
-              alt={beat?.scene.status === 'ready' ? 'The scene' : ''}
-              data-testid="beat-illustration"
-              className="w-full rounded-lg shadow-card motion-safe:animate-[fade-in_var(--motion-slow)_var(--motion-ease)]"
-            />
-          ) : (
-            <ThinkingCompanion portraitUrl={companion?.portrait_url ?? null} name={companionName} />
-          )}
-        </div>
+        {/* Every gap in the whole screen is inside this: the wait before beat one,
+            the wait between beats, and the wait for an illustration that is slow
+            or is never coming. None of them is a spinner (§4.9). */}
+        <SceneTransition
+          sceneKey={beat?.beatId ?? 'thinking'}
+          pending={awaitingNext}
+          caption={awaitingNext ? waitingLine(companionName, beat?.seq ?? 0) : null}
+        >
+          {/* The picture's slot is reserved from the start so the narration does
+              not jump down the page when the illustration lands. */}
+          <div className="relative mx-auto flex min-h-[14rem] w-full items-center justify-center">
+            {imageUrl ? (
+              <img
+                src={imageUrl}
+                alt={beat?.scene.status === 'ready' ? 'The scene' : ''}
+                data-testid="beat-illustration"
+                className="w-full rounded-lg shadow-card motion-safe:animate-[fade-in_var(--motion-slow)_var(--motion-ease)]"
+              />
+            ) : (
+              /* Not "no picture yet" — the companion, thinking. This is also what
+                 stands in when the image provider is down entirely, and the beat
+                 below it is fully playable regardless (§4.9). */
+              <ThinkingCompanion
+                portraitUrl={companion?.portrait_url ?? null}
+                name={companionName}
+              />
+            )}
+          </div>
+        </SceneTransition>
 
         {beat ? (
           <>
@@ -484,21 +517,6 @@ export default function StoryPage() {
           Back
         </Link>
       </footer>
-
-      <style>{`
-        @keyframes breathe {
-          0%, 100% { transform: scale(1) translateY(0); }
-          50%      { transform: scale(1.02) translateY(-6px); }
-        }
-        @keyframes think {
-          0%, 100% { transform: translateY(0); opacity: 0.4; }
-          50%      { transform: translateY(-8px); opacity: 1; }
-        }
-        @keyframes fade-in {
-          from { opacity: 0; }
-          to   { opacity: 1; }
-        }
-      `}</style>
     </main>
   );
 }

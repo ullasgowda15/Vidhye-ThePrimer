@@ -84,11 +84,30 @@ AWAITING_CHOICE = "awaiting_choice"
 COMPLETE = "complete"
 ENDED = "ended"
 
-#: The assets the child's turn waits for: the picture of the scene and the voice
-#: that reads it, including the options, aloud. Everything else — the little
-#: picture on each choice card — arrives after `done`, because a card without its
-#: icon is still a card and a beat without its question is nothing at all.
-ESSENTIAL_STAGES = frozenset(orchestrator.MEDIA_STAGE_LABELS)
+#: The one asset the child's turn waits for: the voice that reads the beat, and
+#: its options, aloud. Everything the child can see — the illustration, the little
+#: picture on each choice card — arrives whenever it arrives, before `done` or long
+#: after it.
+#:
+#: **The picture used to be in here, and that was a child-facing failure.** On Day
+#: 5 the image provider went down for real (Cloudflare: `429 daily allocation
+#: exhausted`) and the consequence was not a missing picture — it was a child
+#: holding a tablet that had narrated a scene to them, asked them a question, and
+#: then accepted no answer for two minutes, because `done` was gated on an
+#: illustration that was never coming. §4.9 permits no such screen.
+#:
+#: So the rule is now: **a beat is answerable when it can be heard.** The question
+#: is spoken, each option's label is spoken in the same clip
+#: (`orchestrator.spoken_line`), and `ChoiceCards` renders a card with no picture
+#: as a card. That makes a missing or slow illustration a picture-*less but
+#: playable* beat instead of a dead screen — and it means the exposure no longer
+#: grows with the number of options, which matters because a three-choice beat is
+#: four illustrations and any one of them could have been the one that hung.
+#:
+#: The voice remaining essential is not a loophole: `follow_media` bounds the wait
+#: for it at `MEDIA_TURN_BUDGET_S`, so an outage there is a short degraded beat
+#: rather than a long dead one.
+ESSENTIAL_STAGES = frozenset({orchestrator.VOICE_STAGE})
 
 
 def frame(event: str, data: dict[str, Any]) -> bytes:
@@ -222,18 +241,31 @@ async def stream_beat(adventure: Adventure) -> AsyncIterator[bytes]:
     # Producing it here is what used to make a disconnected client an orphaned,
     # paid-for beat.
     #
-    # `done` is emitted the moment the beat's *own* two assets are in, and the
-    # choice icons keep arriving after it. That ordering is the whole reason this
-    # loop is written out rather than awaited: `done` is what tells the client the
-    # child may act, and gating it on three more illustrations would mean one slow
-    # icon leaving a four-year-old unable to answer — a spinner in everything but
-    # name (§14.5). A card renders without its picture; a child cannot act without
-    # the question.
+    # `done` is emitted the moment the beat can be *heard*, and every picture —
+    # the scene's and the cards' — keeps arriving after it. That ordering is the
+    # whole reason this loop is written out rather than awaited: `done` is what
+    # tells the client the child may act, and gating it on art means one slow or
+    # failed render leaving a four-year-old unable to answer, which is a spinner in
+    # everything but name (§14.5). A card renders without its picture, and a scene
+    # renders as the companion still thinking; a child cannot act without the
+    # question.
     essential = ESSENTIAL_STAGES & {stage.label for stage in orchestrator.media_stages(beat)}
     landed = {label for label, url in urls.items() if url}
     unblocked = False
 
-    async for stage, url in orchestrator.follow_media(beat, known=urls):
+    # Checked *before* the loop as well as inside it, because the loop only turns
+    # when an asset lands and the commonest beat of all has nothing left to wait
+    # for. A prefetched beat arrives with its voice already on the `beat` frame and
+    # its pictures still rendering; deciding the handover only on the next `media`
+    # event would have made that child wait out an illustration they had already
+    # been told they need not wait for — the same bug as gating on the picture,
+    # wearing the loop's clothes.
+    if essential <= landed:
+        async for ending in _hand_over(adventure, beat, is_final=is_final):
+            yield ending
+        unblocked = True
+
+    async for stage, url in orchestrator.follow_media(beat, known=urls, essential=essential):
         yield frame("media", media_payload(str(beat.id), stage, url))
         landed.add(stage)
         if not unblocked and essential <= landed:
@@ -242,9 +274,9 @@ async def stream_beat(adventure: Adventure) -> AsyncIterator[bytes]:
             unblocked = True
 
     if not unblocked:
-        # Either the beat was replayed complete (nothing to wait for) or a stage
-        # never landed and `follow_media` gave up. Both end the same way: the child
-        # gets their turn, with whatever art exists.
+        # `follow_media` gave up before the voice arrived — `MEDIA_TURN_BUDGET_S`
+        # of a provider being down. The child gets their turn anyway, with whatever
+        # exists: the narration is on the page and the beat is answerable.
         async for ending in _hand_over(adventure, beat, is_final=is_final):
             yield ending
 

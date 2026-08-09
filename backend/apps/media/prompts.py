@@ -58,41 +58,65 @@ class CharacterRef:
     already-rendered anchor image; it reaches a model only when that model can
     consume one (see `build_illustration_prompt`), which no provider currently
     implemented can.
+
+    `expression` is what this character's face and posture are doing *in this
+    picture* — and it is deliberately a separate field rather than more words in
+    `descriptor`. The descriptor is the permanent truth about a character and
+    `descriptor.py`'s house rules forbid a pose inside it; a beat that folded
+    "mid-yawn" into it would be asserting that the companion is always
+    mid-yawn. Kept apart, the canonical description stays canonical and the
+    expression stays per-picture, which is exactly the split §9.6 makes between
+    a character and their five pre-rendered faces.
     """
 
     key: str
     name: str
     descriptor: str
     reference_url: str | None = None
+    expression: str = ""
 
     def render(self) -> str:
-        """Who this character is, in words. The anchor image is *not* here.
+        """Who this character is, and what they are doing right now, in words.
 
-        The reference handle lives in its own section because it is metadata
-        about the render, not part of the description — and because keeping
-        `CHARACTERS` free of it means that block is exactly what
-        `character_hash` is computed from. Anything that reads a prompt back
-        (the offline adapter, a debugging tool) then sees the same character
-        whether or not an anchor image exists yet.
+        The anchor image is *not* here. The reference handle lives in its own
+        section because it is metadata about the render, not part of the
+        description — and because keeping `CHARACTERS` free of it means that
+        block is exactly what `character_hash` is computed from. Anything that
+        reads a prompt back (the offline adapter, a debugging tool) then sees the
+        same character whether or not an anchor image exists yet.
         """
-        return f"{self.name}: {self.descriptor.strip()}"
+        line = f"{self.name}: {self.descriptor.strip()}"
+        if expression := self.expression.strip():
+            return f"{line} In this picture: {expression}"
+        return line
 
 
 def character_signature(characters: Sequence[CharacterRef]) -> str:
     """The string hashed into `character_hash`.
 
-    Deliberately built from `key` + `descriptor` only. The reference URL is
-    excluded because re-uploading the same anchor image to a new URL does not
-    change who the character *is*, and including it would throw away the entire
-    illustration cache for a storage migration.
+    Deliberately built from `key` + `descriptor` + `expression`, and nothing
+    else. The reference URL is excluded because re-uploading the same anchor
+    image to a new URL does not change who the character *is*, and including it
+    would throw away the entire illustration cache for a storage migration.
 
     The consequence, stated plainly: two prompts that differ only in their
     `REFERENCES` block share a cache key, so the first render of a character
     (which has no anchor yet) is the one that gets reused. That is the intent —
     the anchor exists to *hold* the look that render established, not to change
     it.
+
+    The expression *is* included, because it changes the picture. Leaving it out
+    would mean a beat asking for a sleepy companion in a clearing and a beat
+    asking for a proud one in the same clearing sharing a key — and the cache
+    would hand the second beat the first one's face. A character with no
+    expression hashes exactly as it did before this field existed, so no cached
+    render was invalidated by adding it.
     """
-    parts = [f"{ref.key}={ref.descriptor.strip()}" for ref in sorted(characters, key=_sort_key)]
+    parts = [
+        f"{ref.key}={ref.descriptor.strip()}"
+        + (f"@{expression}" if (expression := ref.expression.strip()) else "")
+        for ref in sorted(characters, key=_sort_key)
+    ]
     return " | ".join(parts) if parts else "(no characters)"
 
 

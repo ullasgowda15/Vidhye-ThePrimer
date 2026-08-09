@@ -14,7 +14,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -583,7 +583,18 @@ describe('choices', () => {
     // And the scene the child just changed is still there, picture and all.
     expect(screen.getByTestId('beat-narration')).toHaveTextContent('missing a singer');
     expect(screen.getByTestId('beat-illustration')).toHaveAttribute('src', '/media/log.png');
-    expect(screen.queryByTestId('companion-thinking')).toBeNull();
+    // Scoped to the live scene rather than the whole document, because the
+    // outgoing layer of a page-turn is also in the DOM briefly — it is
+    // `aria-hidden`, it is behind, and it is removed on `animationend` (which
+    // jsdom never fires). What must never happen is the *current* scene falling
+    // back to the thinking companion, and that is what this asserts.
+    const scene = within(screen.getByTestId('scene-current'));
+    expect(scene.queryByTestId('companion-thinking')).toBeNull();
+    expect(scene.getByTestId('beat-illustration')).toBeInTheDocument();
+
+    // The gap is covered by motion and a line of story, never a spinner (§4.9).
+    expect(screen.getByTestId('scene-transition')).toHaveAttribute('data-pending');
+    expect(screen.getByTestId('scene-caption')).toBeInTheDocument();
   });
 
   it('cannot be answered twice by a double tap', async () => {

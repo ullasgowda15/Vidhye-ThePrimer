@@ -12,6 +12,8 @@ so they must be stable across processes and releases. A generated scene
 description would silently invalidate every child's reference set.
 """
 
+import re
+
 from apps.companion.models import CANONICAL_EXPRESSIONS, PORTRAIT
 
 #: label -> the scene half of the illustration prompt. The character half comes
@@ -47,6 +49,108 @@ REFERENCE_SCENES: dict[str, str] = {
 #: greeting scene cannot open without, so a run that is cut short still leaves a
 #: child with a face to meet.
 REFERENCE_ORDER: tuple[str, ...] = (PORTRAIT, *CANONICAL_EXPRESSIONS)
+
+#: The pose half of each canonical expression, without the studio background
+#: (§9.6). `REFERENCE_SCENES` renders each expression *as a reference asset* —
+#: plain background, full body — and these are the same faces asked for inside an
+#: ordinary story scene, where the setting comes from the beat instead.
+#:
+#: Word-for-word the opening clause of the matching reference scene, and that is
+#: load-bearing rather than tidy: the pre-rendered asset is the anchor a beat is
+#: meant to match (§9.6), so asking for it in different words would be asking a
+#: text-only model for a different face than the one we hold.
+EXPRESSION_CUES: dict[str, str] = {
+    "happy": "beaming with delight, eyes crinkled shut, mid-bounce",
+    "curious": "head tilted, leaning forward with wide interested eyes, one hand raised as if "
+    "about to point",
+    "proud": "standing tall with chest out and a small pleased smile, hands on hips",
+    "gentle_concern": "soft worried eyebrows and a kind small frown, leaning in as if listening "
+    "closely, one hand reaching out gently",
+    "sleepy": "mid-yawn with drooping eyelids, curled slightly",
+}
+
+#: Words a beat's free-text `emotion` may use for each canonical expression.
+#:
+#: A beat's emotion is not drawn from a closed set — it comes back as things like
+#: `playful_curious` or `warm_proud`, because it is a note about tone for the
+#: narration rather than an instruction to the illustrator. Mapping it onto the
+#: five faces we actually hold is therefore a lookup with synonyms, and anything
+#: unrecognised maps to nothing at all rather than to a guess: the companion's
+#: default face is better than the wrong one.
+EXPRESSION_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "happy": (
+        "happy",
+        "happily",
+        "joy",
+        "joyful",
+        "delight",
+        "delighted",
+        "cheerful",
+        "glad",
+        "merry",
+        "playful",
+        "excited",
+        "gleeful",
+    ),
+    "curious": (
+        "curious",
+        "curiosity",
+        "wondering",
+        "wonder",
+        "inquisitive",
+        "intrigued",
+        "puzzled",
+        "interested",
+    ),
+    "proud": ("proud", "pride", "triumphant", "accomplished", "brave", "determined"),
+    "gentle_concern": (
+        "concern",
+        "concerned",
+        "worried",
+        "worry",
+        "anxious",
+        "nervous",
+        "uncertain",
+        "cautious",
+        "tender",
+        "sympathetic",
+    ),
+    "sleepy": (
+        "sleepy",
+        "sleep",
+        "drowsy",
+        "tired",
+        "yawning",
+        "calm",
+        "quiet",
+        "peaceful",
+        "restful",
+    ),
+}
+
+_EXPRESSION_BY_WORD: dict[str, str] = {
+    word: label for label, words in EXPRESSION_SYNONYMS.items() for word in words
+}
+
+
+def canonical_expression(emotion: str) -> str | None:
+    """Which of the five pre-rendered faces this beat's emotion asks for, if any.
+
+    Scanned **right to left**, because a compound emotion puts its head last:
+    `playful_curious` is a kind of curious, not a kind of playful, and a
+    left-to-right scan would have drawn the wrong one of the two faces we hold.
+
+    Returns None for anything unrecognised, and that is the common, correct
+    outcome for an emotion like `warm_welcoming`. The companion then gets no
+    expression clause at all and the illustration prompt describes the moment on
+    its own — which is what happened for every beat before this existed.
+    """
+    words = [word for word in re.split(r"[^a-z]+", emotion.casefold()) if word]
+    for word in reversed(words):
+        if label := _EXPRESSION_BY_WORD.get(word):
+            return label
+    return None
+
 
 #: Scenes for `manage.py render_companion --scenes N`. Ordinary story settings,
 #: deliberately unlike the reference scenes, so "is this the same character?"

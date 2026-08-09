@@ -30,3 +30,96 @@
     border-radius: var(--radius-sm);
   }
 }
+
+/*
+ * The motion vocabulary (§14.7, §15.8).
+ *
+ * Global rather than inlined in a `<style>` tag inside a component, because two
+ * components now share them — the story scene and `SceneTransition` — and a
+ * keyframe defined inside a component that has just unmounted is a keyframe that
+ * stops animating mid-transition. Durations are never written here: every use
+ * site passes a `--motion-*` token, which is what makes reduced-motion a token
+ * change rather than an audit (§15.11).
+ *
+ * Categories, in §15.8's own terms: companion idle (`breathe`, `think`), choice
+ * reveals and progressive image reveal (`fade-in`), and page transitions
+ * (`page-turn`, `page-leave`, `path-walk`).
+ */
+@layer base {
+  /* Companion idle — the breathing that makes the thinking scene a character
+     rather than a widget. */
+  @keyframes breathe {
+    0%,
+    100% {
+      transform: scale(1) translateY(0);
+    }
+    50% {
+      transform: scale(1.02) translateY(-6px);
+    }
+  }
+
+  /* The three drifting dots. The only thing on the child surface that indicates
+     activity, and it reads as thinking rather than as loading. */
+  @keyframes think {
+    0%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.4;
+    }
+    50% {
+      transform: translateY(-8px);
+      opacity: 1;
+    }
+  }
+
+  /* An asset arriving. Never a swap — the picture eases in over whatever was
+     standing in for it. */
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* The new page arriving: a soft lift and settle, as if laid down. */
+  @keyframes page-turn {
+    from {
+      opacity: 0;
+      transform: translateY(12px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  /* The old page leaving, underneath it. Ends hidden and stays hidden
+     (`forwards`), so the outgoing scene cannot reappear if a render lands
+     mid-animation. */
+  @keyframes page-leave {
+    from {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: translateY(-10px) scale(1.01);
+      visibility: hidden;
+    }
+  }
+
+  /* Walking down the path — the sweep that covers the gap while the next beat
+     generates (§4.9's "Pip leads you down the mossy path…"). A travelling band
+     of light, not a spinner: it says the story is moving, not that a system is
+     busy. */
+  @keyframes path-walk {
+    from {
+      transform: translateX(-120%);
+    }
+    to {
+      transform: translateX(120%);
+    }
+  }
+}

@@ -60,22 +60,55 @@ TTS_STYLE_PREFIX = "tts"
 
 @dataclass
 class _Stats:
-    """In-process counters for provider spend."""
+    """In-process counters for provider spend.
+
+    Counts only what is actually *paid for*: a generation is a provider call, and
+    a hit is a call not made. The split by media type exists because the two cost
+    wildly different amounts and move independently — an illustration cache that
+    has quietly stopped working is invisible in a total that voice hits dominate.
+
+    In-process and therefore per-worker, which is the honest scope: this is what
+    makes "the same tuple twice calls the provider once" an assertion a test can
+    make and `render_consistency` can print, not a fleet-wide cost metric. Real
+    per-adventure cost instrumentation is §22.4 and a later day.
+    """
 
     generated: int = 0
     cache_hits: int = 0
     reused_across_children: int = 0
     by_provider: dict[str, int] = field(default_factory=dict)
+    generated_by_type: dict[str, int] = field(default_factory=dict)
+    hits_by_type: dict[str, int] = field(default_factory=dict)
 
-    def record_generation(self, provider: str) -> None:
+    def record_generation(self, provider: str, media_type: str = "") -> None:
         self.generated += 1
         self.by_provider[provider] = self.by_provider.get(provider, 0) + 1
+        if media_type:
+            self.generated_by_type[media_type] = self.generated_by_type.get(media_type, 0) + 1
+
+    def record_hit(self, media_type: str = "", *, shared: bool = False) -> None:
+        self.cache_hits += 1
+        if shared:
+            self.reused_across_children += 1
+        if media_type:
+            self.hits_by_type[media_type] = self.hits_by_type.get(media_type, 0) + 1
+
+    def hit_rate(self, media_type: str = "") -> float:
+        """Fraction of requests answered without calling a provider, 0.0-1.0."""
+        if media_type:
+            hits = self.hits_by_type.get(media_type, 0)
+            asked = hits + self.generated_by_type.get(media_type, 0)
+        else:
+            hits, asked = self.cache_hits, self.cache_hits + self.generated
+        return hits / asked if asked else 0.0
 
     def reset(self) -> None:
         self.generated = 0
         self.cache_hits = 0
         self.reused_across_children = 0
         self.by_provider = {}
+        self.generated_by_type = {}
+        self.hits_by_type = {}
 
 
 STATS = _Stats()
@@ -157,7 +190,7 @@ def _get_or_generate(
     # 1. This child already has it. The cheapest possible answer: no provider,
     #    no storage, no write.
     if hit := Media.objects.filter(child=child, **tuple_filter).first():
-        STATS.cache_hits += 1
+        STATS.record_hit(media_type)
         logger.info(
             "media.cache_hit scope=child type=%s tuple=%s/%s/%s media=%s",
             media_type,
@@ -176,8 +209,7 @@ def _get_or_generate(
     #    whichever of them leaves first. The saving that matters — the provider
     #    call — is still made.
     if shared := Media.objects.filter(**tuple_filter).first():
-        STATS.cache_hits += 1
-        STATS.reused_across_children += 1
+        STATS.record_hit(media_type, shared=True)
         logger.info(
             "media.cache_hit scope=global type=%s tuple=%s/%s/%s source=%s",
             media_type,
@@ -201,7 +233,7 @@ def _get_or_generate(
 
     # 3. Nothing cached: pay for it.
     raw, provider_name = produce()
-    STATS.record_generation(provider_name)
+    STATS.record_generation(provider_name, media_type)
 
     verdict = scan(raw)
     if not verdict.is_safe:

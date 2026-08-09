@@ -18,6 +18,7 @@ provider outage a delay rather than a lost companion.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -90,7 +91,18 @@ def character_ref(companion: Companion) -> CharacterRef:
 
 
 def portrait_url(companion: Companion) -> str | None:
-    media = _media_for(companion, PORTRAIT)
+    return reference_url(companion, PORTRAIT)
+
+
+def reference_url(companion: Companion, label: str) -> str | None:
+    """The URL of one pre-rendered reference asset — a portrait or an expression.
+
+    None when that reference has not been generated yet, which is a real state
+    rather than an error: `build_assets` is idempotent and a companion may be
+    running on a partial set (`AssetStatus.PARTIAL`). Callers anchor to whatever
+    exists (`cast.companion_ref`) rather than waiting for a face.
+    """
+    media = _media_for(companion, label)
     return media.url if media else None
 
 
@@ -131,29 +143,54 @@ def _prompt_for(reference: CharacterRef, scene: str) -> str:
     )
 
 
-def illustrate(companion: Companion, scene: str) -> Media:
-    """Render one illustration of this companion in `scene`, cache-first.
+def render_scene(child: Child, scene: str, references: Sequence[CharacterRef]) -> Media:
+    """Render one illustration of `scene` with this cast, cache-first (§16.6).
 
-    The one place an illustration of a companion is produced — the reference
-    set, the dev command, and (from Day 4) story beats all come through here, so
-    the style tokens, the character signature and the cache key are computed
-    identically every time. That identity is the whole cache.
+    **The one place a cast-bearing illustration is produced.** The reference set,
+    the dev commands and every story beat come through here, so the style tokens,
+    the character signature and the cache key are computed identically every time
+    — and that identity is the entire cache. A beat that happens to want the same
+    characters in the same scene as an earlier one costs nothing.
+
+    Takes a cast rather than a companion because from Day 6 a beat has one: the
+    companion plus whichever recurring characters are present (§8.2). Ordering is
+    the caller's convenience only — `build_illustration_prompt` and
+    `character_signature` both sort, so passing the same cast in a different order
+    is the same picture and the same key rather than a second render of it.
+
+    The seed is derived from the *combined* character hash, so a scene with Pip
+    and Bramble in it asks the model for a stable starting point of its own rather
+    than borrowing Pip's. It reaches only providers that declare `supports_seed`,
+    which today is none of them (§5.8).
     """
-    reference = character_ref(companion)
-    prompt = _prompt_for(reference, scene)
+    prompt = build_illustration_prompt(
+        scene,
+        references,
+        include_references=image_adapters.configured_supports_image_reference(),
+    )
     style, character, scene_hash = hashes_for(
         style_signature(),
-        character_signature([reference]),
+        character_signature(references),
         scene,
     )
     return media_service.get_or_generate_image(
-        child=companion.child,
+        child=child,
         style_hash=style,
         character_hash=character,
         scene_hash=scene_hash,
         prompt=prompt,
         seed=media_service.seed_from(character),
     )
+
+
+def illustrate(companion: Companion, scene: str) -> Media:
+    """Render one illustration of this companion alone in `scene`, cache-first.
+
+    The companion-only case of `render_scene`, which is what the reference set and
+    `render_companion` want. A story beat calls `render_scene` directly with its
+    whole cast.
+    """
+    return render_scene(companion.child, scene, [character_ref(companion)])
 
 
 def ensure_reference_set(companion: Companion, *, labels: tuple[str, ...] = ()) -> dict[str, str]:

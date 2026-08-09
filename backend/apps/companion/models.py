@@ -86,3 +86,79 @@ class Companion(UUIDModel):
         return bool(
             self.reference_manifest.get(PORTRAIT) and self.reference_manifest.get(GREETING_AUDIO)
         )
+
+
+class Character(UUIDModel):
+    """One member of the recurring cast (§8.2, §17.2 `character`).
+
+    Everyone in a child's world who is *not* the companion and who might come
+    back: the frog they helped in beat two, the lantern-keeper at the bridge.
+    §8.2 is explicit that these are **first-class persisted entities, not
+    re-invented per story** — and the reason is the same as the companion's. A
+    creature that looks different the second time it appears is not the same
+    creature, and a four-year-old reads that as uncanny rather than as a
+    rendering artefact.
+
+    So the row exists to answer one question at illustration time: *have we drawn
+    this before, and what did it look like?* `visual_descriptor` is the answer and
+    it is written once, by the beat that introduced the character
+    (`ai.schemas.Scene.new_characters`), then never regenerated — regenerating it
+    is precisely how a character stops being itself.
+
+    Scoped to the child rather than global. Two children who both meet "a frog"
+    have met different frogs, and one family's cast must never leak into another's
+    pictures (§17.5).
+
+    What this is *not* yet: memory. §11's entity graph, salience decay and
+    cross-adventure retrieval are Days 8-9. `salience` is here because §17.2 names
+    it and because a column added later cannot be backfilled with the history it
+    was meant to record — nothing reads it today.
+    """
+
+    child = models.ForeignKey(
+        "profiles.Child",
+        on_delete=models.CASCADE,
+        related_name="characters",
+    )
+
+    #: The stable id a beat refers to this character by — the slug of whatever the
+    #: model put in `scene.characters_present`. It is the join between a generated
+    #: beat and this row, which is why it is constrained unique per child rather
+    #: than left as a label: two rows answering to "frog" would make "which frog"
+    #: unanswerable at exactly the moment the picture is being drawn.
+    key = models.CharField(max_length=64)
+    name = models.CharField(max_length=80)
+    role = models.CharField(max_length=60, blank=True)
+    personality = models.JSONField(default=dict, blank=True)
+
+    #: The canonical appearance, in the same register as `Companion.visual_descriptor`
+    #: and used the same way: appended to every illustration prompt this character
+    #: appears in (`media.prompts.CharacterRef`).
+    visual_descriptor = models.TextField(blank=True)
+
+    #: §17.2's `reference_asset_ids`. For a companion these are purpose-rendered
+    #: portraits; for a recurring character it is the picture that *established* the
+    #: look — the beat illustration they were introduced in — recorded rather than
+    #: re-rendered, because a dedicated portrait per passing frog is a provider call
+    #: per passing frog (§22.4).
+    reference_asset_ids = ArrayField(models.UUIDField(), default=list, blank=True)
+
+    # SET_NULL for the same reason `Adventure.session` is: the character outlives
+    # the story that introduced them, which is the entire point of the table.
+    first_seen_adventure = models.ForeignKey(
+        "story.Adventure",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    salience = models.FloatField(default=0.0)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["child", "key"], name="character_child_key_uniq"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.key})"

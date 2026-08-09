@@ -31,7 +31,7 @@ COMPOSE := docker compose -f infra/docker-compose.yml
 .PHONY: help venv install up down logs migrate migrations run worker front build \
         test test-backend test-frontend lint lint-backend lint-frontend format \
         typecheck schema client superuser hello-beat smoke smoke-media smoke-story \
-        render-companion ping clean
+        render-companion render-consistency ping clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -83,6 +83,9 @@ smoke: ## Live AI smoke test — real provider calls (needs OPENROUTER_API_KEY).
 
 render-companion: ## Render a companion's reference set + 3 scenes: make render-companion CHILD=<uuid>
 	cd backend && $(ABS_PY) manage.py render_companion $(CHILD) --scenes 3
+
+render-consistency: ## Render a 6-beat illustrated sequence to eyeball: make render-consistency CHILD=<uuid>
+	cd backend && $(ABS_PY) manage.py render_consistency $(CHILD) --beats 6
 
 smoke-media: ## Live media smoke test (needs Cloudflare + ElevenLabs keys). Never in CI.
 	cd backend && $(ABS_PY) manage.py smoke_media $(SMOKE_ARGS)

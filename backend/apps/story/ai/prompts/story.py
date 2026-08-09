@@ -178,6 +178,37 @@ being asked for anything here, they are being said goodnight to.\
 """
 
 
+#: How the cast is handed over, and what to do about anyone new (§8.2).
+#:
+#: The `known` list is the set of characters whose canonical appearance is on
+#: disk, so naming one is safe: the illustration pipeline will draw the same
+#: creature it drew last time (`companion.cast.refs_for`). Everyone else has to be
+#: introduced properly, once, in `scene.new_characters` — and that is the whole
+#: mechanism by which a frog met in beat two is the *same* frog in beat four.
+#:
+#: The instruction used to be "describe any other character in
+#: scene.illustration_prompt", which produced a fresh description of the same
+#: creature on every appearance and therefore a different creature in every
+#: picture. Writing it down once and reading it back is the difference.
+CAST_RULE = """\
+Characters whose canonical appearance we already hold, and whose names you may \
+use freely: {known}. Drawing them is handled for you — do not describe what they \
+look like.
+
+List everyone visible in this beat in scene.characters_present, using short \
+snake_case keys.
+
+Any character in that list who is *not* named above is new. For each one, add an \
+entry to scene.new_characters giving its key, its name, and its permanent \
+appearance — the body shape, size, colours, markings and one or two distinctive \
+details an illustrator would reproduce every time. Write that as what is always \
+true of them, never what they are doing in this beat. It is kept and reused for \
+every future picture of them, so a character described loosely now is a different \
+creature the next time the child meets them. Introduce at most one new character \
+in a beat, and leave scene.new_characters empty when there are none.\
+"""
+
+
 def beat_request(
     *,
     seq: int,
@@ -226,13 +257,7 @@ def beat_request(
     else:
         lines.append(COUNT_RULE if ask_to_count else CHOICE_RULE)
 
-    if characters:
-        lines.append(
-            "Characters whose canonical appearance we hold, and whose names you "
-            "may use: " + ", ".join(characters) + ". Any other character in the "
-            "scene must be described in scene.illustration_prompt rather than "
-            "named as if we already know them."
-        )
+    lines.append(CAST_RULE.format(known=", ".join(characters) or "(only the companion)"))
 
     lines.append(
         "scene.illustration_prompt describes only what is *in the picture* — "
