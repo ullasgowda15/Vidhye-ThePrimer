@@ -300,9 +300,7 @@ def test_a_second_worker_adopts_the_winning_row_instead_of_failing(child) -> Non
 
 
 @pytest.mark.django_db
-def test_deleting_one_child_leaves_another_childs_assets_fetchable(
-    child, offline_media
-) -> None:
+def test_deleting_one_child_leaves_another_childs_assets_fetchable(child, offline_media) -> None:
     """The §17.5 promise, and the reason objects stopped carrying a child id."""
     from apps.profiles.models import Child
 
