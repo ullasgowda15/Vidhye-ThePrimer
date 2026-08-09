@@ -155,6 +155,14 @@ A named provider with missing credentials is an **error**, not a quiet downgrade
 to placeholder art — that is the kind of failure nobody notices until a child is
 looking at it. `local` is always an explicit choice.
 
+**The voice fails over; the picture does not.** A beat is answerable when it can
+be *heard*, so a missing illustration is a picture-less but playable scene — but a
+missing voice is a screen a pre-reader cannot read with nothing to tap (§4.9).
+`TTS_FALLBACK_PROVIDERS` (default `google`, needs `GOOGLE_TTS_API_KEY`) is tried
+in order when the primary errors or runs out of quota, and every failover is
+logged as `media.tts_failover`. Do not put `local` in that list: a chime would
+land the voice stage, hand the child their turn, and tell them nothing.
+
 Generated media is written to object storage and served from a CDN
 (`MEDIA_STORAGE=s3`). In development `MEDIA_STORAGE=local` writes to
 `backend/media/` and Django serves it while `DEBUG` is on.

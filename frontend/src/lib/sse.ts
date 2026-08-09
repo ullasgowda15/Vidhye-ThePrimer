@@ -81,6 +81,20 @@ export interface MediaEvent {
 /** The `prefetch` frame — the next beat is already written and waiting (§4.9). */
 export interface PrefetchEvent {
   nextBeatReady: boolean;
+  /**
+   * Why, for a log rather than for the UI.
+   *
+   * `ready` — written and waiting. `queued` — a worker is on it. `branching` —
+   * it cannot be known yet, because the child has not chosen and the server
+   * refuses to guess a branch it would have to pay for. `final` — there is no
+   * next beat.
+   *
+   * Nothing renders from this and nothing should: a prefetch the child can
+   * detect has become a promise. It exists so `nextBeatReady: false` can be
+   * read correctly — "unknowable yet" and "still generating" are different
+   * facts.
+   */
+  reason?: 'ready' | 'queued' | 'branching' | 'final';
 }
 
 /**

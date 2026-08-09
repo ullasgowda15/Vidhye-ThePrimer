@@ -153,6 +153,17 @@ def get_or_generate_audio(
     Without it, every unmapped key hashes the same whatever it actually speaks
     as, so changing `ELEVENLABS_VOICE_ID` or editing `ELEVENLABS_VOICE_MAP`
     would leave every companion talking in the old voice forever.
+
+    That resolution is always the **primary** provider's, even when a fallback
+    ends up doing the speaking (`tts.synthesize_with_failover`), because the key
+    is computed before the lookup and the lookup must not depend on which vendor
+    happens to be healthy — a cache whose keys move during an outage is a cache
+    that re-pays for every line the moment the outage ends. The consequence is
+    that a line first spoken by the fallback stays the fallback's recording: the
+    row records who really said it, and a replay of that beat sounds the same as
+    the first time the child heard it, which is the property that matters more
+    (§9.1). Re-recording it later is a cache-invalidation question, not this
+    function's.
     """
     vendor_voice = tts_adapters.configured_voice(voice_id, provider)
     style_hash, character_hash, scene_hash = hashes_for(
@@ -380,8 +391,16 @@ def _generate_audio(
     voice_id: str,
     provider: TTSProvider | None,
 ) -> tuple[bytes, str]:
-    chosen = provider or tts_adapters.select_tts_provider()
-    return chosen.synthesize(text, voice_id), tts_adapters.provider_label(chosen)
+    """Speak one line, failing over between vendors rather than going silent.
+
+    The image side has no equivalent and should not: a beat with no picture is
+    playable, a beat with no voice is a screen a pre-reader cannot read. An
+    injected `provider` is used alone — a test double asking for a specific
+    failure must get it, not a fallback.
+    """
+    if provider is not None:
+        return provider.synthesize(text, voice_id), tts_adapters.provider_label(provider)
+    return tts_adapters.synthesize_with_failover(text, voice_id)
 
 
 def seed_from(character_hash: str) -> int:

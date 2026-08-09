@@ -40,6 +40,11 @@ def no_live_providers(settings: Any) -> None:
     settings.ELEVENLABS_API_KEY = ""
     settings.ELEVENLABS_VOICE_ID = ""
     settings.ELEVENLABS_VOICE_MAP = {}
+    settings.GOOGLE_TTS_API_KEY = ""
+    settings.GOOGLE_TTS_VOICE_MAP = {}
+    # Ship-default `["google"]`, blanked with the rest: the voice failover chain
+    # must not reach a real vendor because a developer happens to hold a key.
+    settings.TTS_FALLBACK_PROVIDERS = []
 
 
 @pytest.fixture(autouse=True)

@@ -115,16 +115,22 @@ EXPRESSION_SYNONYMS: dict[str, tuple[str, ...]] = {
         "tender",
         "sympathetic",
     ),
+    # Explicitly drowsy words only. `calm`, `quiet`, `peaceful` and `restful`
+    # used to live here and were a face bug: the only sleepy asset we hold is a
+    # *mid-yawn*, so `joyful_calm` — a real emotion the model returns — asked the
+    # illustrator for a companion yawning through a happy moment. A calm joy and
+    # a sleepy calm are different faces and only one of them was ever right.
+    # Losing them costs nothing: an emotion that matches no drowsy word now gets
+    # no expression clause, which is this module's documented safe outcome, and
+    # `joyful_calm` falls through to the `joyful` it actually is.
     "sleepy": (
         "sleepy",
         "sleep",
+        "sleeping",
         "drowsy",
         "tired",
         "yawning",
-        "calm",
-        "quiet",
-        "peaceful",
-        "restful",
+        "yawn",
     ),
 }
 

@@ -58,6 +58,8 @@ Three processes and two managed services:
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | From the Cloudflare dashboard (Workers AI) |
 | `TTS_PROVIDER` | `elevenlabs` |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | From the ElevenLabs console. The voice id is required — there is no vendor default. |
+| `TTS_FALLBACK_PROVIDERS` | `google`, and set `GOOGLE_TTS_API_KEY` with it. **Effectively required:** the voice is what a pre-reader has instead of the words on screen, so a single TTS outage is a screen they cannot read (§4.9). Never add `local` — a chime would hand the child their turn and tell them nothing. |
+| `GOOGLE_TTS_API_KEY` | An API key from a Google Cloud project with the Text-to-Speech API enabled. `GOOGLE_TTS_VOICE` defaults to `en-US-Neural2-F`. |
 | `MEDIA_STORAGE` | `s3`. **`prod.py` refuses to boot without it**: containers are ephemeral, so local disk would lose a child's illustrations on every restart. |
 | `AWS_STORAGE_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | The media bucket. Add `AWS_S3_ENDPOINT_URL` for R2/B2/MinIO. |
 | `MEDIA_CDN_BASE_URL` | The CDN hostname in front of the bucket. Without it, media URLs point at the bucket directly — correct, but uncached and slower than the child experience needs. |

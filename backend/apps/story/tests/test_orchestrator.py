@@ -1081,6 +1081,15 @@ class TestABeatStoredInAnOlderShapeStillPlays:
 
         sent = dict(frames)
         assert sent["done"]["status"] == streaming.AWAITING_CHOICE
+        # `nextBeatReady` is false here and structurally has to be: the child has
+        # not chosen, so the next beat is unknowable and `schedule_advance` refuses
+        # to guess a branch it would have to pay for. `reason` says which false
+        # this is, so a bare `false` is not read as a prefetch that failed — which
+        # is exactly how the Day-6 review read it (P1-3).
+        assert sent["prefetch"] == {
+            "nextBeatReady": False,
+            "reason": orchestrator.ADVANCE_BRANCHING,
+        }
         # Coerced on the way out, with no picture — a label was never written to be
         # drawn, and a card renders without one.
         assert sent["beat"]["choices"] == [

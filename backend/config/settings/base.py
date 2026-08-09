@@ -423,6 +423,37 @@ ELEVENLABS_MODEL_ID = env("ELEVENLABS_MODEL_ID", default="eleven_multilingual_v2
 # enough to ship and per-archetype voices are a config change later.
 ELEVENLABS_VOICE_MAP = env.json("ELEVENLABS_VOICE_MAP", default={})
 
+# Voice providers to try when TTS_PROVIDER fails, in order — the same shape as
+# AI_PROVIDER_ORDER above, and for a sharper reason. The illustration is
+# non-essential to answering a beat, so an image outage is a picture-less but
+# playable scene; the *voice* is what a pre-reader has instead of the words on
+# screen, so a voice outage is a screen they cannot read and nothing to tap. It
+# happened for real: ElevenLabs answered `quota_exceeded` and the child got 21
+# seconds of untappable narration before MEDIA_TURN_BUDGET_S let them past.
+#
+# Defaulted to Google rather than left empty: it needs one key and nothing else,
+# so the failover exists as soon as the key does. A named provider with no
+# credentials is skipped rather than an error — a fallback nobody configured is
+# not a misconfiguration, it is simply absent.
+#
+# `local` is deliberately *not* here and must not be added: the offline chime is
+# two notes, not speech, so it would land the voice stage, hand the child their
+# turn, and tell them nothing — a silent screen with a bell on it, and an outage
+# no log would ever show as one.
+TTS_FALLBACK_PROVIDERS = env.list("TTS_FALLBACK_PROVIDERS", default=["google"])
+
+# Google Cloud Text-to-Speech — the implemented fallback voice. 1M free
+# characters a month on the Neural2 tier, which is why it is the swappable
+# option when ElevenLabs runs dry.
+GOOGLE_TTS_API_KEY = env("GOOGLE_TTS_API_KEY", default="")
+# Google *does* have a default voice for a language, unlike ElevenLabs, so a key
+# alone is enough to speak. Naming one is still better: the language code is
+# derived from the name, so the two can never disagree.
+GOOGLE_TTS_VOICE = env("GOOGLE_TTS_VOICE", default="en-US-Neural2-F")
+GOOGLE_TTS_LANGUAGE_CODE = env("GOOGLE_TTS_LANGUAGE_CODE", default="en-US")
+# Same idea as ELEVENLABS_VOICE_MAP: semantic archetype key -> Google voice name.
+GOOGLE_TTS_VOICE_MAP = env.json("GOOGLE_TTS_VOICE_MAP", default={})
+
 # A generated asset that is wildly larger than a storybook illustration is a
 # provider bug or a hostile response, not a picture. The scan rejects it before
 # it reaches storage (§13.8).

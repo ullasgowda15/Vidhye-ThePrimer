@@ -15,18 +15,47 @@ from apps.media.adapters.image import (
 )
 from apps.media.adapters.tts import (
     ElevenLabsTTSProvider,
+    GoogleTTSProvider,
     LocalToneTTSProvider,
     OpenAITTSProvider,
     configured_voice,
     select_tts_provider,
+    select_tts_providers,
+    synthesize_with_failover,
+    tts_provider_order,
 )
-from apps.media.exceptions import MediaConfigurationError
+from apps.media.exceptions import MediaConfigurationError, MediaProviderError
 from apps.media.placeholder import CHARACTER_PART, SCENE_PART, part
 from apps.media.prompts import CharacterRef, build_illustration_prompt
 from apps.media.safety import sniff_content_type
 
 PIP = CharacterRef("companion:pip", "Pip", "a small amber dragon with one crooked horn")
 OTHER = CharacterRef("companion:nim", "Nim", "a tall silver heron with a long beak")
+
+#: A minimally valid WAV, so the bytes a failover returns are the *playable* kind
+#: `media.safety` will let through rather than an anonymous blob.
+WAV = b"RIFF\x00\x00\x00\x00WAVE" + b"\x00" * 32
+
+
+class _StubTTS:
+    """A voice provider that either speaks or fails, on demand."""
+
+    def __init__(self, name: str, *, error: Exception | None = None) -> None:
+        self.name = name
+        self.calls: list[str] = []
+        self._error = error
+
+    def is_configured(self) -> bool:
+        return True
+
+    def resolve_voice(self, voice_id: str) -> str:
+        return voice_id
+
+    def synthesize(self, text: str, voice_id: str) -> bytes:
+        self.calls.append(text)
+        if self._error is not None:
+            raise self._error
+        return WAV + self.name.encode()
 
 
 def test_the_configured_provider_is_the_one_selected(settings) -> None:
@@ -203,3 +232,207 @@ def test_a_voice_key_without_a_voice_id_is_not_configured(settings) -> None:
 
     settings.ELEVENLABS_VOICE_ID = "voice"
     assert isinstance(select_tts_provider(), ElevenLabsTTSProvider)
+
+
+# ---------------------------------------------------------------------------
+# Voice failover (§4.9) — the image side has none, and that asymmetry is the point
+# ---------------------------------------------------------------------------
+QUOTA_EXCEEDED = MediaProviderError(
+    'Voice provider returned 401 for voice \'v\': {"code":"quota_exceeded",'
+    '"message":"This request exceeds your quota of 10000. You have 62 credits '
+    "remaining, while 188 credits are required for this request.\"}"
+)
+
+
+def test_a_voice_outage_fails_over_instead_of_leaving_a_child_a_silent_screen(caplog) -> None:
+    """The measured failure this exists for.
+
+    ElevenLabs really did answer `quota_exceeded` on the founder's keys, and the
+    child got 21 seconds of narration they cannot read with nothing to tap. A
+    second provider makes that one vendor's bad day instead of the child's.
+    """
+    down = _StubTTS("elevenlabs", error=QUOTA_EXCEEDED)
+    up = _StubTTS("google")
+
+    with caplog.at_level("WARNING"):
+        audio, label = synthesize_with_failover("Which way shall we go?", "warm_low", [down, up])
+
+    assert audio == WAV + b"google"
+    # The row must say who really spoke, or a voice that changed mid-story is
+    # unexplainable afterwards.
+    assert label == "google"
+    assert down.calls and up.calls
+    assert "media.tts_failover failed=elevenlabs" in caplog.text
+    assert "next=google" in caplog.text
+    # How long the refusal took, because a provider that says no *slowly* spends
+    # the turn budget before the fallback speaks — ElevenLabs took ~22s to answer
+    # at all when this was measured against its live quota error.
+    assert "after_ms=" in caplog.text
+
+
+def test_a_primary_that_cannot_name_a_voice_also_fails_over() -> None:
+    # ElevenLabs raises MediaConfigurationError from *inside* synthesize when no
+    # voice resolves. That is a primary which cannot speak, which is exactly when
+    # the fallback should — not a reason to give the beat no voice at all.
+    misconfigured = _StubTTS("elevenlabs", error=MediaConfigurationError("no voice"))
+    up = _StubTTS("google")
+
+    audio, label = synthesize_with_failover("Hi Aarav!", "warm_low", [misconfigured, up])
+
+    assert label == "google" and audio == WAV + b"google"
+
+
+def test_the_first_provider_that_works_is_the_only_one_called() -> None:
+    first = _StubTTS("elevenlabs")
+    second = _StubTTS("google")
+
+    _, label = synthesize_with_failover("Hi Aarav!", "warm_low", [first, second])
+
+    assert label == "elevenlabs"
+    # Not "cheaper" — a fallback that is called anyway is a fallback that has
+    # quietly become the voice.
+    assert second.calls == []
+
+
+def test_the_whole_chain_failing_still_raises_so_the_turn_budget_is_the_backstop() -> None:
+    """Every provider down is not a special case — it is the old behaviour.
+
+    `MEDIA_TURN_BUDGET_S` is what gives the child their turn when no voice can be
+    had, so this path must keep raising rather than inventing silence.
+    """
+    down = _StubTTS("elevenlabs", error=QUOTA_EXCEEDED)
+    also_down = _StubTTS("google", error=MediaProviderError("503"))
+
+    with pytest.raises(MediaProviderError, match="503"):
+        synthesize_with_failover("Hi Aarav!", "warm_low", [down, also_down])
+
+
+def test_the_chain_is_the_primary_then_the_fallbacks_in_order(settings) -> None:
+    settings.TTS_PROVIDER = "elevenlabs"
+    settings.TTS_FALLBACK_PROVIDERS = ["google", "elevenlabs", "local"]
+
+    # Deduplicated, primary first: naming the primary again must not make it get
+    # two attempts at the same outage.
+    assert tts_provider_order() == ["elevenlabs", "google", "local"]
+
+
+def test_a_fallback_with_no_key_is_skipped_rather_than_breaking_the_voice(settings) -> None:
+    settings.TTS_PROVIDER = "local"
+    settings.TTS_FALLBACK_PROVIDERS = ["google"]
+    settings.GOOGLE_TTS_API_KEY = ""
+
+    # A fallback nobody has configured is absent, not a misconfiguration — the
+    # founder adding GOOGLE_TTS_API_KEY is all it should take to turn it on.
+    assert [p.name for p in select_tts_providers()] == ["local"]
+
+    settings.GOOGLE_TTS_API_KEY = "key"
+    assert [p.name for p in select_tts_providers()] == ["local", "google"]
+
+
+def test_a_typo_in_the_fallback_list_is_an_error_not_a_missing_fallback(settings) -> None:
+    settings.TTS_PROVIDER = "local"
+    settings.TTS_FALLBACK_PROVIDERS = ["gooogle"]
+
+    # The one thing a fallback must never be is silently absent.
+    with pytest.raises(MediaConfigurationError, match="Unknown TTS provider 'gooogle'"):
+        select_tts_providers()
+
+
+def test_no_provider_at_all_reports_the_primary_s_own_error(settings) -> None:
+    settings.TTS_PROVIDER = "elevenlabs"
+    settings.ELEVENLABS_API_KEY = ""
+    settings.TTS_FALLBACK_PROVIDERS = ["google"]
+    settings.GOOGLE_TTS_API_KEY = ""
+
+    with pytest.raises(MediaConfigurationError, match="ELEVENLABS_API_KEY"):
+        select_tts_providers()
+
+
+# ---------------------------------------------------------------------------
+# Google Cloud TTS — the implemented fallback
+# ---------------------------------------------------------------------------
+def test_the_google_voice_needs_only_a_key(settings) -> None:
+    settings.GOOGLE_TTS_API_KEY = ""
+    assert GoogleTTSProvider().is_configured() is False
+
+    # Unlike ElevenLabs, Google will pick a voice for a language code, so there is
+    # no way to hold a key here and still fail at the URL.
+    settings.GOOGLE_TTS_API_KEY = "key"
+    assert GoogleTTSProvider().is_configured() is True
+
+
+def test_a_google_voice_key_maps_to_a_vendor_voice(settings) -> None:
+    settings.GOOGLE_TTS_VOICE = "en-US-Neural2-F"
+    settings.GOOGLE_TTS_VOICE_MAP = {"calm_deep": "en-US-Neural2-D"}
+
+    provider = GoogleTTSProvider()
+    assert provider.resolve_voice("calm_deep") == "en-US-Neural2-D"
+    assert provider.resolve_voice("warm_low") == "en-US-Neural2-F"
+
+
+def test_google_sends_the_language_its_voice_belongs_to(monkeypatch, settings) -> None:
+    """Derived from the voice name, because Google rejects a mismatch.
+
+    Two settings that must agree are two settings that eventually will not, and
+    the failure lands on the beat the fallback was supposed to rescue.
+    """
+    import base64
+
+    import httpx
+
+    settings.GOOGLE_TTS_API_KEY = "key"
+    settings.GOOGLE_TTS_VOICE = "en-GB-Neural2-A"
+    settings.GOOGLE_TTS_LANGUAGE_CODE = "de-DE"  # deliberately wrong; must be ignored
+    sent: dict[str, object] = {}
+
+    def fake_post(url, *, json, headers, timeout):
+        sent.update({"url": url, "json": json, "headers": headers})
+        return httpx.Response(
+            200,
+            json={"audioContent": base64.b64encode(WAV).decode()},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    audio = GoogleTTSProvider().synthesize("Hi Aarav!", "warm_low")
+
+    assert audio == WAV
+    assert sniff_content_type(audio) == "audio/wav"
+    voice = sent["json"]["voice"]  # type: ignore[index]
+    assert voice == {"languageCode": "en-GB", "name": "en-GB-Neural2-A"}
+    # LINEAR16 carries a WAV header, which is what makes the bytes recognisable to
+    # the safety scan — an unrecognised asset is FLAGGED, i.e. no voice at all.
+    assert sent["json"]["audioConfig"] == {"audioEncoding": "LINEAR16"}  # type: ignore[index]
+    # The key travels in a header, never in a URL that ends up in logs and traces.
+    assert sent["headers"] == {"X-goog-api-key": "key"}
+    assert "key" not in str(sent["url"])
+
+
+def test_a_google_outage_is_a_provider_error_the_chain_can_move_past(
+    monkeypatch, settings
+) -> None:
+    import httpx
+
+    settings.GOOGLE_TTS_API_KEY = "key"
+
+    def fake_post(url, *, json, headers, timeout):
+        return httpx.Response(429, text="quota exceeded", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(MediaProviderError, match="429"):
+        GoogleTTSProvider().synthesize("Hi Aarav!", "warm_low")
+
+
+def test_google_returning_no_audio_is_not_silently_stored(monkeypatch, settings) -> None:
+    import httpx
+
+    settings.GOOGLE_TTS_API_KEY = "key"
+
+    def fake_post(url, *, json, headers, timeout):
+        return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(MediaProviderError, match="no audio"):
+        GoogleTTSProvider().synthesize("Hi Aarav!", "warm_low")

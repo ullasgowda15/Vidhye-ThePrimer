@@ -12,21 +12,33 @@ declared but not built.
 The adapter resolves it, which is what keeps a companion's voice stable across a
 vendor change: swapping ElevenLabs for another service is a new class here plus
 a mapping, not a migration over every companion row.
+
+**Unlike the image side, this one fails over.** The two are not symmetrical, and
+the asymmetry is deliberate. A missing illustration is a picture-less but
+playable beat (`streaming.ESSENTIAL_STAGES`); a missing *voice* is a screen full
+of words a four-year-old cannot read and nothing to tap, so a single vendor
+having a bad day is a child-facing dead end (§4.9). `synthesize_with_failover`
+walks `TTS_PROVIDER` and then `TTS_FALLBACK_PROVIDERS`, the same shape as the
+model router. `MEDIA_TURN_BUDGET_S` stays as the final backstop for the case
+where *every* provider is down; widening it was never the fix, because a longer
+wait on unreadable text helps nobody.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import logging
 import math
 import struct
+import time
 import wave
 from typing import Protocol, runtime_checkable
 
 from django.conf import settings
 
-from apps.media.exceptions import MediaConfigurationError, MediaProviderError
+from apps.media.exceptions import MediaConfigurationError, MediaError, MediaProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +128,97 @@ class ElevenLabsTTSProvider:
         return audio
 
 
+class GoogleTTSProvider:
+    """Google Cloud Text-to-Speech — the implemented fallback voice.
+
+    Exists because ElevenLabs running out of credits was leaving a pre-reader
+    with a silent, unreadable screen. Called over plain HTTP for the same reason
+    the Cloudflare image adapter is: the request is one POST, and pulling in a
+    Google client library (and its ADC machinery) to send it would be the larger
+    change.
+
+    `LINEAR16`, not MP3: Google documents LINEAR16 as carrying a WAV header, so
+    the bytes sniff as `audio/wav` in `media.safety` rather than risking an MP3
+    frame the signature table does not know — and an asset the scan cannot
+    recognise is `FLAGGED`, which on this path means no voice at all. Losing the
+    compression matters less than always being playable.
+    """
+
+    name = "google"
+    credential_env_var = "GOOGLE_TTS_API_KEY"
+    base_url = "https://texttospeech.googleapis.com/v1"
+
+    def __init__(self, api_key: str = "", default_voice: str = "") -> None:
+        self._api_key = api_key or settings.GOOGLE_TTS_API_KEY
+        self._default_voice = default_voice or settings.GOOGLE_TTS_VOICE
+
+    def is_configured(self) -> bool:
+        # The key alone, unlike ElevenLabs: Google will pick a voice for a
+        # language code if it is given no name, so there is no way to hold a key
+        # here and still fail at the URL.
+        return bool(self._api_key)
+
+    def resolve_voice(self, voice_id: str) -> str:
+        """Turn a companion's semantic voice key into a Google voice name."""
+        mapped = settings.GOOGLE_TTS_VOICE_MAP.get(voice_id)
+        if mapped:
+            return str(mapped)
+        return self._default_voice
+
+    def _language_code(self, voice: str) -> str:
+        """The language a voice name belongs to — `en-US-Neural2-F` -> `en-US`.
+
+        Derived rather than configured alongside the voice, because Google
+        rejects a request whose `languageCode` and `name` disagree, and two
+        settings that must match are two settings that eventually will not.
+        `GOOGLE_TTS_LANGUAGE_CODE` is the answer only when there is no name to
+        derive from.
+        """
+        parts = voice.split("-")
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            return f"{parts[0]}-{parts[1]}"
+        return str(settings.GOOGLE_TTS_LANGUAGE_CODE)
+
+    def synthesize(self, text: str, voice_id: str) -> bytes:
+        import httpx
+
+        voice = self.resolve_voice(voice_id)
+        speaker: dict[str, str] = {"languageCode": self._language_code(voice)}
+        if voice:
+            speaker["name"] = voice
+
+        try:
+            response = httpx.post(
+                f"{self.base_url}/text:synthesize",
+                json={
+                    "input": {"text": text},
+                    "voice": speaker,
+                    "audioConfig": {"audioEncoding": "LINEAR16"},
+                },
+                # The key goes in a header, not the query string: a URL ends up in
+                # exception text, proxy logs and traces, and this one would be
+                # carrying a credential.
+                headers={"X-goog-api-key": self._api_key},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            raise MediaProviderError(f"Could not reach the voice provider: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise MediaProviderError(
+                f"Voice provider returned {response.status_code} for voice "
+                f"'{voice or self._language_code(voice)}': {response.text[:300]}"
+            )
+
+        encoded = (response.json() or {}).get("audioContent")
+        if not encoded:
+            raise MediaProviderError("Voice provider returned no audio.")
+        try:
+            return base64.b64decode(encoded)
+        except (ValueError, TypeError) as exc:
+            raise MediaProviderError(f"Audio payload was not valid base64: {exc}") from exc
+
+
 class LocalToneTTSProvider:
     """A deterministic offline chime. Development and CI only.
 
@@ -191,12 +294,6 @@ class OpenAITTSProvider(_UnimplementedTTSProvider):
     name = "openai"
 
 
-class GoogleTTSProvider(_UnimplementedTTSProvider):
-    """Fallback seam — Google Cloud TTS. Not implemented."""
-
-    name = "google"
-
-
 TTS_PROVIDERS: dict[str, type] = {
     ElevenLabsTTSProvider.name: ElevenLabsTTSProvider,
     LocalToneTTSProvider.name: LocalToneTTSProvider,
@@ -234,14 +331,15 @@ def configured_voice(voice_id: str, provider: TTSProvider | None = None) -> str:
 
 
 def select_tts_provider() -> TTSProvider:
-    """The provider named by `TTS_PROVIDER`, if it can actually be called."""
+    """The provider named by `TTS_PROVIDER`, if it can actually be called.
+
+    Still the *primary* specifically, not "whichever one works": it is what
+    `configured_voice` hashes into the cache key, and what `smoke_media` reports
+    as the voice under test. `select_tts_providers` is the chain a real
+    synthesis walks.
+    """
     name = settings.TTS_PROVIDER
-    factory = TTS_PROVIDERS.get(name)
-    if factory is None:
-        raise MediaConfigurationError(
-            f"Unknown TTS provider '{name}' in TTS_PROVIDER. "
-            f"Known providers: {', '.join(sorted(TTS_PROVIDERS))}."
-        )
+    factory = _factory(name, setting="TTS_PROVIDER")
 
     provider = factory()
     if not provider.is_configured():
@@ -251,3 +349,102 @@ def select_tts_provider() -> TTSProvider:
             "offline chime while developing."
         )
     return provider
+
+
+def _factory(name: str, *, setting: str) -> type:
+    factory = TTS_PROVIDERS.get(name)
+    if factory is None:
+        raise MediaConfigurationError(
+            f"Unknown TTS provider '{name}' in {setting}. "
+            f"Known providers: {', '.join(sorted(TTS_PROVIDERS))}."
+        )
+    return factory
+
+
+def tts_provider_order() -> list[str]:
+    """`TTS_PROVIDER` then `TTS_FALLBACK_PROVIDERS`, deduplicated, in order.
+
+    Names only, no credentials touched, so this is safe to log and safe to call
+    from anywhere that wants to report the chain.
+    """
+    order: list[str] = []
+    for name in [settings.TTS_PROVIDER, *settings.TTS_FALLBACK_PROVIDERS]:
+        if name and name not in order:
+            order.append(name)
+    return order
+
+
+def select_tts_providers() -> list[TTSProvider]:
+    """Every provider in the chain that has credentials, primary first.
+
+    An unknown *name* is still an error — a typo in `TTS_FALLBACK_PROVIDERS`
+    would otherwise be a fallback that silently is not there, which is the one
+    thing a fallback must never be. Missing credentials are not: a fallback
+    nobody has configured is absent, not misconfigured, so it is skipped.
+
+    Raises `MediaConfigurationError` when the chain is empty, with the same
+    message `select_tts_provider` gives — that is the real "no voice at all"
+    case and it should read the same however you arrived at it.
+    """
+    providers: list[TTSProvider] = []
+    for name in tts_provider_order():
+        provider = _factory(name, setting="TTS_PROVIDER/TTS_FALLBACK_PROVIDERS")()
+        if provider.is_configured():
+            providers.append(provider)
+    if not providers:
+        # Reuse the primary's error so the message names ELEVENLABS_API_KEY and
+        # the `local` escape hatch rather than being a vaguer second version.
+        select_tts_provider()
+    return providers
+
+
+def synthesize_with_failover(
+    text: str,
+    voice_id: str,
+    providers: list[TTSProvider] | None = None,
+) -> tuple[bytes, str]:
+    """Speak `text`, trying each configured provider in turn. Returns
+    `(audio, provider label)`.
+
+    The loop is the whole point. ElevenLabs answering `quota_exceeded` used to
+    mean the beat had no voice, and a beat with no voice is a pre-reader looking
+    at narration they cannot read with nothing to tap until
+    `MEDIA_TURN_BUDGET_S` lets them past — measured at 21 seconds during the Day
+    6 review, on the founder's own live keys. One vendor's bad day should not be
+    able to do that.
+
+    Every failover is logged at warning level with the provider that failed and
+    the one being tried, because "the voice sounds different today" is otherwise
+    an unexplainable report. If the whole chain fails, the *last* error is
+    raised: the caller (`media.service`) treats it exactly as it treated a
+    single provider's failure, so `MEDIA_TURN_BUDGET_S` is still the backstop.
+    """
+    chain = providers if providers is not None else select_tts_providers()
+    last_error: MediaError | None = None
+
+    for index, provider in enumerate(chain):
+        started = time.monotonic()
+        try:
+            return provider.synthesize(text, voice_id), provider_label(provider)
+        except (MediaProviderError, MediaConfigurationError) as exc:
+            # `MediaConfigurationError` too: ElevenLabs raises it from inside
+            # `synthesize` when no voice resolves, and a primary that cannot name
+            # a voice is exactly when the fallback should speak.
+            last_error = exc
+            remaining = chain[index + 1 :]
+            # `after_ms` matters as much as the error. A provider that *refuses*
+            # slowly spends the turn budget before the fallback has said a word —
+            # ElevenLabs took ~22s to answer at all when this was measured — so
+            # "the failover worked but the voice was late" and "the failover
+            # worked" have to be distinguishable in a log.
+            logger.warning(
+                "media.tts_failover failed=%s after_ms=%d next=%s error=%s",
+                provider.name,
+                (time.monotonic() - started) * 1000,
+                remaining[0].name if remaining else "-",
+                exc,
+            )
+
+    # Only reachable with a non-empty chain that failed end to end;
+    # `select_tts_providers` raises when there is nothing to try.
+    raise last_error or MediaConfigurationError("No TTS provider was available.")

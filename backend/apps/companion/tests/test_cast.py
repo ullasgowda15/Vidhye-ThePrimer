@@ -239,6 +239,33 @@ def test_an_emotion_maps_onto_a_face_we_actually_hold(emotion, expected) -> None
     assert canonical_expression(emotion) == expected
 
 
+@pytest.mark.parametrize(
+    "emotion", ["joyful_calm", "warm_peaceful", "quiet_wonder_calm", "restful"]
+)
+def test_a_calm_moment_does_not_draw_a_yawning_companion(emotion) -> None:
+    """The only sleepy face we hold is a mid-yawn, so `calm` must not reach it.
+
+    `calm`, `quiet`, `peaceful` and `restful` were sleepy synonyms, and the
+    configured model really does return `joyful_calm` and `warm_peaceful` — 2 of
+    the 29 beats in the dev database at the Day-6 review. Each of those asked the
+    illustrator for a companion "mid-yawn with drooping eyelids" in the middle of
+    a happy scene, which is exactly the uncanny mismatch §8.2 says breaks
+    attachment. A calm joy is a joy; a calm nothing-else is no face at all.
+    """
+    assert canonical_expression(emotion) != "sleepy"
+
+
+def test_a_calm_emotion_keeps_whatever_face_it_really_names() -> None:
+    # Not merely "not sleepy": `joyful_calm` is a joyful beat and the happy face
+    # is the right one, while `warm_peaceful` names no face we hold and correctly
+    # gets none.
+    assert canonical_expression("joyful_calm") == "happy"
+    assert canonical_expression("warm_peaceful") is None
+    # Explicitly drowsy still is, so the bedtime beat keeps its yawn.
+    assert canonical_expression("sleepy_calm") == "sleepy"
+    assert canonical_expression("gentle_yawn") == "sleepy"
+
+
 def test_a_compound_emotion_resolves_to_its_head_word() -> None:
     """`playful_curious` is a kind of curious, not a kind of playful.
 

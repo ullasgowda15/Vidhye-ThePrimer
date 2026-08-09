@@ -174,7 +174,9 @@ function playFetch(opens: string[][]) {
 const DECISION_OPEN = [
   ': open\n\n',
   frame('beat', DECISION),
-  frame('prefetch', { nextBeatReady: false }),
+  // What the server really sends on a decision beat: the next beat cannot be
+  // known until the child has chosen (§4.9, `streaming._hand_over`).
+  frame('prefetch', { nextBeatReady: false, reason: 'branching' }),
   frame('done', { status: 'awaiting_choice' }),
 ];
 
@@ -444,7 +446,7 @@ describe('choices', () => {
   const DECISION_OPEN = [
     ': open\n\n',
     frame('beat', DECISION),
-    frame('prefetch', { nextBeatReady: false }),
+    frame('prefetch', { nextBeatReady: false, reason: 'branching' }),
     frame('done', { status: 'awaiting_choice' }),
   ];
 

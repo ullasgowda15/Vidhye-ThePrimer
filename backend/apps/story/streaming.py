@@ -292,7 +292,29 @@ async def _hand_over(adventure: Adventure, beat: Beat, *, is_final: bool) -> Asy
     waiting — and is false while it is merely being generated. The client uses it
     to decide nothing important, which is the point: a prefetch the child can
     detect is a prefetch that has become a promise.
+
+    **On a `choose` beat it is always false, and that is correct rather than
+    broken.** The Day-6 review measured `nextBeatReady=false` at every open and
+    read it as a prefetch with no head start; the truth is that there is no head
+    start to be had. The next beat is unknowable until the child has chosen —
+    `schedule_advance` returns `ADVANCE_BRANCHING` and deliberately refuses to
+    guess, because guessing a branch means paying for beats no child will ever
+    see. The consequence beat is queued by the choice POST and the client reopens
+    immediately; both aim at the same `seq` on purpose, `_beat_or_generate`'s lock
+    settles which one pays, and the wait is the generation itself. Delaying the
+    reopen would hide the reconnect without shortening anything. What covers that
+    gap is `SceneTransition`'s path-walk and a line of story, which is §4.9's
+    actual requirement — the child must never *perceive* a wait, not that no
+    generation happens.
+
+    So `reason` carries the `ADVANCE_*` status alongside the boolean: a `false`
+    that means "cannot be known yet" and a `false` that means "the worker is
+    still on it" are different facts, and a frame that cannot tell them apart is
+    a frame the next person to measure this will misread the same way.
     """
     advance = await orchestrator.prepare_next_beat(adventure, after=beat)
-    yield frame("prefetch", {"nextBeatReady": advance == orchestrator.ADVANCE_READY})
+    yield frame(
+        "prefetch",
+        {"nextBeatReady": advance == orchestrator.ADVANCE_READY, "reason": advance},
+    )
     yield frame("done", {"status": COMPLETE if is_final else AWAITING_CHOICE})

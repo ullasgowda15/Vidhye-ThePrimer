@@ -9,7 +9,7 @@ assumed.
 import pytest
 
 from apps.media.adapters.tts import ElevenLabsTTSProvider
-from apps.media.exceptions import MediaBlocked
+from apps.media.exceptions import MediaBlocked, MediaProviderError
 from apps.media.models import Media, MediaType, SafetyStatus
 from apps.media.service import (
     STATS,
@@ -388,3 +388,62 @@ def test_remapping_a_voice_invalidates_the_recordings_it_changes(child, settings
 
     assert second.id != first.id
     assert [voice for _, voice in provider.calls] == ["voice-a", "voice-b"]
+
+
+class OutOfCreditTTSProvider(CountingTTSProvider):
+    """The live failure, as it actually arrived: 401 `quota_exceeded`."""
+
+    name = "out-of-credit"
+
+    def synthesize(self, text: str, voice_id: str) -> bytes:
+        self.calls.append((text, voice_id))
+        raise MediaProviderError(
+            'Voice provider returned 401 for voice \'v\': {"code":"quota_exceeded",'
+            '"message":"You have 62 credits remaining, while 188 are required."}'
+        )
+
+
+@pytest.mark.django_db
+def test_a_line_still_gets_a_voice_when_the_primary_provider_is_out(child, monkeypatch) -> None:
+    """The whole pipeline, not just the adapter loop.
+
+    A beat with no voice is a pre-reader looking at narration they cannot read
+    with nothing to tap, so this is the assertion that matters: the primary is
+    dead, and a playable `Media` row exists anyway, labelled with whoever really
+    spoke.
+    """
+    from apps.media.adapters import tts as tts_adapters
+
+    dead, alive = OutOfCreditTTSProvider(), CountingTTSProvider()
+    monkeypatch.setattr(
+        tts_adapters,
+        "TTS_PROVIDERS",
+        {dead.name: lambda: dead, alive.name: lambda: alive},
+    )
+    monkeypatch.setattr("django.conf.settings.TTS_PROVIDER", dead.name)
+    monkeypatch.setattr("django.conf.settings.TTS_FALLBACK_PROVIDERS", [alive.name])
+
+    media = get_or_generate_audio(child=child, text="Which way shall we go?", voice_id="warm_low")
+
+    assert media.provider == alive.name
+    assert media.safety_status == SafetyStatus.PASSED
+    assert media.url
+    assert dead.calls and alive.calls
+
+
+@pytest.mark.django_db
+def test_an_injected_provider_is_never_quietly_replaced_by_a_fallback(child, monkeypatch) -> None:
+    # A test (or a smoke command) asking one specific provider to speak must get
+    # that provider's answer, including its failure.
+    from apps.media.adapters import tts as tts_adapters
+
+    alive = CountingTTSProvider()
+    monkeypatch.setattr(tts_adapters, "TTS_PROVIDERS", {alive.name: lambda: alive})
+    monkeypatch.setattr("django.conf.settings.TTS_FALLBACK_PROVIDERS", [alive.name])
+
+    with pytest.raises(MediaProviderError, match="quota_exceeded"):
+        get_or_generate_audio(
+            child=child, text="Hi Aarav!", voice_id="warm_low", provider=OutOfCreditTTSProvider()
+        )
+
+    assert alive.calls == []
