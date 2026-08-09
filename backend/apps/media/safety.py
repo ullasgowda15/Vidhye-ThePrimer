@@ -1,19 +1,27 @@
-"""Image/audio safety scan (PRODUCT.md §13.8, §13.2).
+"""Image/audio safety scan (PRODUCT.md §13.8, §13.2's G3).
 
-**This is a seam, not a classifier.** Day 7 hardens it into a real moderation
-call; what must be true *today* is that the call site exists and is
-unavoidable — every byte that reaches storage passes through `scan()` first,
-and the verdict is written onto the `Media` row. Adding the real model later is
-then replacing the body of one function, not threading a new step through the
-pipeline.
+Two checks, in this order, and every byte that reaches storage passes through
+both:
 
-What the stub actually enforces is the structural half of the check, which is
-worth having on its own: an asset that is empty, absurdly large, or not an
-image/audio file at all is a provider failure or a hostile response, and none of
-those should ever be stored, let alone shown to a child.
+**Structural.** Empty, absurdly large, or not an image or a sound at all. These
+are provider failures and hostile responses, and none of them should be stored,
+let alone shown to a child. Cheap, total, and it runs everywhere.
 
-# TODO: harden Day 7 — replace `_classify` with a provider moderation call
-# (or a local NSFW/violence classifier) and keep the same Scan contract.
+**Moderation.** A vision model reads the picture (`apps.media.moderation`) and
+says whether a three-year-old may see it. This is the half Day 3 left as a
+`TODO` and Day 7 made real. It runs when a provider is configured; when one is
+not, the scan says `moderation=absent` in its log line and the reason on the
+verdict rather than quietly reporting a check it did not perform.
+
+The verdict lands on the `Media` row, and `Media.is_servable` is what every
+call site reads — so "flagged also means do not serve" is stated once. Bytes
+that fail are never written and never get a URL (`media.service`), so there is
+no window in which an unscanned asset is reachable.
+
+What happens *after* a refusal is not this module's business and is worth
+knowing anyway: `orchestrator.illustrate_beat` substitutes a pre-vetted stock
+illustration (`apps.media.stock`), so a blocked picture is a different picture
+and never an error on a child's screen (§13).
 """
 
 import logging
@@ -21,6 +29,7 @@ from dataclasses import dataclass
 
 from django.conf import settings
 
+from apps.media import moderation
 from apps.media.models import SafetyStatus
 
 logger = logging.getLogger(__name__)
@@ -48,6 +57,10 @@ class Scan:
     status: str
     content_type: str = "application/octet-stream"
     reason: str = ""
+    #: Did the vision moderator actually run? `False` means the structural check
+    #: stood alone. Carried on the verdict rather than left to the log, so a
+    #: caller — and a test — can assert on it (§13.8).
+    moderated: bool = False
 
     @property
     def is_safe(self) -> bool:
@@ -102,11 +115,40 @@ def _classify(data: bytes) -> Scan:
     content_type = sniff_content_type(data)
     if content_type == "application/octet-stream":
         # Not recognisably a picture or a sound. Flagged rather than passed:
-        # unknown content is exactly what a human should look at.
+        # unknown content is exactly what a human should look at. Returned before
+        # the moderator, because bytes we cannot even identify are not something
+        # to spend a vision call on.
         return Scan(
             status=SafetyStatus.FLAGGED,
             content_type=content_type,
             reason="unrecognised_format",
         )
 
-    return Scan(status=SafetyStatus.PASSED, content_type=content_type)
+    status, reason = moderation.classify(data, content_type)
+
+    if status == SafetyStatus.PENDING:
+        # The gate did not run — no configured moderator, or a content type with
+        # no pixels. The structural verdict stands and the gap is stated, on the
+        # verdict and in the log, rather than dressed up as a clean scan.
+        logger.info(
+            "media.scan content_type=%s bytes=%d moderation=absent reason=%s",
+            content_type,
+            len(data),
+            reason,
+        )
+        return Scan(status=SafetyStatus.PASSED, content_type=content_type, moderated=False)
+
+    if status != SafetyStatus.PASSED:
+        logger.error(
+            "media.scan_refused content_type=%s bytes=%d status=%s reason=%s",
+            content_type,
+            len(data),
+            status,
+            reason,
+        )
+        return Scan(status=status, content_type=content_type, reason=reason, moderated=True)
+
+    logger.info(
+        "media.scan content_type=%s bytes=%d moderation=passed", content_type, len(data)
+    )
+    return Scan(status=SafetyStatus.PASSED, content_type=content_type, moderated=True)

@@ -240,10 +240,11 @@ def test_a_beat_is_persisted_with_its_slices_split_out(frog_lover, fake_ai) -> N
     assert (beat.interaction or {})["type"] == "count"
     assert (beat.learning or {})["objective_id"] == "count_to_3"
     assert beat.emotion == "playful_curious"
-    # Unchecked, and it says so: the runtime output classifier is Day 7, and a
-    # column with no unchecked state would make every unmoderated beat look
-    # moderated.
-    assert beat.safety_status == "unchecked"
+    # From Day 7 every persisted beat has been through `guard_output`, so the
+    # column says `passed` rather than `unchecked`. A row that still says
+    # `unchecked` after this day would be a beat written by something that
+    # bypassed the guard, which is exactly what the state is now for.
+    assert beat.safety_status == "passed"
 
     adventure.refresh_from_db()
     assert adventure.emotion_arc == ["playful_curious"]

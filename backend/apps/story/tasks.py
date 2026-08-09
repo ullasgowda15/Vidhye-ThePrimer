@@ -97,6 +97,12 @@ def advance_adventure(adventure_id: str, after_beat_id: str) -> str:
     No retry, deliberately. A failed prefetch is not a failed beat — the stream
     generates it on demand and the child never learns the difference. Retrying would
     risk paying twice for a beat nobody is waiting for.
+
+    **And no safe fallback, for the same reason** (`allow_fallback=False`). A beat
+    the guard could not obtain is a *persisted* fallback if we write one here, and
+    this task runs with nobody waiting: the stream that arrives a second later
+    would have generated the real beat. `create_beat`'s default is the opposite
+    because on that path a child is looking at the screen.
     """
     after = (
         Beat.objects.select_related("adventure__child__companion")
@@ -131,7 +137,7 @@ def advance_adventure(adventure_id: str, after_beat_id: str) -> str:
         return "ready"
 
     try:
-        beat, _ = orchestrator.resolve_beat(adventure, seq=seq, prev=prev)
+        beat, _ = orchestrator.resolve_beat(adventure, seq=seq, prev=prev, allow_fallback=False)
     except AIError:
         # The stream will try again when the child asks. Logged, never raised: a
         # failed prefetch must not become a retry storm against a provider that is

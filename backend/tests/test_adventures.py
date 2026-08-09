@@ -482,19 +482,53 @@ def test_reopening_the_stream_replays_the_beat_instead_of_paying_again(started, 
 
 
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
-def test_the_stream_ends_gracefully_when_a_beat_cannot_be_repaired(started, fake_ai) -> None:
+def test_a_beat_that_cannot_be_repaired_becomes_a_warm_fallback(started, fake_ai) -> None:
+    """§19.6's last line, end to end: *"safe fallback beat"*, not a dead stream.
+
+    Until Day 7 this ended the stream with `done: ended` and nothing else — no
+    error, but also no story, and a child left watching their companion think
+    forever. §19.6 bounds the blast radius of a bad generation at "slightly
+    generic but safe", and that is a beat, so this now asserts a beat.
+
+    What makes it *warm* rather than merely present is the second half: it has
+    narration, it is answerable, and nothing on the wire distinguishes it from a
+    generated beat. The database knows (`safety_status`, the `model` stamp, an
+    incident row); the child does not.
+    """
+    from apps.safety.models import SafetyIncident
+
     # Malformed twice: one repair attempt, then the router gives up (§19.6).
     fake_ai.queue_beat_response('{"beat_id": "b1"}', "not json at all")
 
     response, chunks = collect_stream(started["body"]["streamUrl"], started["token"])
     events = frames_of(chunks)
+    kinds = [name for name, _ in events]
 
-    # A 200 that ends, not a 500 that breaks. The child keeps looking at their
-    # companion thinking; they are never shown a failure (§13).
     assert response.status_code == 200
-    assert events == [("done", {"status": "ended"})]
     assert fake_ai.beat_calls == 2, "exactly one repair attempt, no more"
-    assert not Beat.objects.exists()
+
+    assert kinds[0] == "beat"
+    # `done` is not last — the choice icons keep arriving after the child has
+    # been handed their turn (Day 6, `streaming.ESSENTIAL_STAGES`).
+    done = next(payload for name, payload in events if name == "done")
+    assert done["status"] == "awaiting_choice"
+
+    beat_frame = events[0][1]
+    assert beat_frame["narration"].strip()
+    # Answerable: a fallback the child cannot act on would strand them exactly
+    # where the old `ended` frame did.
+    assert len(beat_frame["choices"] or []) >= 2
+    # Nothing in the frame says "fallback", "error" or "sorry".
+    assert "sorry" not in json.dumps(beat_frame).lower()
+
+    beat = Beat.objects.get()
+    assert beat.safety_status == "blocked"
+    assert beat.model.startswith("fallback:")
+
+    incident = SafetyIncident.objects.get()
+    assert incident.category == "malformed_generation"
+    assert incident.action_taken == "blocked"
+    assert incident.beat_id == beat.id
 
 
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)

@@ -31,7 +31,7 @@ COMPOSE := docker compose -f infra/docker-compose.yml
 .PHONY: help venv install up down logs migrate migrations run worker front build \
         test test-backend test-frontend lint lint-backend lint-frontend format \
         typecheck schema client superuser hello-beat smoke smoke-media smoke-story \
-        render-companion render-consistency ping clean
+        render-companion render-consistency redteam ping clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -122,6 +122,9 @@ test-backend:
 
 test-frontend:
 	cd frontend && $(NPM) run test
+
+redteam: ## Run the safety red-team suite (§19.7) — injection, ceilings, unsafe bait
+	cd backend && $(ABS_PY) -m pytest apps/safety/redteam -q
 
 lint: lint-backend lint-frontend ## Lint + format-check everything
 

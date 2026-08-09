@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 640" width="1024" height="640" role="img" aria-label="A quiet meadow under a warm sky">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FDF2E3"/>
+      <stop offset="60%" stop-color="#F7E3CE"/>
+      <stop offset="100%" stop-color="#F2D9C4"/>
+    </linearGradient>
+    <linearGradient id="field" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#C6D9A8"/>
+      <stop offset="100%" stop-color="#A9C489"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="640" fill="url(#sky)"/>
+  <circle cx="812" cy="146" r="66" fill="#F6C97F" opacity="0.75"/>
+  <ellipse cx="236" cy="150" rx="96" ry="38" fill="#FFFFFF" opacity="0.72"/>
+  <ellipse cx="316" cy="164" rx="70" ry="30" fill="#FFFFFF" opacity="0.62"/>
+  <ellipse cx="596" cy="120" rx="78" ry="30" fill="#FFFFFF" opacity="0.55"/>
+  <path d="M0 430 C 190 388, 380 452, 566 418 C 742 386, 892 430, 1024 404 L 1024 640 L 0 640 Z" fill="url(#field)"/>
+  <path d="M0 512 C 210 480, 420 536, 640 506 C 812 482, 930 512, 1024 494 L 1024 640 L 0 640 Z" fill="#93B577" opacity="0.85"/>
+  <g stroke="#7EA267" stroke-width="5" stroke-linecap="round" opacity="0.8">
+    <path d="M118 596 C 112 560, 126 536, 122 512"/>
+    <path d="M186 604 C 180 566, 196 546, 190 520"/>
+    <path d="M842 600 C 836 562, 852 540, 846 514"/>
+    <path d="M906 608 C 900 572, 914 550, 908 526"/>
+  </g>
+  <g>
+    <circle cx="330" cy="548" r="13" fill="#FFF6E4"/>
+    <circle cx="330" cy="548" r="6" fill="#F3C46B"/>
+    <circle cx="700" cy="572" r="13" fill="#FFF6E4"/>
+    <circle cx="700" cy="572" r="6" fill="#F3C46B"/>
+    <circle cx="512" cy="600" r="11" fill="#FFF6E4"/>
+    <circle cx="512" cy="600" r="5" fill="#F3C46B"/>
+  </g>
+  <g fill="#8FA9C4" opacity="0.7">
+    <path d="M470 236 c 14 -12 30 -12 44 0 c -14 -4 -30 -4 -44 0 z"/>
+    <path d="M556 268 c 12 -10 26 -10 38 0 c -12 -3 -26 -3 -38 0 z"/>
+  </g>
+</svg>

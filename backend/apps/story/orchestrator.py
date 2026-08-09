@@ -23,6 +23,16 @@ rule or a persona line. `apps.safety.prompting.assemble` owns the system layer
 for both calls, so a beat and a plan are constrained identically, and the child's
 own seeds enter as labelled DATA (§13.5) rather than as instructions.
 
+**Every beat is guarded on the way in and on the way out.** From Day 7 the
+generation above sits inside §13.2's defence-in-depth: `pipeline.guard_input`
+neutralises everything untrusted before assembly, `pipeline.guard_output` grades
+the beat against the content policy with an *independent* classifier before it is
+persisted, and a beat that cannot be made safe is replaced by a pre-vetted warm
+fallback the child cannot tell from a normal beat. The image scan is the third
+gate and it substitutes rather than fails. Nothing in this module decides what is
+safe — it decides what to *do*, which is the orchestrator's job, and every rule
+lives in `apps.safety`.
+
 **The story is a loop, and the loop is driven by the child.** From Day 5 the
 orchestrator does not generate "the next beat" — it generates *the beat the child
 has not played yet* (`next_position`), conditioned on what they just chose. Two
@@ -32,9 +42,9 @@ branch the child did not take. What bounds the cost of all this is the running
 summary (`apps.story.summary`), which keeps the prompt flat across a long
 adventure rather than pasting every beat into every request.
 
-What is deliberately *not* here yet: memory retrieval (Days 8-9), the objective
-selector (Day 10) and the runtime safety guard (Day 7). Each has a named seam and
-a placeholder, so those days are wiring rather than redesign.
+What is deliberately *not* here yet: memory retrieval (Days 8-9) and the objective
+selector (Day 10). Each has a named seam and a placeholder, so those days are
+wiring rather than redesign.
 """
 
 from __future__ import annotations
@@ -43,7 +53,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
 from asgiref.sync import sync_to_async
@@ -58,11 +68,15 @@ from apps.companion import service as companion_service
 from apps.companion.models import Character
 from apps.media import prompts as media_prompts
 from apps.media import service as media_service
-from apps.media.exceptions import MediaError
+from apps.media import stock as media_stock
+from apps.media.exceptions import MediaBlocked, MediaError
 from apps.media.hashing import hashes_for
 from apps.media.models import Media
 from apps.media.style import style_signature
 from apps.profiles.models import Child
+from apps.safety import incidents as safety_incidents
+from apps.safety import pipeline as safety
+from apps.safety.models import Action, Severity
 from apps.safety.prompting import assembler
 from apps.safety.prompting.layers import render as render_layers
 from apps.story.ai import router as ai_router
@@ -246,10 +260,16 @@ def build_plan(child: Child) -> dict[str, Any]:
     it, and a generic arc told in the child's own world is a far better outcome
     than an error screen. The fallback is logged at `error` so it is visible in
     operations even though it is invisible to the child.
+
+    Guarded on the way in like every other generation (§13.5). The plan call is
+    the *first* thing a child's seeds reach and its output is pasted into every
+    beat prompt of the adventure — so an injection that got through here would be
+    laundered into an instruction layer and replayed six times.
     """
+    guarded = safety.guard_input({"memory": seed_memories(child)}, child)
     layers = assembler.assemble(
         child,
-        memory=seed_memories(child),
+        memory=guarded.get("memory") or [],
         objective=PLACEHOLDER_OBJECTIVE,
         plan=None,
         output_schema=json_schema_for(StoryPlan),
@@ -455,11 +475,34 @@ def turn_from(beat: Beat | None) -> dict[str, Any] | None:
     }
 
 
+def guard_beat_inputs(
+    child: Child,
+    prev_choice: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Everything untrusted that a beat prompt is built from, neutralised (§13.5).
+
+    One call, one incident, one verdict — which is why it is a named function
+    rather than a line inside `build_beat_context`: `create_beat` needs the
+    *verdict* (a distress signal escalates rather than merely being scrubbed) and
+    the prompt builder needs the *text*, and running the guard twice would write
+    two incidents for one beat.
+    """
+    return safety.guard_input(
+        {
+            "memory": seed_memories(child),
+            "turn": dict(prev_choice) if prev_choice else None,
+        },
+        child,
+    )
+
+
 def build_beat_context(
     adventure: Adventure,
     *,
     seq: int,
     prev_choice: Mapping[str, Any] | None = None,
+    guarded: Mapping[str, Any] | None = None,
+    constraint: str = "",
 ) -> dict[str, str]:
     """The assembled prompt for one beat (§19.1). Pure — no model, no I/O but the
     active prompt row.
@@ -468,18 +511,32 @@ def build_beat_context(
     the bounded running summary (§8.6) and the one turn just taken — so its size
     is flat across an adventure rather than growing with every beat told. See
     `apps.story.summary`.
+
+    `guarded` is `guard_beat_inputs`' output when the caller has already run it.
+    Omitted, this runs the guard itself — so there is no path from any caller to a
+    provider that skipped the input guard, including a test or a management
+    command that only wanted to look at a prompt.
+
+    `constraint` is the extra instruction a *constrained regeneration* carries
+    (§13.2's soft-fail loop). It names the policy category that failed and never
+    quotes the refused beat back: feeding unsafe text to the model that just wrote
+    it is how a rewrite loop teaches itself the thing it is trying to unlearn.
     """
     child = adventure.child
     skeleton: Sequence[Any] = adventure.plan.get("skeleton") or []
     stage = str(skeleton[seq - 1]) if 0 < seq <= len(skeleton) else ""
 
+    if guarded is None:
+        guarded = guard_beat_inputs(child, prev_choice)
+    turn = guarded.get("turn")
+
     layers = assembler.assemble(
         child,
-        memory=seed_memories(child),
+        memory=guarded.get("memory") or [],
         objective=objective_for(adventure),
         plan=adventure.plan,
         running_summary=adventure.running_summary,
-        turn=prev_choice,
+        turn=turn,
         output_schema=beat_json_schema(),
     )
     user = story_prompts.beat_request(
@@ -489,8 +546,9 @@ def build_beat_context(
         is_final=is_final_seq(adventure, seq),
         ask_to_count=asks_to_count(adventure, seq),
         stage=stage,
-        prev_choice=prev_choice,
+        prev_choice=turn,
         characters=_known_characters(child),
+        constraint=constraint,
     )
     return {"system": render_layers(layers), "user": user}
 
@@ -500,8 +558,9 @@ def create_beat(
     *,
     seq: int | None = None,
     prev_choice: Mapping[str, Any] | None = None,
+    allow_fallback: bool = True,
 ) -> Beat:
-    """Generate and persist a beat. Synchronous core.
+    """Generate, **guard**, and persist a beat. Synchronous core.
 
     `seq` names the position being filled, defaulting to "the next free one". A
     caller that means a *specific* position has to say so: `resolve_beat` names
@@ -510,27 +569,60 @@ def create_beat(
     than colliding on the constraint — the child would be told the opening, then
     told a second opening as though it were what came next.
 
-    Raises `BeatValidationError` when the provider cannot produce a schema-valid
-    beat even after the router's one repair attempt (§19.6). The caller — the
-    stream — is what turns that into an ending the child can live with; Day 7
-    turns it into a safe fallback beat instead.
+    **The whole of §13.2 happens between the generation and the write**, which is
+    the ordering that matters: a beat that fails the output guard is never
+    persisted, so it has no row, no media task, no place in the running summary
+    and no way to be replayed. What is written instead is the pre-vetted fallback,
+    as an ordinary `Beat` with `safety_status=blocked`.
+
+    `allow_fallback=False` is for the **prefetch** (`tasks.advance_adventure`),
+    and the distinction is real rather than fussy: a provider blip while nobody is
+    waiting should cost a speculative task, not commit the child to a generic beat
+    for a position the stream would have generated properly a second later. When a
+    child *is* waiting the answer is the opposite, and the default says so.
+
+    Raises `BeatValidationError` only when `allow_fallback` is off and the provider
+    cannot produce a schema-valid beat even after the router's one repair (§19.6).
     """
     seq = _next_seq(adventure) if seq is None else seq
-    context = build_beat_context(adventure, seq=seq, prev_choice=prev_choice)
+    child = adventure.child
+    guarded = guard_beat_inputs(child, prev_choice)
+    input_decision = guarded[safety.GUARD_KEY]
 
-    # The router is built here rather than through the module-level seam so the
-    # row can record *who* answered. Which model wrote a beat is not trivia: the
-    # misattribution this day fixes is model-dependent, the router has a fallback
-    # chain, and a stamp missing from the row is a stamp that cannot be backfilled.
-    router = ai_router.ModelRouter.from_settings()
-    model = ai_router.model_label(router.select_provider())
+    # §13.10: a child in distress gets comfort *immediately*, not the beat the
+    # story was about to tell. The parent alert has already fired inside
+    # `guard_input`; this is the other half — the child sees somewhere gentle and
+    # is told nothing about any of it.
+    if input_decision.escalates:
+        logger.error(
+            "story.beat_de_escalated adventure=%s seq=%d category=%s",
+            adventure.id,
+            seq,
+            input_decision.category,
+        )
+        # `report=False`: `guard_input` has already written the incident and
+        # fired the parent-notify seam. A second row here would double-count the
+        # one thing in this file that a human is paged about.
+        return _persist_fallback(
+            adventure, seq, decision=input_decision, reason="child_input", report=False
+        )
 
-    started = time.monotonic()
-    contract = router.generate_beat(context)
-    elapsed_ms = int((time.monotonic() - started) * 1000)
+    contract, model, decision = _guarded_generation(
+        adventure,
+        seq=seq,
+        prev_choice=prev_choice,
+        guarded=guarded,
+        allow_fallback=allow_fallback,
+    )
+    if contract is None:
+        # Only reachable with `allow_fallback=True`; the other branch re-raised.
+        return _persist_fallback(adventure, seq, decision=decision, reason="output_guard")
+
+    elapsed_ms = decision.detail.get("gen_ms", 0)
+    status = _status_for(decision)
 
     try:
-        beat = _persist_beat(adventure, seq, contract, model=model)
+        beat = _persist_beat(adventure, seq, contract, model=model, safety_status=status)
     except IntegrityError:
         # Another stream on the same adventure wrote this position while we were
         # generating. The unique constraint settles it and we adopt their beat
@@ -547,7 +639,7 @@ def create_beat(
 
     logger.info(
         "story.beat adventure=%s beat=%s seq=%d gen_ms=%d model=%s emotion=%s interaction=%s "
-        "choices=%d final=%d prompt_chars=%d",
+        "choices=%d final=%d prompt_chars=%d safety=%s rewrites=%d",
         adventure.id,
         beat.id,
         seq,
@@ -560,8 +652,15 @@ def create_beat(
         # The evidence for §8.6, in the log a human already reads per beat: this
         # number must stay roughly flat across an adventure rather than climbing
         # with every beat told.
-        len(context["system"]) + len(context["user"]),
+        decision.detail.get("prompt_chars", 0),
+        status,
+        decision.detail.get("rewrites", 0),
     )
+    # Now that there is a row to point at, the incident carries it. Written after
+    # the write rather than at the moment of the decision, because an incident
+    # whose `beat` is null and whose `detail.seq` is a number is one a reviewer
+    # cannot click through to.
+    safety.report(decision, child=child, adventure=adventure, beat=beat, seq=seq, model=model)
     # Written, then read back against what the child actually did. Neither check
     # changes the beat (see their section header); both make a defect that used to
     # be found by a parent visible in the log instead.
@@ -574,6 +673,211 @@ def create_beat(
     # (§16.3). Handing them over at the moment the beat is persisted is what stops
     # a client that disconnects mid-generation from leaving a paid-for beat with
     # no media.
+    schedule_beat_media(beat)
+    return beat
+
+
+# ---------------------------------------------------------------------------
+# The guarded generation (§13.2, §13.3, §19.6)
+# ---------------------------------------------------------------------------
+def _status_for(decision: safety.Decision) -> str:
+    """The `safety_status` column, from what the guard decided.
+
+    `UNCHECKED` is never written here any more, and that is the point of the
+    column: a beat row that still says `unchecked` after Day 7 is a beat that was
+    written by something which bypassed this function.
+    """
+    if decision.detail.get("rewrites"):
+        return Beat.SafetyStatus.REWRITTEN
+    return Beat.SafetyStatus.PASSED
+
+
+def _guarded_generation(
+    adventure: Adventure,
+    *,
+    seq: int,
+    prev_choice: Mapping[str, Any] | None,
+    guarded: Mapping[str, Any],
+    allow_fallback: bool,
+) -> tuple[BeatContract | None, str, safety.Decision]:
+    """Generate a beat that passes the output guard, or give up.
+
+    Returns `(contract, model, decision)`, with `contract=None` meaning "serve the
+    fallback". `decision` always describes the *last* verdict, so the incident the
+    caller writes records why we stopped rather than why we started.
+
+    §13.2's soft-fail loop, bounded by `SAFETY_MAX_REWRITES`:
+
+        generate -> guard -> pass?     deliver
+                          -> rewrite?  regenerate under a constraint, up to N times
+                          -> block?    fallback
+                          -> escalate? fallback + parent notify
+
+    The rewrite constraint names the category and never the text (see
+    `build_beat_context`). A rewrite that comes back with the *same* problem is
+    counted and retried until the cap, then treated as a block — because a model
+    that cannot avoid a category after two attempts is not going to on the third,
+    and the child has now been waiting for three generations.
+    """
+    child = adventure.child
+    router = ai_router.ModelRouter.from_settings()
+    # The router is built here rather than through the module-level seam so the
+    # row can record *who* answered. Which model wrote a beat is not trivia: the
+    # misattribution Day 5 fixed is model-dependent, the router has a fallback
+    # chain, and a stamp missing from the row is a stamp that cannot be backfilled.
+    model = ai_router.model_label(router.select_provider())
+
+    constraint = ""
+    decision = safety.Decision()
+    #: The refusal that caused the last regeneration. Kept because a beat that
+    #: passed *on the retry* still has a refusal to account for, and the incident
+    #: has to say what it was — `rewrites: 1` with no category is a row nobody can
+    #: triage. See `pipeline.report`.
+    refusal: safety.Decision | None = None
+
+    for attempt in range(max(1, safety.max_rewrites() + 1)):
+        context = build_beat_context(
+            adventure,
+            seq=seq,
+            prev_choice=prev_choice,
+            guarded=guarded,
+            constraint=constraint,
+        )
+        started = time.monotonic()
+        try:
+            contract = router.generate_beat(context)
+        except ai_router.AIError:
+            if not allow_fallback:
+                raise
+            # §19.6: a generation that cannot be repaired becomes a safe fallback
+            # beat, not an error and not a dead stream. Logged at `exception` so
+            # the provider failure is visible even though the child never sees it.
+            logger.exception(
+                "story.beat_generation_failed adventure=%s seq=%d falling_back=1",
+                adventure.id,
+                seq,
+            )
+            return (
+                None,
+                model,
+                safety.Decision(
+                    action=safety.BLOCK,
+                    severity=Severity.MEDIUM,
+                    categories=("malformed_generation",),
+                    detail={"rewrites": attempt},
+                ),
+            )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+
+        decision = safety.guard_output(contract, child)
+        measured = {
+            "gen_ms": elapsed_ms,
+            "prompt_chars": len(context["system"]) + len(context["user"]),
+            "rewrites": attempt,
+        }
+        decision = replace(decision, detail={**decision.detail, **measured})
+
+        if decision.passed:
+            if refusal is not None:
+                decision = replace(
+                    decision,
+                    categories=refusal.categories,
+                    markers=refusal.markers,
+                    severity=refusal.severity,
+                    reason=refusal.reason,
+                )
+            return contract, model, decision
+
+        refusal = decision
+        logger.warning(
+            "story.beat_refused adventure=%s seq=%d attempt=%d action=%s categories=%s "
+            "severity=%s degraded=%d",
+            adventure.id,
+            seq,
+            attempt,
+            decision.action,
+            ",".join(decision.categories) or "-",
+            decision.severity,
+            int(decision.degraded),
+        )
+
+        if decision.action != safety.REWRITE:
+            # Block or escalate: no amount of regeneration is the right response
+            # to a beat about a weapon or to a disclosure of harm.
+            return None, model, decision
+
+        constraint = story_prompts.safety_constraint(decision.categories)
+
+    # Out of attempts with a rewrite still outstanding. Downgraded to a block so
+    # the caller serves the fallback: the guard has said "not this" three times.
+    logger.warning(
+        "story.beat_rewrites_exhausted adventure=%s seq=%d categories=%s",
+        adventure.id,
+        seq,
+        ",".join(decision.categories) or "-",
+    )
+    return None, model, replace(decision, action=safety.BLOCK)
+
+
+def _persist_fallback(
+    adventure: Adventure,
+    seq: int,
+    *,
+    decision: safety.Decision,
+    reason: str,
+    report: bool = True,
+) -> Beat:
+    """Write the pre-vetted warm beat, as an ordinary beat (§13.3).
+
+    Everything after this point treats it exactly like a generated beat: it is
+    illustrated, voiced, streamed, answerable, folded into the running summary,
+    and the beat that follows it is generated normally. The only differences are
+    in the database — `safety_status`, the `model` stamp, and an incident row —
+    and none of them is visible to a child (§13).
+
+    A fallback that loses the `(adventure, seq)` race adopts the winner, exactly
+    as a generated beat does: if another worker has already written that position
+    then a beat exists, and one beat is what the child needs.
+    """
+    child = adventure.child
+    contract = safety.safe_fallback_beat(child, seq=seq, is_final=is_final_seq(adventure, seq))
+
+    try:
+        beat = _persist_beat(
+            adventure,
+            seq,
+            contract,
+            model=f"fallback:{reason}",
+            safety_status=Beat.SafetyStatus.BLOCKED,
+        )
+    except IntegrityError:
+        winner = adventure.beats.filter(seq=seq).first()
+        if winner is None:
+            raise
+        logger.info(
+            "story.fallback_race_lost adventure=%s seq=%d kept=%s", adventure.id, seq, winner.id
+        )
+        return winner
+
+    logger.warning(
+        "story.beat_fallback adventure=%s beat=%s seq=%d reason=%s action=%s categories=%s",
+        adventure.id,
+        beat.id,
+        seq,
+        reason,
+        decision.action,
+        ",".join(decision.categories) or "-",
+    )
+    if report:
+        safety.report(
+            decision,
+            child=child,
+            adventure=adventure,
+            beat=beat,
+            seq=seq,
+            model=f"fallback:{reason}",
+        )
+    refresh_running_summary(adventure)
     schedule_beat_media(beat)
     return beat
 
@@ -829,7 +1133,12 @@ def _log_choice_distinctness(beat: Beat) -> None:
 
 @transaction.atomic
 def _persist_beat(
-    adventure: Adventure, seq: int, contract: BeatContract, *, model: str = ""
+    adventure: Adventure,
+    seq: int,
+    contract: BeatContract,
+    *,
+    model: str = "",
+    safety_status: str = Beat.SafetyStatus.UNCHECKED,
 ) -> Beat:
     """Write the beat and extend the adventure's emotion arc, together.
 
@@ -837,8 +1146,14 @@ def _persist_beat(
     that has recorded a beat which does not exist would make the wellbeing
     down-shift fire on a story that was never told.
 
-    `model` is who wrote it — `provider:model`, or empty when a caller could not
-    say. Stamped at the same moment as the text so the two cannot drift.
+    `model` is who wrote it — `provider:model`, `fallback:<reason>` for a
+    pre-vetted beat, or empty when a caller could not say. Stamped at the same
+    moment as the text so the two cannot drift.
+
+    `safety_status` defaults to `UNCHECKED` and every caller in this module
+    overrides it, deliberately: the default is what a *new* call site gets, and a
+    new call site that has not been through the guard should be visible in the
+    data as exactly that rather than inheriting a pass.
     """
     # Normalised here, at the boundary where a model's output becomes our data, so
     # that everything downstream — the voice clip, the caption, the transcript a
@@ -867,6 +1182,7 @@ def _persist_beat(
         model=model,
         next_hint=contract.next_hint,
         continuity_refs=list(contract.continuity_refs),
+        safety_status=safety_status,
     )
     # Anyone this beat has just invented becomes a persisted entity in the same
     # transaction that persists the beat (§8.2). Written *here*, at the boundary
@@ -924,6 +1240,7 @@ def resolve_beat(
     *,
     seq: int,
     prev: Beat | None = None,
+    allow_fallback: bool = True,
 ) -> tuple[Beat, dict[str, str | None]]:
     """The beat at `seq` and its media URLs: replayed if it exists, generated once
     if it does not. Synchronous core of `ensure_beat`.
@@ -934,8 +1251,11 @@ def resolve_beat(
     illustration and voice line to get there. From Day 5 it also covers the beat a
     worker generated ahead of the child: the ordinary path through a branching
     story is a replay, not a generation.
+
+    `allow_fallback` is passed straight through to `create_beat`; see its
+    docstring for why the prefetch turns it off.
     """
-    beat, urls = _beat_or_generate(adventure, seq=seq, prev=prev)
+    beat, urls = _beat_or_generate(adventure, seq=seq, prev=prev, allow_fallback=allow_fallback)
 
     # An explicit repair rather than an accident. The old code re-ran the media
     # stages whenever a URL was missing, which happened to heal an orphaned beat
@@ -952,6 +1272,7 @@ def _beat_or_generate(
     *,
     seq: int,
     prev: Beat | None,
+    allow_fallback: bool = True,
 ) -> tuple[Beat, dict[str, str | None]]:
     """The beat at `seq`, generated at most once across every concurrent caller.
 
@@ -990,7 +1311,12 @@ def _beat_or_generate(
 
         # The position is always named explicitly, never "the next one": see
         # `create_beat`.
-        beat = create_beat(adventure, seq=seq, prev_choice=turn_from(prev))
+        beat = create_beat(
+            adventure,
+            seq=seq,
+            prev_choice=turn_from(prev),
+            allow_fallback=allow_fallback,
+        )
         return beat, beat_media_urls(beat)
 
 
@@ -1251,6 +1577,16 @@ def illustrate_beat(beat: Beat) -> Media | None:
     The picture, once drawn, is recorded as the reference asset for any character
     that had none — this render is what established their look, and it is already
     paid for.
+
+    **A picture the image gate refuses becomes a different picture, never an
+    error** (§13.2's `IMGFB`). `media.safety.scan` blocks the bytes before they
+    reach storage and `media.service` raises `MediaBlocked`; this catches that and
+    substitutes a hand-drawn stock illustration, records a `SafetyIncident`, and
+    hands the child a beat with a calm picture on it. That path is deliberately
+    *narrow*: `MediaBlocked` means the scan refused the asset, while every other
+    `MediaError` — a provider that timed out, a bucket that would not accept a
+    write — is still a beat with no picture, which is already fully playable.
+    Substituting there too would paint stock art over an ordinary outage.
     """
     prompt = str((beat.scene or {}).get("illustration_prompt") or "").strip()
     if not prompt:
@@ -1272,12 +1608,53 @@ def illustrate_beat(beat: Beat) -> Media | None:
         ",".join(ref.name for ref in references),
         companion_scenes.canonical_expression(beat.emotion) or "-",
     )
-    media = companion_service.render_scene(child, prompt, references)
+    try:
+        media = companion_service.render_scene(child, prompt, references)
+    except MediaBlocked as refusal:
+        return _substitute_illustration(beat, str(refusal))
 
     if introduced := [
         row for row in cast.characters_for(child, present) if not row.reference_asset_ids
     ]:
         cast.record_reference(introduced, media)
+    return media
+
+
+def _substitute_illustration(beat: Beat, refusal: str) -> Media | None:
+    """Safe stock art in place of a picture the image gate refused (§13.8).
+
+    The incident is the point as much as the picture is: an image that fails
+    moderation is the one safety event with no text to grade afterwards, so if it
+    is not recorded here it is recorded nowhere. `detail` carries the scan's own
+    reason, which names the rule and not the image.
+
+    A stock file that cannot be read leaves the beat with no picture rather than
+    raising, because `stream_media` would swallow a raise into the same outcome
+    with a worse log line.
+    """
+    child = beat.adventure.child
+    logger.error("story.illustration_blocked beat=%s reason=%s", beat.id, refusal)
+
+    try:
+        media = media_stock.safe_illustration(child, seed=str(beat.id))
+    except (media_stock.StockUnavailable, MediaError):
+        logger.exception("story.stock_illustration_failed beat=%s", beat.id)
+        media = None
+
+    safety_incidents.record(
+        category="image_blocked",
+        action=Action.SUBSTITUTED if media is not None else Action.BLOCKED,
+        severity=Severity.HIGH,
+        child=child,
+        adventure=beat.adventure,
+        beat=beat,
+        detail={
+            "seq": beat.seq,
+            "reason": refusal[:300],
+            "substituted": bool(media),
+            "stock": str(media.id) if media is not None else None,
+        },
+    )
     return media
 
 

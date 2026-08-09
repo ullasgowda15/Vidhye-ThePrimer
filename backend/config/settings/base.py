@@ -389,6 +389,43 @@ AI_PROVIDER_ORDER = env.list("AI_PROVIDER_ORDER", default=["anthropic"])
 AI_STRUCTURED_OUTPUT_MODE = env("AI_STRUCTURED_OUTPUT_MODE", default="auto")
 
 # ---------------------------------------------------------------------------
+# Safety layer (PRODUCT.md §13.2, §13.3)
+# ---------------------------------------------------------------------------
+# **The independent output classifier is a different model, on purpose** (§13.3):
+# "a model grading its own output is weak; a separate guard is defense-in-depth."
+# Provider-relative in exactly the way AI_BEAT_MODEL is — a Claude model id under
+# `anthropic`, an OpenRouter slug under `openrouter` — and it rides the same
+# AI_PROVIDER_ORDER, because a provider outage that took the generator down took
+# the grader with it either way.
+#
+# Defaulted to a small fast model rather than the beat model: grading against a
+# rubric is a classification problem, and putting the expensive model on it would
+# add its latency to *every* beat for a judgement the cheap one makes as well.
+AI_SAFETY_MODEL = env("AI_SAFETY_MODEL", default="claude-haiku-4-5-20251001")
+
+# Whether the model-backed half of the output guard runs at all.
+#
+# The deterministic policy check (`apps.safety.policy`) always runs and needs no
+# provider; this switches on the model call that sits on top of it. Defaulted
+# **on**, because the alternative is a product whose strongest guard is off unless
+# someone remembers to turn it on. With no credentials the call fails, and the
+# pipeline records that as a *degradation* with an incident row — never as a pass.
+SAFETY_CLASSIFIER_ENABLED = env.bool("SAFETY_CLASSIFIER_ENABLED", default=True)
+
+# How many constrained regenerations one beat may cost before the pre-vetted
+# fallback is served instead (§13.2's soft-fail loop, §19.6's bound). Two, because
+# the child is waiting and a third model call buys less than the fallback does.
+SAFETY_MAX_REWRITES = env.int("SAFETY_MAX_REWRITES", default=2)
+
+# The image safety gate (§13.8). `auto` runs the vision moderation call when a
+# provider is configured and falls back to the structural checks when it is not,
+# logging the gap; `off` is structural-only and is what CI and offline
+# development use. There is no mode in which bytes reach storage unscanned.
+IMAGE_MODERATION = env("IMAGE_MODERATION", default="auto")
+# Provider-relative, like the two above. Must be a vision-capable model.
+IMAGE_MODERATION_MODEL = env("IMAGE_MODERATION_MODEL", default="claude-haiku-4-5-20251001")
+
+# ---------------------------------------------------------------------------
 # Illustration + voice adapters (PRODUCT.md §16.6, §5.8)
 # ---------------------------------------------------------------------------
 # One name each, chosen by configuration, resolved by the adapter registry. A

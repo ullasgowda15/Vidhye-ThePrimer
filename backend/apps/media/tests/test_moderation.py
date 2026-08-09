@@ -1,0 +1,152 @@
+"""The image gate (PRODUCT.md §13.8, Day 7).
+
+Day 3 shipped `scan` as a structural check with a `TODO` on it and a test file
+that said so. This is the other half: the moderation call, and — more importantly
+— what the scan does when it cannot make one.
+
+The property under test throughout is that **there is no configuration in which
+an unscanned asset is reported as scanned**. A gate that quietly turns itself off
+is worse than no gate, because the log and the `Media` row both say everything is
+fine.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from apps.media import moderation
+from apps.media.models import SafetyStatus
+from apps.media.safety import scan
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"." * 64
+SVG = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+WAV = b"RIFF\x00\x00\x00\x00WAVE" + b"." * 64
+
+
+class _Moderator:
+    """A stand-in for the vision call, with the verdict chosen by the test."""
+
+    name = "stub"
+
+    def __init__(self, *, safe: bool = True, reason: str = "", boom: bool = False) -> None:
+        self.safe, self.reason, self.boom = safe, reason, boom
+        self.calls = 0
+
+    def is_configured(self) -> bool:
+        return True
+
+    def classify(self, data: bytes, content_type: str) -> tuple[bool, str]:
+        self.calls += 1
+        if self.boom:
+            raise RuntimeError("provider is down")
+        return self.safe, self.reason
+
+
+@pytest.fixture
+def gate_on(settings: Any, monkeypatch: Any) -> Any:
+    """Turn the gate on with a moderator the test controls."""
+
+    def install(**kwargs: Any) -> _Moderator:
+        settings.IMAGE_MODERATION = moderation.AUTO
+        stub = _Moderator(**kwargs)
+        monkeypatch.setattr(moderation, "select_moderator", lambda: stub)
+        return stub
+
+    return install
+
+
+def test_a_clean_picture_passes_and_says_it_was_moderated(gate_on: Any) -> None:
+    stub = gate_on(safe=True)
+
+    verdict = scan(PNG)
+
+    assert verdict.is_safe
+    assert verdict.moderated is True
+    assert stub.calls == 1
+
+
+def test_an_unsafe_picture_is_blocked_before_it_is_stored(gate_on: Any) -> None:
+    gate_on(safe=False, reason="a frightening figure")
+
+    verdict = scan(PNG)
+
+    assert verdict.status == SafetyStatus.BLOCKED
+    assert verdict.is_safe is False
+    assert "frightening" in verdict.reason
+
+
+def test_a_moderator_that_errors_fails_closed(gate_on: Any) -> None:
+    """The opposite posture to `apps.safety.classifier`, and deliberately so.
+
+    Refusing a *beat* when the guard is down would cost the child their story.
+    Refusing a *picture* costs one illustration on a beat that is still fully
+    playable (§4.9) and the caller substitutes stock art — so here the cautious
+    answer is cheap and it is the one we take.
+    """
+    gate_on(boom=True)
+
+    verdict = scan(PNG)
+
+    assert verdict.status == SafetyStatus.FLAGGED
+    assert verdict.is_safe is False
+    assert "moderator_error" in verdict.reason
+
+
+def test_an_unconfigured_gate_passes_the_asset_but_never_claims_it_moderated(
+    settings: Any,
+) -> None:
+    """The honest degradation. `moderated` is the whole point of the field.
+
+    Blocking every picture when no key is set would make offline development and
+    CI impossible; reporting the structural check as a moderation pass would make
+    an expired key invisible. So the asset is served and the verdict says plainly
+    that the strong check did not run.
+    """
+    settings.IMAGE_MODERATION = moderation.OFF
+
+    verdict = scan(PNG)
+
+    assert verdict.is_safe
+    assert verdict.moderated is False
+
+
+def test_audio_and_svg_are_not_sent_to_a_vision_model(gate_on: Any) -> None:
+    """A narration clip has no pixels, and the SVGs are our own vetted stock."""
+    stub = gate_on(safe=True)
+
+    assert scan(WAV).moderated is False
+    assert scan(SVG).moderated is False
+    assert stub.calls == 0
+
+
+def test_the_structural_check_still_runs_first(gate_on: Any, settings: Any) -> None:
+    """Bytes we cannot even identify are not worth a vision call."""
+    stub = gate_on(safe=True)
+
+    assert scan(b"").status == SafetyStatus.BLOCKED
+    assert scan(b"\x00\x01\x02\x03").status == SafetyStatus.FLAGGED
+
+    settings.MEDIA_MAX_BYTES = 8
+    assert scan(PNG).status == SafetyStatus.BLOCKED
+    assert stub.calls == 0
+
+
+def test_a_moderator_that_answers_in_an_unexpected_shape_is_not_a_pass() -> None:
+    """A classifier whose unparseable answers mean "fine" is not a classifier."""
+
+    class Vague:
+        def __init__(self) -> None:
+            self.stop_reason = None
+            self.content = [type("B", (), {"type": "text", "text": "hmm, hard to say"})()]
+
+    verdict = moderation.ClaudeImageModerator(api_key="k")._verdict_from(Vague())
+    assert verdict == (False, "hmm, hard to say")
+
+
+def test_the_gate_is_off_when_no_credential_is_present(settings: Any) -> None:
+    settings.IMAGE_MODERATION = moderation.AUTO
+    settings.ANTHROPIC_API_KEY = ""
+
+    assert moderation.select_moderator() is None

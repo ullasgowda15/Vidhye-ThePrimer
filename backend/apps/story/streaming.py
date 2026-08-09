@@ -32,10 +32,14 @@ carries the headers that stop a proxy from collecting them, and the whole thing
 runs as an async view under ASGI. Under WSGI this file produces one blob at the
 end, which is why there is no WSGI fallback (§16.4).
 
-**The stream always ends, and never with an error.** A generation that cannot be
-repaired ends the stream with `done` and nothing else. The child sees the
-companion still thinking, which is a scene; they never see a failure (§13). Day 7
-replaces the silent ending with a safe fallback beat.
+**The stream always ends, and never with an error.** From Day 7 a generation that
+cannot be repaired — or that the safety guard refuses — does not end the stream
+silently: `orchestrator.create_beat` serves a pre-vetted warm fallback beat
+instead, and it arrives here as an ordinary `beat` frame with an ordinary picture,
+voice and set of choices (§13.3, §19.6). The `ENDED` branch below is what is left
+of the old behaviour and is now a backstop for something that is not a generation
+failure at all — a database that will not answer. The child sees the companion
+still thinking, which is a scene; they never see a failure (§13).
 """
 
 from __future__ import annotations
@@ -228,8 +232,10 @@ async def stream_beat(adventure: Adventure) -> AsyncIterator[bytes]:
     try:
         beat, urls, is_final = await orchestrator.ensure_current_beat(adventure)
     except AIError:
-        # Logged with the adventure so an operator can find the prompt; nothing
-        # about it reaches the child (§13).
+        # Rare from Day 7: the orchestrator turns a failed generation into a safe
+        # fallback beat rather than raising, so reaching here means something
+        # below the provider went wrong. Logged with the adventure so an operator
+        # can find it; nothing about it reaches the child (§13).
         logger.exception("story.stream_failed adventure=%s stage=beat", adventure.id)
         yield frame("done", {"status": ENDED})
         return

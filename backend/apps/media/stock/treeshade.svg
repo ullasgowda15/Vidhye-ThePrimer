@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 640" width="1024" height="640" role="img" aria-label="A big friendly tree with soft afternoon shade">
+  <defs>
+    <linearGradient id="tsky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FCEEDB"/>
+      <stop offset="100%" stop-color="#F6E2CD"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="640" fill="url(#tsky)"/>
+  <circle cx="176" cy="150" r="58" fill="#F7CE8C" opacity="0.7"/>
+  <path d="M0 470 C 220 440, 420 494, 620 466 C 800 442, 920 476, 1024 456 L 1024 640 L 0 640 Z" fill="#BBD49C"/>
+  <ellipse cx="596" cy="600" rx="240" ry="34" fill="#A2BC85" opacity="0.7"/>
+  <path d="M584 600 L 584 396 C 584 380, 612 380, 612 396 L 612 600 Z" fill="#B08A64"/>
+  <path d="M584 470 C 552 448, 536 430, 528 408" stroke="#B08A64" stroke-width="14" stroke-linecap="round" fill="none"/>
+  <path d="M612 452 C 646 432, 662 414, 670 394" stroke="#B08A64" stroke-width="14" stroke-linecap="round" fill="none"/>
+  <g fill="#8FBE7C">
+    <ellipse cx="598" cy="326" rx="176" ry="112"/>
+    <ellipse cx="470" cy="352" rx="108" ry="76"/>
+    <ellipse cx="722" cy="348" rx="112" ry="78"/>
+    <ellipse cx="600" cy="256" rx="120" ry="80"/>
+  </g>
+  <g fill="#A8D190" opacity="0.75">
+    <ellipse cx="530" cy="292" rx="66" ry="44"/>
+    <ellipse cx="672" cy="304" rx="60" ry="40"/>
+  </g>
+  <g fill="#EBD9A8">
+    <circle cx="200" cy="566" r="10"/>
+    <circle cx="268" cy="590" r="8"/>
+    <circle cx="880" cy="574" r="10"/>
+    <circle cx="820" cy="598" r="8"/>
+  </g>
+  <g stroke="#95B87E" stroke-width="5" stroke-linecap="round" fill="none">
+    <path d="M140 606 C 134 572, 150 552, 144 528"/>
+    <path d="M916 610 C 910 576, 924 556, 918 532"/>
+  </g>
+</svg>

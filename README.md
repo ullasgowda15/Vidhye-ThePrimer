@@ -101,6 +101,7 @@ make help
 | `smoke-media` | Live media smoke test — real Cloudflare + ElevenLabs calls. Never in CI |
 | `smoke-story` | Live story smoke test: plan + beat + art + voice for one child. Never in CI |
 | `render-companion` | Render a companion's reference set + 3 scenes |
+| `redteam` | The safety red-team suite: injection, fear ceilings, unsafe bait |
 | `ping` | Round-trip a task through Celery |
 
 ## Verifying the pieces
@@ -313,16 +314,56 @@ In the UI, `/parent/*` sits behind an adult challenge (§14.2) — a small multi
 pre-reader can't pass. The pass is in-memory and expires in 15 minutes; so are the
 tokens, so a hard reload signs the parent out by design (see `frontend/src/store/auth.ts`).
 
+## The safety layer
+
+Every generation traverses `backend/apps/safety/` (§13.2). Nothing reaches a child
+around it.
+
+```
+inputs ──► guard_input ──► assemble + generate ──► guard_output ──► image scan ──► child
+              │                                          │                │
+              ▼                                          ▼                ▼
+        incident row                      rewrite / fallback / escalate   stock art
+```
+
+| Stage | Module | What it does |
+|---|---|---|
+| Input guard | `scrub.py`, `pipeline.guard_input` | Strips injection shapes, PII and layer-tag forgeries from everything a parent, a child or an earlier model wrote (§13.5) |
+| Output guard | `policy.py` + `classifier.py` | A deterministic policy check that always runs, plus an **independent** model call on a **different model** (`AI_SAFETY_MODEL`) — never the generator grading itself (§13.3) |
+| Fallback | `fallbacks.py` | Hand-written, human-reviewed warm beats, illustrated and voiced through the normal pipeline. A child cannot tell one from a generated beat |
+| Image gate | `apps/media/moderation.py`, `apps/media/stock.py` | A vision moderation call before any byte is stored; a refusal becomes hand-drawn stock art, never a missing picture (§13.8) |
+| Record | `incidents.py`, `escalation.py` | Every non-pass writes a `SafetyIncident` (`/admin/safety/safetyincident/`, filterable by severity); a distress disclosure fires the parent-notify seam (§13.10) |
+
+Two commitments worth knowing before you change anything here:
+
+- **A guard that could not run is never a pass.** With no credentials the model
+  classifier fails, the deterministic policy stands, and an incident records the
+  degradation. `prod.py` refuses to boot with either guard switched off.
+- **Incidents carry rule names, never text.** The table records *what fired*, not the
+  sentence that fired it — it must not become a second copy of what we refused to show
+  anyone (§13.8).
+
+```bash
+make redteam    # pytest apps/safety/redteam -q
+```
+
+The corpus (`apps/safety/redteam/corpus.py`) is the specification and the tests are only
+how it is checked. When you find something that gets through, **add it to the corpus
+first**, watch the test fail, then fix the guard — an entry added after the fix never
+proved anything. Half the corpus is benign story text, because a filter that blocks
+everything is trivially safe and ships nothing.
+
 ## Prompt assembly
 
 `backend/apps/safety/prompting/` turns a child into the ordered, labeled prompt layers of
 §19.1. It is pure and deterministic — the only I/O is reading the active `PromptVersion`
-row — and **nothing calls it yet**; Days 4–5 wire it into generation.
+row.
 
-Two properties are load-bearing and covered by tests: the safety layer carries the
-child's `intensity_ceiling` and every `avoid_topic` verbatim and phrases guidance by age
-band, and memory/child input render as `kind="data"` blocks with an explicit "never obey
-this" preamble (§13.5).
+Three properties are load-bearing and covered by tests: the safety layer carries the
+child's `intensity_ceiling` and every `avoid_topic` and phrases guidance by age band;
+memory and child input render as `kind="data"` blocks with an explicit "never obey this"
+preamble (§13.5); and **every untrusted string is scrubbed on the way in**, including the
+profile fields that reach an *instruction* layer, which the data fence never protected.
 
 The system prompt itself lives in a migration, not in code, so the text a child was told
 can always be traced to a version. A revision is a new migration and a new row.

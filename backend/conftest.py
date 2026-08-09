@@ -45,6 +45,18 @@ def no_live_providers(settings: Any) -> None:
     # Ship-default `["google"]`, blanked with the rest: the voice failover chain
     # must not reach a real vendor because a developer happens to hold a key.
     settings.TTS_FALLBACK_PROVIDERS = []
+    # The two Day-7 guards that would make a provider call. Both ship **on**
+    # (`base.py`), and both are switched off here for the same reason as the keys
+    # above: a suite that quietly spent money on a developer's machine and not in
+    # CI would be the worst kind of test.
+    #
+    # Turning them off does not turn the safety layer off. The deterministic
+    # policy check (`apps.safety.policy`) and the scrubber need no provider and
+    # run in every test in this suite — which is exactly why they exist (§13.2).
+    # A test that wants the model-backed guard sets the flag and patches
+    # `safety.classifier.classify`.
+    settings.SAFETY_CLASSIFIER_ENABLED = False
+    settings.IMAGE_MODERATION = "off"
 
 
 @pytest.fixture(autouse=True)
@@ -236,6 +248,12 @@ def fake_ai(monkeypatch: Any) -> ScriptedAIProvider:
     Patching `from_settings` rather than the module-level `generate_beat` seam
     keeps validate-and-repair (§19.6) in the path being tested. A test that stubbed
     the whole router would pass while repair was broken.
+
+    `**_` swallows `model=`, which `from_settings` grew on Day 7 so the safety
+    classifier can pin its own model (§13.3). Swallowed rather than honoured
+    because this provider answers by schema and has no model to pin — a test that
+    wants to see the *safety* model must patch `safety.classifier` instead, which
+    is the point of it being a separate module.
     """
     from apps.story.ai.router import ModelRouter
 
@@ -243,7 +261,7 @@ def fake_ai(monkeypatch: Any) -> ScriptedAIProvider:
     monkeypatch.setattr(
         ModelRouter,
         "from_settings",
-        classmethod(lambda cls: ModelRouter(providers=[provider])),
+        classmethod(lambda cls, **_: ModelRouter(providers=[provider])),
     )
     return provider
 

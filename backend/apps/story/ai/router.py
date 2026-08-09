@@ -330,6 +330,17 @@ class _UnimplementedProvider:
     credential_env_var = ""
     output_mode = "n/a"
 
+    def __init__(self, api_key: str = "", model: str = "") -> None:
+        # Accepted and kept so every entry in `PROVIDERS` is constructed the same
+        # way. `ModelRouter.from_settings(model=…)` builds the whole order, and a
+        # seam that raised on the keyword would make pinning a model to the
+        # safety classifier depend on which providers happened to be listed.
+        self._model = model
+
+    @property
+    def model(self) -> str:
+        return self._model
+
     def is_configured(self) -> bool:
         return False
 
@@ -370,7 +381,15 @@ class ModelRouter:
     providers: list[StructuredProvider]
 
     @classmethod
-    def from_settings(cls) -> ModelRouter:
+    def from_settings(cls, *, model: str = "") -> ModelRouter:
+        """The configured provider order, optionally pinned to a specific model.
+
+        `model` is what makes §13.3's "separate model, not self-grading" a fact
+        about the weights rather than about the request: the safety classifier
+        builds its router with `AI_SAFETY_MODEL`, so the guard and the generator
+        can never be the same model unless someone configures them to be. Empty
+        means "whatever `AI_BEAT_MODEL` says", which is every other caller.
+        """
         order = list(settings.AI_PROVIDER_ORDER) or [AnthropicProvider.name]
         providers: list[StructuredProvider] = []
         for name in order:
@@ -380,7 +399,7 @@ class ModelRouter:
                     f"Unknown AI provider '{name}' in AI_PROVIDER_ORDER. "
                     f"Known providers: {', '.join(sorted(PROVIDERS))}."
                 )
-            providers.append(factory())
+            providers.append(factory(model=model))
         return cls(providers=providers)
 
     def select_provider(self) -> StructuredProvider:

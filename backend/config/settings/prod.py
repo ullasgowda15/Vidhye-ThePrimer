@@ -39,6 +39,35 @@ if MEDIA_STORAGE != "s3":  # noqa: F405
         "(and AWS_S3_ENDPOINT_URL for a non-AWS S3-compatible bucket)."
     )
 
+# ---------------------------------------------------------------------------
+# The safety layer is not optional outside development (PRODUCT.md §13.2)
+# ---------------------------------------------------------------------------
+# Both guards ship **on** in `base.py`, so reaching either of these means someone
+# turned one off in the environment. They fail the boot rather than logging a
+# warning for the same reason `SECRET_KEY` does: a deployment that is quietly
+# less safe than it looks is worse than one that will not start, and "the
+# classifier has been off since March" is not something an incident review should
+# ever have to discover.
+#
+# Note what is *not* checked here: the presence of a key. A provider outage is a
+# runtime condition the pipeline already handles honestly — the deterministic
+# policy stands, an incident records the degradation, and nothing is reported as
+# a pass. What cannot be handled at runtime is somebody having decided the guard
+# should not run at all.
+if not SAFETY_CLASSIFIER_ENABLED:  # noqa: F405
+    raise ImproperlyConfigured(
+        "SAFETY_CLASSIFIER_ENABLED must stay on outside development. The "
+        "independent output classifier (§13.3) is the guard that reads subtext; "
+        "the keyword policy alone is not the product's safety story."
+    )
+
+if IMAGE_MODERATION == "off":  # noqa: F405
+    raise ImproperlyConfigured(
+        "IMAGE_MODERATION must not be 'off' outside development. Set it to "
+        "'auto' and give the deployment an ANTHROPIC_API_KEY so generated "
+        "illustrations are actually looked at before a child sees them (§13.8)."
+    )
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

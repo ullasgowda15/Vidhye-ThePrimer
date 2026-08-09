@@ -180,6 +180,39 @@ def get_or_generate_audio(
     )
 
 
+def get_or_generate_stock(
+    *,
+    child: Child,
+    style_hash: str,
+    character_hash: str,
+    scene_hash: str,
+    data: bytes,
+    provider_name: str,
+) -> Media:
+    """Store a pre-vetted asset we already hold the bytes for (§13.2's `IMGFB`).
+
+    The substitution path (`apps.media.stock`). It goes through the same cache,
+    the same scan and the same row-creation race handling as a generated asset,
+    for two reasons: a stock file that somehow failed the structural scan must be
+    withheld exactly like a bad render, and the second time a child needs a
+    substitute it should cost a `SELECT` rather than a write.
+
+    `produce` is a closure over bytes we already have, so `STATS` counts it as a
+    "generation" — which is correct: it is one asset entering the pipeline, and
+    the provider label on the row (`stock`) is what keeps it out of any spend
+    figure that matters.
+    """
+    return _get_or_generate(
+        child=child,
+        media_type=MediaType.IMAGE,
+        style_hash=style_hash,
+        character_hash=character_hash,
+        scene_hash=scene_hash,
+        prompt_hash=sha16(f"{provider_name}:{scene_hash}"),
+        produce=lambda: (data, provider_name),
+    )
+
+
 def _get_or_generate(
     *,
     child: Child,
