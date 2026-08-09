@@ -9,6 +9,7 @@ service, not the product API, and must not move when v2 arrives.
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
+from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
@@ -30,6 +31,15 @@ urlpatterns = [
         name="swagger-ui",
     ),
 ]
+
+# Admin CSS/JS in development. `django.contrib.staticfiles` only serves static
+# files automatically under `runserver`, and we run under ASGI/uvicorn (§16) —
+# so nothing answered `/static/admin/...` and the admin rendered unstyled. These
+# patterns go through the staticfiles *finders*, so app-bundled assets are found
+# without a `collectstatic` first. In production the CDN serves `STATIC_ROOT`
+# and DEBUG is off, so this stays a development-only route.
+if settings.DEBUG:
+    urlpatterns += staticfiles_urlpatterns()
 
 # Generated illustrations and audio in development only. In staging and
 # production these are objects in a bucket behind a CDN and Django never sees a
