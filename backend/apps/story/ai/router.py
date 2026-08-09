@@ -115,6 +115,11 @@ class AnthropicProvider:
         self._api_key = api_key or settings.ANTHROPIC_API_KEY
         self._model = model or settings.AI_BEAT_MODEL
 
+    @property
+    def model(self) -> str:
+        """Which model this provider will call — stamped on the rows it produces."""
+        return self._model
+
     def is_configured(self) -> bool:
         return bool(self._api_key)
 
@@ -208,6 +213,11 @@ class OpenRouterProvider:
         self._mode = (
             self._JSON_MODE if self._policy is StructuredOutputMode.JSON_OBJECT else self._STRICT
         )
+
+    @property
+    def model(self) -> str:
+        """Which model this provider will call — stamped on the rows it produces."""
+        return self._model
 
     @property
     def output_mode(self) -> str:
@@ -473,6 +483,19 @@ class ModelRouter:
     @staticmethod
     def _parse(raw: str, model: type[ModelT]) -> ModelT:
         return model.model_validate(json.loads(raw))
+
+
+def model_label(provider: StructuredProvider) -> str:
+    """`provider:model`, as a generated row records who wrote it.
+
+    Two names rather than one because neither is enough on its own: the same model
+    id is reachable through more than one provider, and a provider name alone says
+    nothing about which model behind it produced a beat. A provider that does not
+    name a model — the scripted one in the test suite, an unimplemented seam —
+    reduces to its own name rather than to a lie about a default.
+    """
+    model = getattr(provider, "model", "")
+    return f"{provider.name}:{model}" if model else provider.name
 
 
 def generate_beat(context: dict[str, Any]) -> Beat:

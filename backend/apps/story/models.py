@@ -207,6 +207,17 @@ class Beat(UUIDModel):
     learning = models.JSONField(null=True, blank=True)
     emotion = models.CharField(max_length=32, blank=True)
 
+    #: Who wrote this beat — `provider:model`, e.g. `openrouter:nvidia/nemotron-…`.
+    #: Blank for every beat written before the column existed, and for a beat no
+    #: caller could attribute.
+    #:
+    #: Recorded because the qualities this engine is judged on are model-dependent
+    #: and the router has a fallback chain: "did this model narrate an action the
+    #: child never took" is a question about a set of rows, and without a stamp it
+    #: has to be inferred from phrasing. Un-backfillable after the fact, which is
+    #: why it is written from the first beat rather than when it is first needed.
+    model = models.CharField(max_length=120, blank=True)
+
     #: The model's own steer for what should happen next, e.g. "if the child
     #: counts -> cross the river". Persisted because the beat that reads it is
     #: generated in a *different* request — after the child has tapped — so it has

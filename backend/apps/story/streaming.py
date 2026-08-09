@@ -119,6 +119,26 @@ def choice_payload(beat: Beat, urls: Mapping[str, str | None]) -> list[dict[str,
     ]
 
 
+def interaction_payload(beat: Beat) -> dict[str, Any] | None:
+    """The interaction blob as the client's type says it is (`sse.ts` `BeatEvent`).
+
+    The stored blob is whatever shape the beat was written in, and beats written
+    before options were illustrated hold bare strings in `choices` (§14.4,
+    `models._as_option`). Shipping it verbatim put those strings on the wire under
+    a field the client declares as `{key,label,icon_prompt}[]` — nothing reads it
+    today, so nothing was broken, but a frame that contradicts its own type is a
+    frame the first client to trust it will crash on. That is precisely the bug the
+    coercion in `Beat.options` was added to close, re-opened one layer out.
+
+    So the options are replaced with the coerced ones. The top-level `choices`
+    array still supersedes this — it is the one carrying each card's picture — and
+    remains what the client actually renders.
+    """
+    if not beat.interaction:
+        return beat.interaction
+    return {**beat.interaction, "choices": beat.options or None}
+
+
 def beat_payload(
     beat: Beat,
     *,
@@ -153,7 +173,7 @@ def beat_payload(
             "status": "ready" if image_url else "pending",
         },
         "audioUrl": urls.get(orchestrator.VOICE_STAGE),
-        "interaction": beat.interaction,
+        "interaction": interaction_payload(beat),
         "choices": choice_payload(beat, urls),
         "emotion": beat.emotion,
         "isFinal": is_final,

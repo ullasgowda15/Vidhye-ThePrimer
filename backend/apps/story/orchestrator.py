@@ -379,6 +379,13 @@ def turn_from(beat: Beat | None) -> dict[str, Any] | None:
     ahead of the child (prefetch). `next_hint` rides along because it is the
     previous beat's own steer and it is stored precisely so it can survive the
     round trip through the child's tap.
+
+    `offered_labels` is the whole set of cards that were on the screen, which the
+    prompt does **not** render (`assembler._turn_block` reads named keys and this
+    is not one of them — the model must not be told what the child *didn't* pick).
+    It is here for the post-write check that reads the two together: a consequence
+    that names an option the child left on the table is the P0 this day exists to
+    close.
     """
     if beat is None:
         return None
@@ -390,6 +397,7 @@ def turn_from(beat: Beat | None) -> dict[str, Any] | None:
     return {
         "chosen_key": choice.chosen_key,
         "chosen_label": option.get("label") or "",
+        "offered_labels": [str(o.get("label") or "") for o in beat.options],
         "value": choice.value,
         "assisted": choice.assisted,
         "retries": choice.retries,
@@ -461,12 +469,19 @@ def create_beat(
     seq = _next_seq(adventure) if seq is None else seq
     context = build_beat_context(adventure, seq=seq, prev_choice=prev_choice)
 
+    # The router is built here rather than through the module-level seam so the
+    # row can record *who* answered. Which model wrote a beat is not trivia: the
+    # misattribution this day fixes is model-dependent, the router has a fallback
+    # chain, and a stamp missing from the row is a stamp that cannot be backfilled.
+    router = ai_router.ModelRouter.from_settings()
+    model = ai_router.model_label(router.select_provider())
+
     started = time.monotonic()
-    contract = ai_router.generate_beat(context)
+    contract = router.generate_beat(context)
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     try:
-        beat = _persist_beat(adventure, seq, contract)
+        beat = _persist_beat(adventure, seq, contract, model=model)
     except IntegrityError:
         # Another stream on the same adventure wrote this position while we were
         # generating. The unique constraint settles it and we adopt their beat
@@ -482,12 +497,13 @@ def create_beat(
         return winner
 
     logger.info(
-        "story.beat adventure=%s beat=%s seq=%d gen_ms=%d emotion=%s interaction=%s choices=%d "
-        "final=%d prompt_chars=%d",
+        "story.beat adventure=%s beat=%s seq=%d gen_ms=%d model=%s emotion=%s interaction=%s "
+        "choices=%d final=%d prompt_chars=%d",
         adventure.id,
         beat.id,
         seq,
         elapsed_ms,
+        model,
         contract.emotion,
         (beat.interaction or {}).get("type"),
         len(beat.options),
@@ -497,6 +513,11 @@ def create_beat(
         # with every beat told.
         len(context["system"]) + len(context["user"]),
     )
+    # Written, then read back against what the child actually did. Neither check
+    # changes the beat (see their section header); both make a defect that used to
+    # be found by a parent visible in the log instead.
+    _log_consequence_fidelity(beat, prev_choice)
+    _log_choice_distinctness(beat)
     # Folded into the bounded summary immediately, so the *next* beat's prompt
     # already knows this one happened without carrying its text (§8.6).
     refresh_running_summary(adventure)
@@ -601,13 +622,174 @@ def normalise_choices(interaction: dict[str, Any], *, is_final: bool) -> dict[st
     return interaction
 
 
+# ---------------------------------------------------------------------------
+# Consequence fidelity (§8.5) — measured, not blocked
+# ---------------------------------------------------------------------------
+# Both checks below **log and let the beat through**. Blocking would mean either a
+# child staring at a dead screen or a second paid generation on a beat that is
+# usually fine, and the defect they watch for is one the prompt is what actually
+# fixes (`story_prompts.CONSEQUENCE_RULE`, `CHOICE_RULE`). What they buy is a rate
+# an operator can see in the log and a test can assert on — the Day-5 review had to
+# read fourteen beats by hand to find that ~21% of them misreported the child.
+
+#: Words that identify nothing on their own. Deliberately short: a choice label is
+#: two or three words, so almost everything in it is doing work. Verbs stay in —
+#: "look", "count", "wave" are exactly what makes one option a different action
+#: from another.
+_FUNCTION_WORDS = frozenset(
+    """a an and are as at be by for from in into is it its let lets my me of on or
+    our over that the their them then there they this to under up us we with you
+    your""".split()
+)
+
+
+def _stem(word: str) -> str:
+    """A crude singular/present form, enough to match "looked" against "look".
+
+    Not a linguistics exercise: the alternative to three lines of suffix-stripping
+    is a stemming dependency for a check whose output is a log line. Words it gets
+    wrong ("waving" -> "wav") cost a missed flag, never a blocked beat.
+    """
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
+
+def _content_tokens(text: str) -> list[str]:
+    """The stemmed words in `text` that could identify one option rather than another."""
+    letters = "".join(char if char.isalpha() else " " for char in text.casefold())
+    return [_stem(word) for word in letters.split() if word not in _FUNCTION_WORDS]
+
+
+def _content_words(text: str) -> set[str]:
+    """`_content_tokens` as a set, for the comparisons that do not care about order."""
+    return set(_content_tokens(text))
+
+
+def misattributed_options(
+    narration: str,
+    *,
+    chosen_label: str,
+    offered_labels: Sequence[str],
+) -> list[str]:
+    """Options the child did **not** take that this narration appears to be about.
+
+    The failure it names is specific and it reached a child: they tapped "Count the
+    spiders" and were told *"Spidey chose to point at the toy elephant"* — a card
+    that was never even on the screen. §8.5's whole promise is that the world reacts
+    to what *they* did, and a pre-reader cannot argue with a story about themselves.
+
+    Comparison is on each option's **distinctive** words — the ones no other card
+    on that screen used. It has to be: every option at the failing decision point
+    was about spiders, so the shared noun says nothing about which card the beat is
+    telling, and only "count" against "look" against "wave" does. An un-chosen
+    option counts as named when its distinctive words turn up in the narration and
+    the chosen option's do not, because a beat that names both got it right and
+    then mentioned the road not taken.
+
+    A chosen option with *no* distinctive words says nothing either way — "Look up
+    the river" against "Look down the river" differ by a preposition, and a beat
+    that faithfully narrated one of them would look identical to a beat that
+    narrated the other. Those return nothing rather than a guess; they are
+    `alike_option_labels`' to report, upstream, before the cards are ever shown.
+
+    Deliberately word-level and therefore approximate in both directions. It will
+    miss a substitution written entirely in synonyms, and it will occasionally flag
+    a beat that named the chosen action in words of its own while mentioning
+    another card's scenery. Both are acceptable for something whose only output is
+    a log line.
+    """
+    said = _content_words(narration)
+    labels = list(offered_labels)
+    words = {_normalised(label): _content_words(label) for label in labels}
+    chosen_key = _normalised(chosen_label)
+
+    def distinctive(key: str) -> set[str]:
+        others: set[str] = set()
+        for other, other_words in words.items():
+            if other != key:
+                others |= other_words
+        return words.get(key, set()) - others
+
+    tells = distinctive(chosen_key)
+    if chosen_key not in words or not tells or tells & said:
+        return []
+
+    return [
+        label
+        for label in labels
+        if _normalised(label) != chosen_key and distinctive(_normalised(label)) & said
+    ]
+
+
+def alike_option_labels(options: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Labels that are the same action pointed at different things.
+
+    "Count the left frog" / "Count the middle frog" / "Count the right frog" is one
+    option written three times (§14.5 asks for two or three *different* things that
+    happen next). It matters beyond tidiness: the beat that follows cannot tell
+    those taps apart, so it writes whichever one the plan expected — which is how a
+    cosmetic choice set turns a possible misattribution into a certain one.
+
+    Matched on the leading content word, which is the verb in every label a model
+    writes here. Returns the labels that share one, or an empty list.
+    """
+    leading: dict[str, list[str]] = {}
+    for option in options:
+        label = str(option.get("label") or "").strip()
+        tokens = _content_tokens(label)
+        if tokens:
+            leading.setdefault(tokens[0], []).append(label)
+
+    return [label for labels in leading.values() if len(labels) > 1 for label in labels]
+
+
+def _log_consequence_fidelity(beat: Beat, prev_choice: Mapping[str, Any] | None) -> None:
+    """Report a consequence beat that names an action the child did not take."""
+    if not prev_choice:
+        return
+    chosen_label = str(prev_choice.get("chosen_label") or "")
+    offered = [str(label) for label in prev_choice.get("offered_labels") or []]
+    if not chosen_label or len(offered) < 2:
+        return
+
+    named = misattributed_options(beat.narration, chosen_label=chosen_label, offered_labels=offered)
+    if named:
+        logger.warning(
+            "story.consequence_misattributed adventure=%s beat=%s seq=%d chose=%r narrated=%r",
+            beat.adventure_id,
+            beat.id,
+            beat.seq,
+            chosen_label,
+            named,
+        )
+
+
+def _log_choice_distinctness(beat: Beat) -> None:
+    """Report a decision point whose cards are one action in different clothes."""
+    if alike := alike_option_labels(beat.options):
+        logger.warning(
+            "story.choice_options_alike adventure=%s beat=%s seq=%d labels=%r",
+            beat.adventure_id,
+            beat.id,
+            beat.seq,
+            alike,
+        )
+
+
 @transaction.atomic
-def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Beat:
+def _persist_beat(
+    adventure: Adventure, seq: int, contract: BeatContract, *, model: str = ""
+) -> Beat:
     """Write the beat and extend the adventure's emotion arc, together.
 
     One transaction because the arc (§8.8) is a projection of the beats: an arc
     that has recorded a beat which does not exist would make the wellbeing
     down-shift fire on a story that was never told.
+
+    `model` is who wrote it — `provider:model`, or empty when a caller could not
+    say. Stamped at the same moment as the text so the two cannot drift.
     """
     # Normalised here, at the boundary where a model's output becomes our data, so
     # that everything downstream — the voice clip, the caption, the transcript a
@@ -632,6 +814,7 @@ def _persist_beat(adventure: Adventure, seq: int, contract: BeatContract) -> Bea
         interaction=interaction,
         learning=contract.learning.model_dump(mode="json"),
         emotion=contract.emotion,
+        model=model,
         next_hint=contract.next_hint,
         continuity_refs=list(contract.continuity_refs),
     )

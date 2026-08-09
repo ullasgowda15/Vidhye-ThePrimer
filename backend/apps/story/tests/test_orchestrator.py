@@ -524,6 +524,41 @@ class TestTheLastBeatIsAlwaysAnEnding:
         # And the beats before it are asked for the opposite.
         assert "last beat" not in orchestrator.build_beat_context(adventure, seq=2)["user"]
 
+    def test_the_hook_is_demanded_as_a_named_final_sentence(self) -> None:
+        """The close is the one beat whose *shape* is enforced server-side and whose
+        *substance* is not — and the substance is what was ignored: 0 of 5 live
+        closes on the configured model planted a hook, though every one of them came
+        back `type: none` with no cards, because `normalise_choices` makes that true.
+
+        A sentence with a position and a first word is an instruction a model can
+        tell whether it has followed; "plant one small hook" is not.
+        """
+        rule = story_prompts.FINAL_BEAT_RULE
+
+        assert "last sentence of the narration" in rule
+        assert "Tomorrow, let's go and see THING" in rule
+        # A template with holes rather than a finished sentence, because a finished
+        # one gets copied: the first version quoted "the blue elephant … near the
+        # big tree" and a story about frogs and a river closed with it, word for
+        # word. Taking the example away cost compliance (2 closes in 3 planted a
+        # hook, against 3 in 3 with one), so the shape stays and the filling is
+        # named as the story's own.
+        assert "blue elephant" not in rule
+        assert "come from today's story" in rule
+        assert "Never carry over a thing named in these instructions" in rule
+
+    def test_the_close_ends_looking_forward(self, frog_lover, fake_ai) -> None:
+        """Through the write path, on the beat the client will show as the ending."""
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        close = orchestrator.create_beat(adventure, seq=adventure.estimated_beats)
+
+        assert (close.interaction or {})["type"] == "none"
+        last_sentence = close.narration.strip().rstrip("\"'").rsplit(". ", 1)[-1]
+        assert any(
+            phrase in last_sentence.casefold() for phrase in ("tomorrow", "next time", "come back")
+        ), close.narration
+
     def test_options_on_a_final_beat_are_dropped(self) -> None:
         # Cards on the close are cards that lead nowhere: the child taps one and
         # watches the story end on what looks like a mistake.
@@ -612,6 +647,254 @@ class TestTheChoicesAChildIsOffered:
         # One sentence, one TTS call, and it scans as a question.
         assert line.rstrip().endswith("?")
         assert " or " in line
+
+
+class TestTheConsequenceIsAboutWhatTheChildActuallyDid:
+    """§8.5's promise, and the way it was being broken.
+
+    Three of fourteen real consequence beats on the configured model narrated an
+    action the child had not taken — they tapped "Count the spiders" and were told
+    *"Spidey chose to point at the toy elephant"*, a card that was never on the
+    screen. The cause was mechanical: the prompt handed the model a fixed plan
+    stage for the position *and* "name what they chose", and when the tap did not
+    point at the stage, the stage won and the child's action was rewritten to match
+    it.
+
+    The fix is the prompt; the check below it exists to make the residual rate
+    visible rather than parent-discovered.
+    """
+
+    def test_the_plan_stage_is_a_destination_and_not_a_script(self, frog_lover, fake_ai) -> None:
+        adventure = orchestrator.create_adventure(frog_lover)
+        user = orchestrator.build_beat_context(adventure, seq=2)["user"]
+
+        # The stage still travels — a stateless call cannot know which step we are on.
+        assert adventure.plan["skeleton"][1] in user
+        assert "destination, not a script" in user
+        # The conflict is resolved explicitly, in the direction the product requires:
+        # the plan is ours and the tap is theirs.
+        assert "the child's action is what happened" in user
+
+    def test_the_prompt_forbids_narrating_an_action_the_child_did_not_take(self) -> None:
+        consequence = story_prompts.beat_request(
+            seq=2,
+            beat_id="b2",
+            is_first=False,
+            stage="One frog jumps into the water.",
+            prev_choice={"chosen_label": "Count the right frog"},
+        )
+
+        assert story_prompts.CONSEQUENCE_RULE in consequence
+        assert "`Chose:` line" in consequence
+        assert "Never say the child chose" in consequence
+
+    def test_an_un_chosen_option_in_the_narration_is_named(self) -> None:
+        # The founder's own adventure, verbatim: tapped "Count the spiders", told
+        # the story of a card that was never offered.
+        named = orchestrator.misattributed_options(
+            "Spidey looked under the leaf and found one more spider waving hello!",
+            chosen_label="Count the spiders",
+            offered_labels=[
+                "Count the spiders",
+                "Look for another spider",
+                "Wave back to the spiders",
+            ],
+        )
+
+        assert named == ["Look for another spider"]
+
+    def test_a_beat_that_names_the_choice_is_left_alone(self) -> None:
+        # Paraphrase is fine and normal — "counted them all up" for "Count the
+        # spiders" — and a beat that names the chosen option is not misattributed
+        # even when it mentions the scenery of another card.
+        assert (
+            orchestrator.misattributed_options(
+                "Aarav counted the spiders one by one while an elephant watched.",
+                chosen_label="Count the spiders",
+                offered_labels=["Count the spiders", "Look for elephants"],
+            )
+            == []
+        )
+
+    def test_options_that_are_one_action_cannot_be_told_apart(self) -> None:
+        """The known blind spot, written down rather than left to be discovered.
+
+        When the three cards were "Count the left / middle / right frog", the beat
+        that followed said "Aarav chose to watch the frogs" — a misattribution this
+        check cannot see, because every label shares its words with the chosen one.
+        That case is `alike_option_labels`' to catch, one beat earlier, before the
+        cards are ever put on the screen.
+        """
+        assert (
+            orchestrator.misattributed_options(
+                "Aarav chose to watch the frogs, and one green frog jumped in.",
+                chosen_label="Count the right frog",
+                offered_labels=[
+                    "Count the left frog",
+                    "Count the middle frog",
+                    "Count the right frog",
+                ],
+            )
+            == []
+        )
+
+    def test_a_choice_with_nothing_to_tell_it_apart_is_not_guessed_at(self) -> None:
+        """Found live, on the first run of the fixed prompt.
+
+        The child tapped "Look up the river" and the beat said "Pip flutters after
+        you up the river" — faithful. But "up" and "down" are the only things
+        separating those two cards, and they are too common to match on, so the
+        check had nothing left of the chosen label and flagged the third option on
+        the strength of the words "peek" and "water". A guard that reports a beat
+        that got it right is a guard whose number cannot be trusted, so with no
+        distinctive words it reports nothing.
+        """
+        assert (
+            orchestrator.misattributed_options(
+                "Pip flutters after you up the river. Together you peek over a stone "
+                "and see two bright frog eyes blinking at you from the water.",
+                chosen_label="Look up the river",
+                offered_labels=[
+                    "Look up the river",
+                    "Look down the river",
+                    "Peek right at the water",
+                ],
+            )
+            == []
+        )
+
+    def test_a_misattributed_beat_is_logged_rather_than_blocked(
+        self, frog_lover, fake_ai, caplog
+    ) -> None:
+        """End to end through the real write path.
+
+        Logged and *kept*: blocking would leave a child looking at a dead screen and
+        regenerating would pay twice on a beat that is usually fine. What the log
+        buys is a rate an operator can see — the review had to read fourteen beats by
+        hand to find this.
+        """
+        adventure = orchestrator.create_adventure(frog_lover)
+        first = orchestrator.create_beat(adventure, seq=1)
+        # The scripted beat 1 asks for a number, so give it the cards the child
+        # actually saw in the failing case: two genuinely different next-actions.
+        first.interaction = {
+            "type": "choose",
+            "prompt_audio": "Which way?",
+            "expected": None,
+            "choices": [
+                {"key": key, "label": label, "icon_prompt": icon}
+                for key, label, icon in fake_ai.OPTIONS[:2]
+            ],
+        }
+        first.save(update_fields=["interaction", "updated_at"])
+        orchestrator.record_choice(first, chosen_key="follow_river")
+
+        narrated = fake_ai.beat("loves frogs.")
+        narrated["narration"] = "Aarav asked the dragonflies where the singing had gone."
+        fake_ai.queue_beat_response(json.dumps(narrated))
+
+        with caplog.at_level("WARNING", logger="apps.story.orchestrator"):
+            beat = orchestrator.create_beat(
+                adventure, seq=2, prev_choice=orchestrator.turn_from(first)
+            )
+
+        assert beat.narration == narrated["narration"], "the beat is kept, not blocked"
+        assert "story.consequence_misattributed" in caplog.text
+        assert "Ask the dragonflies" in caplog.text
+
+    def test_the_options_the_child_refused_never_reach_the_model(self, frog_lover, fake_ai) -> None:
+        """`turn_from` carries every label; the prompt carries only the chosen one.
+
+        The check needs to know what was on the screen. The model must not: telling
+        it what the child *didn't* pick is handing it three more actions it could
+        mistake for the one that happened.
+        """
+        adventure = orchestrator.create_adventure(frog_lover)
+        beat = orchestrator.create_beat(adventure, seq=2)
+        orchestrator.record_choice(beat, chosen_key="follow_river")
+
+        turn = orchestrator.turn_from(beat)
+        assert turn is not None
+        assert turn["offered_labels"] == [label for _, label, _ in fake_ai.OPTIONS[:2]]
+
+        system = orchestrator.build_beat_context(adventure, seq=3, prev_choice=turn)["system"]
+        turn_layer = system.split("<current_turn")[1]
+        assert "Chose: Follow the sparkling river" in turn_layer
+        assert "dragonflies" not in turn_layer.casefold()
+
+    def test_a_beat_records_the_model_that_wrote_it(self, frog_lover, fake_ai) -> None:
+        # Un-backfillable later, and the whole failure class above is
+        # model-dependent: "which model wrote this" had to be *inferred* during the
+        # review, from option counts and hint phrasing.
+        adventure = orchestrator.create_adventure(frog_lover)
+
+        assert orchestrator.create_beat(adventure, seq=1).model == "scripted"
+
+
+class TestThreeCardsThatAreOneAction:
+    """§14.5's two or three options are *different things that happen next*.
+
+    A live decision point offered "Count the left frog" / "Count the middle frog" /
+    "Count the right frog", and the beat after it could not react to which one was
+    tapped — there was nothing to react to. Cosmetic variants are the condition
+    under which a misattributed consequence stops being likely and becomes certain.
+    """
+
+    def test_the_prompt_asks_for_different_next_actions(self) -> None:
+        rule = story_prompts.CHOICE_RULE
+
+        assert "somewhere the others do not" in rule
+        assert "count the middle frog" in rule, "the counter-example is the useful part"
+
+    def test_labels_sharing_a_verb_are_reported(self) -> None:
+        alike = orchestrator.alike_option_labels(
+            [
+                {"key": "count_left", "label": "Count the left frog"},
+                {"key": "count_middle", "label": "Count the middle frog"},
+                {"key": "wave", "label": "Wave to the frogs"},
+            ]
+        )
+
+        assert alike == ["Count the left frog", "Count the middle frog"]
+
+    def test_genuinely_different_options_are_not(self) -> None:
+        assert (
+            orchestrator.alike_option_labels(
+                [
+                    {"key": key, "label": label}
+                    for key, label, _ in (
+                        ("follow_river", "Follow the sparkling river", ""),
+                        ("ask_dragonflies", "Ask the dragonflies", ""),
+                        ("sing_along", "Sing along with the chorus", ""),
+                    )
+                ]
+            )
+            == []
+        )
+
+    def test_a_near_duplicate_decision_point_is_logged_and_still_offered(
+        self, frog_lover, fake_ai, caplog
+    ) -> None:
+        # Log only, like the misattribution check: a child mid-story must get their
+        # cards, and the prompt is what actually fixes this.
+        adventure = orchestrator.create_adventure(frog_lover)
+        alike = fake_ai.beat("loves frogs.")
+        alike["interaction"] = {
+            "type": "choose",
+            "prompt_audio": "Which frog?",
+            "expected": None,
+            "choices": [
+                {"key": "count_left", "label": "Count the left frog", "icon_prompt": "a frog"},
+                {"key": "count_right", "label": "Count the right frog", "icon_prompt": "a frog"},
+            ],
+        }
+        fake_ai.queue_beat_response(json.dumps(alike))
+
+        with caplog.at_level("WARNING", logger="apps.story.orchestrator"):
+            beat = orchestrator.create_beat(adventure, seq=2)
+
+        assert len(beat.options) == 2
+        assert "story.choice_options_alike" in caplog.text
 
 
 class TestOneBeatAsksTheChildToCount:
@@ -704,6 +987,69 @@ class TestABeatStoredInAnOlderShapeStillPlays:
         beat = Beat(interaction={"type": "choose", "choices": [42, None, {"key": "river"}]})
 
         assert [option["key"] for option in beat.options] == ["river"]
+
+    @pytest.mark.django_db(transaction=True, serialized_rollback=True)
+    def test_a_saved_row_in_the_old_shape_streams_to_the_child(
+        self, frog_lover, fake_ai, monkeypatch
+    ) -> None:
+        """The regression this class exists for, driven the way it actually happened.
+
+        The three tests above build `Beat(...)` objects that were never saved, which
+        is the synthetic version of a defect that lived specifically in *a stored row
+        reaching the SSE path mid-response*: the coercion could regress and they
+        would still pass, because nothing here would have opened a stream. This one
+        saves the row and drives `streaming.stream_beat` over it — an exception in
+        `Beat.options` surfaces as a half-sent response and a dead screen for a child
+        who was mid-adventure when the shape changed, so the assertion is the whole
+        frame sequence, not the return value of a property.
+
+        The follow-timeout is shortened because this beat has no media and nobody is
+        producing any: the point being tested is that the stream reaches `done`.
+        """
+        from apps.story import streaming
+        from tests.test_adventures import frames_of
+
+        adventure = orchestrator.create_adventure(frog_lover)
+        Beat.objects.create(
+            adventure=adventure,
+            seq=1,
+            narration="You are back at the playground, and the swings are empty.",
+            scene={"setting": "a playground", "illustration_prompt": "an empty playground at dusk"},
+            interaction={
+                "type": "choose",
+                "prompt_audio": "Which one shall we try?",
+                "expected": None,
+                "choices": ["the big slide", "the tall swing"],
+            },
+            emotion="playful_curious",
+        )
+        monkeypatch.setattr(orchestrator, "MEDIA_FOLLOW_TIMEOUT_S", 0.1)
+
+        async def collect() -> list[bytes]:
+            return [chunk async for chunk in streaming.stream_beat(adventure)]
+
+        chunks = async_to_sync(collect)()
+
+        assert chunks[0] == streaming.OPEN_FRAME
+        frames = frames_of([chunk.decode() for chunk in chunks])
+        assert [event for event, _ in frames] == ["beat", "prefetch", "done"]
+
+        sent = dict(frames)
+        assert sent["done"]["status"] == streaming.AWAITING_CHOICE
+        # Coerced on the way out, with no picture — a label was never written to be
+        # drawn, and a card renders without one.
+        assert sent["beat"]["choices"] == [
+            {"key": "the_big_slide", "label": "the big slide", "imageUrl": None},
+            {"key": "the_tall_swing", "label": "the tall swing", "imageUrl": None},
+        ]
+        # And the frame no longer contradicts its own declared type (`sse.ts`
+        # `BeatEvent.interaction.choices` is `{key,label,icon_prompt}[]`). Shipping
+        # the stored blob verbatim put bare strings here under that type, which is
+        # the same bug one layer out from where it was fixed.
+        assert sent["beat"]["interaction"]["choices"] == [
+            {"key": "the_big_slide", "label": "the big slide", "icon_prompt": ""},
+            {"key": "the_tall_swing", "label": "the tall swing", "icon_prompt": ""},
+        ]
 
 
 class TestNoChoiceCanLose:

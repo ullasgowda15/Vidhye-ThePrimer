@@ -50,8 +50,10 @@ class AdventureAdmin(admin.ModelAdmin):
 
 @admin.register(Beat)
 class BeatAdmin(admin.ModelAdmin):
-    list_display = ["adventure", "seq", "emotion", "safety_status", "created_at"]
-    list_filter = ["safety_status", "emotion"]
+    # `model` is listed and filterable because the question it answers is always
+    # asked across rows: which model wrote the beats that got something wrong.
+    list_display = ["adventure", "seq", "emotion", "model", "safety_status", "created_at"]
+    list_filter = ["safety_status", "emotion", "model"]
     search_fields = ["narration", "adventure__title"]
     readonly_fields = ["created_at", "updated_at"]
 

@@ -130,6 +130,23 @@ def test_router_fails_clearly_when_nothing_is_configured() -> None:
         router.generate_beat(CONTEXT)
 
 
+def test_a_generated_row_can_say_who_wrote_it() -> None:
+    """`provider:model`, which is what a beat records (`Beat.model`).
+
+    Both names, because neither is enough on its own: the same model id is
+    reachable through more than one provider, and a provider name says nothing
+    about which model behind it answered.
+    """
+    from apps.story.ai.router import AnthropicProvider, model_label
+
+    assert model_label(AnthropicProvider(api_key="k", model="claude-opus-5")) == (
+        "anthropic:claude-opus-5"
+    )
+    # A provider that names no model reduces to itself rather than to a lie about
+    # some default.
+    assert model_label(FakeProvider([])) == "fake"
+
+
 def test_router_rejects_an_empty_context() -> None:
     router = ModelRouter(providers=[FakeProvider([json.dumps(VALID_BEAT)])])
 

@@ -31,17 +31,48 @@ Build it around what the child loves. The learning objective belongs inside the 
 plot, never announced.\
 """
 
+#: How the plan's stage for this beat is handed over.
+#:
+#: Written as a *destination* because the alternative was measured: with the stage
+#: stated as what this beat covers, a tap that pointed somewhere else lost — the
+#: model reconciled the conflict by rewriting the child's action to match the
+#: stage, and told a four-year-old they had chosen something they never touched
+#: (Day 5 review, P0-1). The plan is ours; the tap is theirs. When they disagree,
+#: the plan is what bends.
+STAGE_RULE = """\
+The plan expects this beat to move the story toward this stage: {stage}
+
+That is a destination, not a script for this beat, and never a description of \
+what the child has just done. Get there from wherever the child has taken us. If \
+the stage and the child's own action disagree, the child's action is what \
+happened — bend the stage toward it, or leave the stage for a later beat.\
+"""
+
 #: Said when the beat follows a choice. The word doing the work is **name**: a
 #: model asked only to "continue" writes a beat that would have followed either
 #: option, and a consequence the child cannot recognise as theirs is not a
 #: consequence at all (§8.5) — agency is the whole point of asking.
+#:
+#: The second paragraph is the P0 the Day-5 review found: ~21% of real consequence
+#: beats narrated an action the child had not taken, several of them in the exact
+#: words "you chose to X". The label is right there in the `Chose:` line, so the
+#: constraint can be stated as something checkable rather than as a sentiment.
 CONSEQUENCE_RULE = """\
-The child has just chosen, and the DATA below says what they picked. This beat \
-is the consequence. Name what they chose in the narration — the place they went, \
-the creature they helped, the thing they tried — so it is unmistakably *their* \
-choice that changed the world. Show the change in scene.illustration_prompt too, \
-not only in the words. A beat that would have read the same after the other \
-option is the one thing this must not be.\
+The child has just chosen, and the DATA below says what they picked on its \
+`Chose:` line. That line is the fact this beat is written from. Name that action \
+in the narration — the place they went, the creature they helped, the thing they \
+tried — so it is unmistakably *their* choice that changed the world. Show the \
+change in scene.illustration_prompt too, not only in the words.
+
+Never say the child chose, decided, wanted or tried anything other than the \
+`Chose:` line. "You chose to …" and "<name> chose to …" may be completed only \
+with that line or a plain paraphrase of it, and do not tell the child what they \
+meant to do next — a false sentence about their own action is one a pre-reader \
+cannot contest. Where the tap and the plan point in different directions, the \
+story goes where the child took it.
+
+A beat that would have read the same after the other option is the one thing this \
+must not be.\
 """
 
 #: Said when the child needed a hand. §8.5 in one paragraph: struggle is
@@ -59,13 +90,29 @@ last one in a way the child would notice. Nothing was lost and nothing is behind
 #: Said on every beat that is not the last one. The 2-3 bound is §14.5's "one
 #: decision at a time, max 2-3 options"; the pictures are §14.4, because a text
 #: list excludes the entire audience.
+#:
+#: "Different next-actions" is spelled out with its counter-example because the
+#: cosmetic variant is what a model reaches for under pressure: a live beat
+#: offered "Count the left frog" / "Count the middle frog" / "Count the right
+#: frog", and the beat after it could not possibly react to which one was tapped.
+#: Three cards that are one action are three cards that cannot diverge, which is
+#: the condition under which a misattributed consequence stops being likely and
+#: becomes guaranteed.
 CHOICE_RULE = """\
 End this beat by giving the child something to do. Prefer interaction.type \
 "choose" with two or three options in interaction.choices — each one a different \
 thing that happens next, each leading somewhere good. There are no wrong options \
-and no option that ends the story badly. Give every option a short spoken label \
-and an icon_prompt describing one simple picture of it: a place, an object, an \
-action, no characters and no writing in the image.\
+and no option that ends the story badly.
+
+Each option must take the story somewhere the others do not. The same action \
+aimed at three things ("count the left frog", "count the middle frog", "count the \
+right frog") is one option written three times, and the beat that follows cannot \
+tell which one the child picked — so the tap stops meaning anything. Different \
+verbs, different outcomes.
+
+Give every option a short spoken label and an icon_prompt describing one simple \
+picture of it: a place, an object, an action, no characters and no writing in the \
+image.\
 """
 
 #: Said instead of `CHOICE_RULE` on the one beat that asks the child to count
@@ -99,14 +146,35 @@ a test.\
 
 #: Said only on the last beat (§8.8). The hook is the reason a child asks to come
 #: back, and it is the one thing a model will not produce unless asked.
+#:
+#: Asked for as a *named final sentence* because merely asking got it 0 times in 5
+#: live closes on the configured model (Day 5 review, P1-1): the close's shape is
+#: enforced server-side (`orchestrator.normalise_choices`) and its substance is
+#: not, so the one instruction with nothing behind it is the one that was ignored.
+#: A sentence with a position and a first word is an instruction a model can tell
+#: whether it has followed.
+#:
+#: The example is a *shape with holes in it*, and that is the second lesson. A
+#: finished example sentence — "Tomorrow, let's go and find the blue elephant. I
+#: saw him near the big tree." — got copied word for word into the close of a story
+#: about frogs and a river. Removing it entirely cost compliance instead (2 closes
+#: in 3 planted a hook, against 3 in 3 with one). A template the model has to fill
+#: keeps the reliability without handing it a sentence it can lift.
 FINAL_BEAT_RULE = """\
 This is the last beat of the sitting. Land the story: the problem is solved, \
 everyone is safe, and the companion says something warm to the child by name. \
-Then plant one small hook for tomorrow — something the companion has found or \
-noticed that they could go and see next time. Nothing is left unresolved and \
-nothing is frightening. Set interaction.type to "none" and interaction.choices to \
-null: the child is not being asked for anything here, they are being said \
-goodnight to.\
+Nothing is left unresolved and nothing is frightening.
+
+Then plant one small hook for tomorrow, and make it the **last sentence of the \
+narration**. The companion speaks it in their own voice; its shape is "Tomorrow, \
+let's go and see THING. I found it PLACE." THING is one concrete thing they have \
+found or noticed — not "an adventure", not "something new" — and both THING and \
+PLACE come from today's story or this child's own world. Never carry over a thing \
+named in these instructions. A close that ends without that sentence is not \
+finished; it is the reason the child asks to come back.
+
+Set interaction.type to "none" and interaction.choices to null: the child is not \
+being asked for anything here, they are being said goodnight to.\
 """
 
 
@@ -126,6 +194,9 @@ def beat_request(
     `stage` is the line from the plan skeleton this beat is meant to land, passed
     explicitly rather than left for the model to infer from the plan: "which step
     are we on" is the one thing about the plan that a stateless call cannot know.
+    It is handed over as a destination (`STAGE_RULE`) rather than as this beat's
+    content, because a stage stated as content outranks the child's own tap and
+    the model rewrites the tap to fit it.
 
     `is_final` is the same kind of fact and matters more. §8.8 requires the last
     beat of every sitting to be warm and safe, and a stateless call has no way to
@@ -137,7 +208,7 @@ def beat_request(
     ]
 
     if stage:
-        lines.append(f"This beat covers this stage of the plan: {stage}")
+        lines.append(STAGE_RULE.format(stage=stage))
 
     if is_first:
         lines.append(
