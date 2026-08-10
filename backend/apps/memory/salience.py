@@ -69,6 +69,11 @@ WEIGHTS: dict[str, float] = {
 #: different actions: one lowers a score, the other skips the row entirely.
 DUPLICATE_SIMILARITY = 0.7
 
+#: What separates a memory's substance from the scene it happened in. `candidates`
+#: writes several types as `<what the child did> — <the beat's first clause>`, and
+#: only the half before this is what the memory is *about*.
+GIST_SEPARATOR = " — "
+
 #: Words that carry no topic. Small and deliberately not shared with
 #: `orchestrator._FUNCTION_WORDS`, which answers a different question — whether
 #: two *choice labels* are too alike to offer a child. Coupling the two would mean
@@ -200,9 +205,8 @@ def select(
     make today's similar moment unwritable, which is what the caller's recency
     window is for.
 
-    The pass is greedy and strongest-first, and each candidate's novelty is
-    measured against everything accepted so far. Two consequences worth being
-    explicit about:
+    The pass is greedy and strongest-first, and each candidate is compared against
+    everything accepted so far. Three consequences worth being explicit about:
 
     * A run is **order-independent** given the same inputs, because the ordering
       is by base score and ties break on content. The same session consolidated
@@ -210,11 +214,21 @@ def select(
     * A candidate can be dropped for being *like something better*, not only for
       being unremarkable. That is the intended behaviour — the second-best
       telling of one moment is not a second moment.
+    * **The two comparisons use different text, on purpose.** "Is this the same
+      memory?" is an identity question and is asked of the *gist* (`_signature`),
+      because the beat anchor we append for readability is exactly what differs
+      between two records of one act. "How new is this?" is a question of degree
+      and is asked of the whole sentence (`_tokens`), because the anchor is real
+      information about where and when it happened — and because a four-token
+      gist is far too coarse a thing to derive a continuous score from. Asking
+      both of the gist made two genuinely different choices score as barely novel;
+      asking both of the whole sentence let two identical acts through as
+      separate memories, which is the bug this split exists to fix.
     """
     cut = threshold() if cut is None else cut
     cap = limit() if cap is None else cap
 
-    held = [_tokens(text) for text in (existing or [])]
+    prior = [_Comparable.of(text) for text in (existing or [])]
     # Ranked by everything except novelty, which is what "strongest-first" can
     # mean before novelty is known. Content breaks ties so the order is total.
     ranked = sorted(
@@ -227,14 +241,14 @@ def select(
     duplicates: list[Candidate] = []
 
     for candidate in ranked:
-        tokens = _tokens(candidate.content)
-        closest = max((_similarity(tokens, other) for other in held), default=0.0)
+        current = _Comparable.of(candidate.content)
 
-        if closest >= DUPLICATE_SIMILARITY:
+        if max((current.identity(other) for other in prior), default=0.0) >= DUPLICATE_SIMILARITY:
             duplicates.append(candidate)
             continue
 
-        scored = replace(candidate, signals=replace(candidate.signals, novelty=1.0 - closest))
+        familiar = max((current.likeness(other) for other in prior), default=0.0)
+        scored = replace(candidate, signals=replace(candidate.signals, novelty=1.0 - familiar))
         if scored.score < cut or len(kept) >= cap:
             dropped.append(scored)
             continue
@@ -243,9 +257,34 @@ def select(
         # Accepted content joins the comparison set, so the *next* candidate is
         # measured against what we are actually keeping and not only against
         # history. This is the diversity half of the filter.
-        held.append(tokens)
+        prior.append(current)
 
     return Selection(kept=kept, dropped=dropped, duplicates=duplicates)
+
+
+@dataclass(frozen=True, slots=True)
+class _Comparable:
+    """One memory's content, tokenised both ways `select` needs to compare it.
+
+    Built once per candidate rather than re-derived per comparison: the pass is
+    quadratic in the number of candidates, and tokenising inside the inner loop
+    was the obvious way to make a cheap filter expensive.
+    """
+
+    gist: frozenset[str]
+    whole: frozenset[str]
+
+    @classmethod
+    def of(cls, content: str) -> _Comparable:
+        return cls(gist=_signature(content), whole=_tokens(content))
+
+    def identity(self, other: _Comparable) -> float:
+        """Is this the same memory as `other`? Asked of the gist."""
+        return _similarity(self.gist, other.gist)
+
+    def likeness(self, other: _Comparable) -> float:
+        """How much of `other` is already in this? Asked of the whole sentence."""
+        return _similarity(self.whole, other.whole)
 
 
 def _base_score(candidate: Candidate) -> float:
@@ -259,10 +298,53 @@ def _base_score(candidate: Candidate) -> float:
 
 
 def novelty_against(content: str, existing: list[str]) -> float:
-    """How new `content` is, 0-1. Exposed for the tests and for Day 9's re-scoring."""
+    """How new `content` is, 0-1 — a matter of degree, so the whole sentence.
+
+    `is_the_same_memory` is the other half of the pair and asks the identity
+    question of the gist instead. See `select` on why the two differ.
+    """
     tokens = _tokens(content)
     closest = max((_similarity(tokens, _tokens(other)) for other in existing), default=0.0)
     return 1.0 - closest
+
+
+def is_the_same_memory(content: str, existing: list[str]) -> bool:
+    """Would writing `content` record something we already hold (§11.4)?
+
+    Exposed alongside `novelty_against` so the two questions are visibly separate
+    and testable apart — and for Day 9, which will need the same check before
+    re-writing a memory it has just reinforced.
+    """
+    gist = _signature(content)
+    return any(_similarity(gist, _signature(other)) >= DUPLICATE_SIMILARITY for other in existing)
+
+
+def _signature(content: str) -> frozenset[str]:
+    """What a memory is *about*, as tokens — the thing comparisons should use.
+
+    The gist, not the whole sentence, and the distinction is load-bearing rather
+    than tidy. `candidates` appends the beat's first clause to several memory types
+    so the sentence reads in context, and that appended half is precisely the part
+    that *differs* between two records of the same act. Comparing whole sentences
+    therefore let the context defeat the filter it was supposed to feed: a child
+    who tapped "Count the spiders" on two different beats got two memories whose
+    only difference was the scenery behind them.
+
+    Found on the founder's own first consolidation — `candidates=4 kept=3
+    duplicate=0`, with two of the three kept rows saying the same thing. Repetition
+    of an act is already carried by the `repetition` factor and by the `preference`
+    type (§11.7); it must not also arrive as extra rows.
+
+    Model-proposed content has no separator and is compared whole, which is
+    correct — the model writes the memory as one clause with no scenery appended.
+    """
+    return _tokens(_gist(content))
+
+
+def _gist(content: str) -> str:
+    """`content` up to the beat anchor, or all of it when there is no anchor."""
+    head, separator, _ = content.partition(GIST_SEPARATOR)
+    return head if separator else content
 
 
 def _tokens(text: str) -> frozenset[str]:

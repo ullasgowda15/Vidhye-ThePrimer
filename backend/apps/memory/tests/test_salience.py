@@ -20,6 +20,7 @@ from apps.memory.salience import (
     WEIGHTS,
     Candidate,
     Signals,
+    is_the_same_memory,
     novelty_against,
     salience,
     select,
@@ -150,6 +151,103 @@ def test_many_raw_events_become_a_few_memories() -> None:
     kept = " | ".join(item.content for item in selection.kept)
     assert "Sparkle" in kept
     assert "tapped to carry on" not in kept
+
+
+def test_the_same_act_on_two_beats_is_one_memory_however_the_scene_differed() -> None:
+    """The bug the founder's first real consolidation exposed.
+
+    `candidates` appends the beat's first clause to a memory so the sentence reads
+    in context — and that clause is exactly what differs between two records of the
+    same tap. Comparing whole sentences let the context defeat the filter, and a
+    child who chose "Count the spiders" on two beats got two memories that said the
+    same thing. Comparisons run on the gist for this reason.
+    """
+    selection = select(
+        [
+            candidate(
+                'Spidey chose "Count the spiders" — Good morning, Spidey!',
+                child_initiated=0.6,
+                emotional_intensity=0.5,
+            ),
+            candidate(
+                'Spidey chose "Count the spiders" — Spidey looked under the leaf and '
+                "found one more spider waving hello!",
+                child_initiated=0.6,
+                emotional_intensity=0.5,
+            ),
+        ],
+        existing=[],
+        cut=0.5,
+        cap=6,
+    )
+
+    assert len(selection.kept) == 1, [item.content for item in selection.kept]
+    assert len(selection.duplicates) == 1
+
+
+def test_two_different_choices_are_not_the_same_memory() -> None:
+    """The other side of that fix: the filter must not over-collapse.
+
+    "Count the spiders" and "Count the elephants" are two things the child did, and
+    treating them as one record would lose one — the same failure as keeping
+    duplicates, pointing the other way.
+
+    Asserted on the *identity* question rather than on how many rows survive.
+    Whether the second one also clears the threshold is a scoring matter — it
+    depends on how much text the two share, which is what `novelty` is for and what
+    `top_dropped` in the consolidation log exists to make visible.
+    """
+    spiders = 'Spidey chose "Count the spiders" — a web by the window.'
+    elephants = 'Spidey chose "Count the elephants" — a parade in the hall.'
+
+    assert is_the_same_memory(elephants, [spiders]) is False
+
+    selection = select(
+        [
+            candidate(spiders, child_initiated=0.6, emotional_intensity=0.6),
+            candidate(elephants, child_initiated=0.6, emotional_intensity=0.6),
+        ],
+        existing=[],
+        cut=0.5,
+        cap=6,
+    )
+    assert selection.duplicates == []
+    assert len(selection.kept) >= 1
+
+
+def test_a_memory_with_no_anchor_is_compared_whole() -> None:
+    """Model-proposed content carries no separator; it must still dedupe."""
+    selection = select(
+        [
+            candidate(
+                "Spidey named the little dragon Sparkle.",
+                child_initiated=1.0,
+                emotional_intensity=0.9,
+            ),
+        ],
+        existing=["Spidey named the little dragon Sparkle."],
+        cut=0.5,
+    )
+
+    assert selection.kept == []
+    assert len(selection.duplicates) == 1
+
+
+def test_identity_and_novelty_ask_different_questions_of_different_text() -> None:
+    """The split `select` depends on, pinned directly.
+
+    Identity reads the gist, so the same act in two scenes is one memory. Novelty
+    reads the whole sentence, so it stays a usable continuous score instead of
+    collapsing to a handful of values off a four-token gist — which is what made
+    two genuinely different choices both score as barely novel.
+    """
+    held = ['Spidey chose "Count the spiders" — Good morning, Spidey!']
+    repeat = 'Spidey chose "Count the spiders" — the garden gate creaked open at dawn.'
+
+    # Same act, different scene: one memory...
+    assert is_the_same_memory(repeat, held) is True
+    # ...but not *nothing* new, because where it happened is real information.
+    assert novelty_against(repeat, held) > 0.3
 
 
 def test_two_tellings_of_one_moment_become_one_memory() -> None:
