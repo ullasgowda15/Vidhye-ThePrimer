@@ -1,0 +1,35 @@
+Day 7 is built and committed as f9fd409.
+
+What shipped
+
+The pipeline (backend/apps/safety/) — every generation now traverses §13.2:
+
+┌────────────────────────┬──────────────────────────────────────────────────────────────────────┐
+│         Stage          │                                Module                                │
+├────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ Input guard            │ scrub.py + pipeline.guard_input                                      │
+├────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ Deterministic policy   │ policy.py                                                            │
+├────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ Independent classifier │ classifier.py (separate call, prompt, and model via AI_SAFETY_MODEL) │
+├────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ Warm fallbacks         │ fallbacks.py (hand-written, 3 per age band)                          │
+├────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ Records                │ incidents.py, escalation.py, SafetyIncident + admin queue            │
+├────────────────────────┼──────────────────────────────────────────────────────────────────────┤
+│ Image gate             │ apps/media/moderation.py → apps/media/stock.py                       │
+└────────────────────────┴──────────────────────────────────────────────────────────────────────┘
+
+Acceptance criteria
+
+1–6 and 8 are met and covered by tests. Criterion 7 is met on the debt half (Day 1–6 P0/P1 verified closed in the tree) — CI is the one thing I could not verify, because I did not push. Say the word and I'll push so the run happens.
+
+Three things worth knowing
+
+The profile-field hole was real. avoid_topics, fears and first_name build the safety-policy layer, which is an instruction layer — the kind="data" fence never covered them, so a parent could type into the top of the system prompt. That's now scrubbed at render and again at guard_input.
+
+Writing the red-team corpus found four genuine gaps, all fixed here: a parent typing "spiders" didn't catch "spider"; wanted to die slipped the self-harm rule; "no safety rules" slipped the jailbreak rule; and tag-forgery payloads survived as prose once the brackets were stripped.
+
+What is not proven. The classifier and the vision moderator have no live provider in this environment, so their recall is untested — what's tested is that their absence is recorded as a degradation and never as a pass. Real recall measurement is §19.7's offline eval suite, a later day. The founder manual test in §8 is also still yours to run.
+
+Stopping here — not starting Day 8.
