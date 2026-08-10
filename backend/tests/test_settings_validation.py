@@ -1,11 +1,15 @@
 """Configuration that must fail the boot rather than fail quietly (§13.3, §19.3).
 
-`AI_BEAT_MODEL` and `AI_SAFETY_MODEL` are provider-relative and share one
-`AI_PROVIDER_ORDER`, which makes exactly one mistake both easy and invisible:
-lead with `openrouter`, set the beat model to a slug, and leave the safety model
-on its Anthropic default. Beats generate; the classifier 400s on every single
-call and the strongest guard in the product is off. Day 7's review found this
-running on the founder's own machine.
+`AI_BEAT_MODEL`, `AI_SAFETY_MODEL` and `AI_MEMORY_MODEL` are provider-relative
+and share one `AI_PROVIDER_ORDER`, which makes exactly one mistake both easy and
+invisible: lead with `openrouter`, set the beat model to a slug, and leave one of
+the others on its Anthropic default. Beats generate; the mispaired one 400s on
+every single call. Day 7's review found this running on the founder's own machine
+with the safety classifier as the casualty.
+
+`AI_MEMORY_MODEL` (Day 8) is in the check for the same reason and defaults to
+whatever `AI_SAFETY_MODEL` is, so it inherits a provider-correct id rather than
+being a third thing to remember.
 
 The check lives in `config.settings.base` and runs at import, so it is exercised
 here by calling it directly against patched module globals — importing the
@@ -22,19 +26,27 @@ from config.settings import base
 
 @pytest.fixture
 def pairing(monkeypatch: Any) -> Any:
-    """Set the four globals the check reads, then run it."""
+    """Set the globals the check reads, then run it.
+
+    `memory` defaults to the same value as `safety`, mirroring `base.py`'s own
+    default — a test that left it on the developer's real `.env` value would fail
+    on a machine configured for OpenRouter and pass in CI, which is precisely the
+    class of bug this file exists for.
+    """
 
     def run(
         *,
         order: list[str],
         beat: str = "claude-opus-5",
         safety: str = "claude-haiku-4-5-20251001",
+        memory: str | None = None,
         anthropic_key: str = "",
         openrouter_key: str = "",
     ) -> None:
         monkeypatch.setattr(base, "AI_PROVIDER_ORDER", order)
         monkeypatch.setattr(base, "AI_BEAT_MODEL", beat)
         monkeypatch.setattr(base, "AI_SAFETY_MODEL", safety)
+        monkeypatch.setattr(base, "AI_MEMORY_MODEL", safety if memory is None else memory)
         monkeypatch.setattr(base, "ANTHROPIC_API_KEY", anthropic_key)
         monkeypatch.setattr(base, "OPENROUTER_API_KEY", openrouter_key)
         base._check_model_pairing()
@@ -69,6 +81,38 @@ def test_a_slug_under_anthropic_fails_too(pairing: Any) -> None:
             beat="vendor/some-model",
             anthropic_key="test-key",
         )
+
+
+def test_a_mispaired_memory_model_fails_too(pairing: Any) -> None:
+    """The consolidator (§11.4) is in the check for the same reason the grader is.
+
+    Its failure is quieter than the grader's and therefore worse to leave
+    unchecked: `consolidation` treats an unreachable model as a *degradation*, so a
+    mispaired id would mean every sitting consolidating on its rules half only,
+    every night, with nothing but a worker warning to show for it.
+    """
+    with pytest.raises(ImproperlyConfigured, match="AI_MEMORY_MODEL"):
+        pairing(
+            order=["openrouter", "anthropic"],
+            beat="vendor/some-model",
+            safety="vendor/some-grader",
+            memory="claude-haiku-4-5-20251001",
+            openrouter_key="test-key",
+        )
+
+
+def test_the_memory_model_inherits_a_provider_correct_default(pairing: Any) -> None:
+    """`base.py` defaults it to `AI_SAFETY_MODEL`, so it is never a third thing to set."""
+    from config.settings import base as settings_base
+
+    assert settings_base.AI_MEMORY_MODEL == settings_base.AI_SAFETY_MODEL
+
+    pairing(
+        order=["openrouter", "anthropic"],
+        beat="vendor/some-model",
+        safety="vendor/some-grader",
+        openrouter_key="test-key",
+    )
 
 
 def test_a_matched_openrouter_pairing_boots(pairing: Any) -> None:

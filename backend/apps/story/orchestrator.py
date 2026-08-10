@@ -73,6 +73,8 @@ from apps.media.exceptions import MediaBlocked, MediaError
 from apps.media.hashing import hashes_for
 from apps.media.models import Media
 from apps.media.style import style_signature
+from apps.memory import capture as memory_capture
+from apps.memory.tasks import consolidate
 from apps.profiles.models import Child
 from apps.safety import incidents as safety_incidents
 from apps.safety import pipeline as safety
@@ -1232,6 +1234,13 @@ def _persist_beat(
     locked.emotion_arc = [*locked.emotion_arc, contract.emotion]
     locked.save(update_fields=["emotion_arc", "updated_at"])
     adventure.emotion_arc = list(locked.emotion_arc)
+    # Short-term memory (§11.2), on commit rather than here: this function is
+    # atomic and can still lose its race with another stream (`create_beat`
+    # catches the IntegrityError), and a working-memory event for a beat that was
+    # rolled back would be a beat the consolidation job remembers being told and
+    # the child never saw. `capture` swallows everything, so a Redis outage costs
+    # the signal and not the beat.
+    transaction.on_commit(lambda: memory_capture.beat_recorded(beat))
     return beat
 
 
@@ -1514,6 +1523,12 @@ def record_choice(
     # The summary is what the *next* beat is written against, so it has to include
     # this choice before anything is asked to react to it.
     refresh_running_summary(adventure)
+    # §11.2, on the created path only: a double-tap is the same decision arriving
+    # twice, not a second one, and counting it would inflate the salience of
+    # whichever beat had the biggest tap target. Everything the consolidation job
+    # weighs most heavily — what the child said, what they picked, how long they
+    # took — enters memory here.
+    transaction.on_commit(lambda: memory_capture.choice_recorded(beat, choice))
     return choice, True
 
 
@@ -1530,6 +1545,16 @@ def end_adventure(
     from narrative completion on purpose: a child who reached the warm close and a
     child who wandered off after two beats both end a session, and only one of them
     finished a story.
+
+    **This is where memory consolidation is enqueued** (§5.4, §11.4), and the two
+    words that matter are *on commit* and *delay*. On commit, because a task that
+    started before this transaction landed would read a session that is not yet
+    finished and consolidate a sitting it thinks is still running. And `.delay`,
+    because consolidation is a model call plus a handful of embedding calls, and
+    this function returns into `POST /adventures/{id}/end` — the last request a
+    child's device makes before the screen says goodnight. Inline, it would put
+    seconds of provider latency between "all done" and the story closing, which is
+    exactly the spinner §13 forbids.
     """
     with transaction.atomic():
         # No `select_related("session")` here: the FK is nullable, so Django joins
@@ -1546,6 +1571,10 @@ def end_adventure(
         locked.completed_at = timezone.now()
         locked.save(update_fields=["status", "completed_at", "updated_at"])
         _finalise_session(locked, reason)
+        # Inside the transaction that closed the sitting, so the enqueue cannot
+        # happen for a close that rolled back — and so a client sending `end`
+        # twice enqueues once, because the second call returned at the guard above.
+        transaction.on_commit(lambda: _consolidate_session(locked, reason))
 
     logger.info(
         "story.adventure_ended adventure=%s status=%s reason=%s beats=%d",
@@ -1557,6 +1586,29 @@ def end_adventure(
     adventure.status = locked.status
     adventure.completed_at = locked.completed_at
     return locked
+
+
+def _consolidate_session(adventure: Adventure, reason: str) -> None:
+    """Close short-term memory and hand the sitting to the consolidation job.
+
+    Two steps, in this order. The `session_end` event goes into STM *first*, so the
+    log the job reads knows how the sitting ended — a warm close and a child who
+    wandered off contain the same beats and are two different things to remember
+    about a session (§13.6).
+
+    A sitting with no session row cannot be consolidated: the STM key is the
+    session id, and `consolidate` takes one. That is a documented gap rather than a
+    silent one — `session` is nullable because a retention job may prune it
+    (§17.2) — and it is logged, because an adventure ending without a sitting would
+    mean the memory pipeline was quietly not running.
+    """
+    session = adventure.session
+    if session is None:
+        logger.warning("story.consolidate_skipped adventure=%s reason=no_session", adventure.pk)
+        return
+
+    memory_capture.session_closing(session, adventure_id=adventure.pk, reason=reason)
+    consolidate.delay(str(session.pk))
 
 
 def _finalise_session(adventure: Adventure, reason: str) -> None:

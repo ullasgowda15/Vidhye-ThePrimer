@@ -42,6 +42,11 @@ def no_live_providers(settings: Any) -> None:
     settings.ELEVENLABS_VOICE_MAP = {}
     settings.GOOGLE_TTS_API_KEY = ""
     settings.GOOGLE_TTS_VOICE_MAP = {}
+    # The embedding adapter's real provider (§11.3). Blanked with the rest, and
+    # `offline_media` points EMBEDDING_PROVIDER at `local` — a suite that embedded a
+    # child's memories through a live API would be spending money *and* sending
+    # child data to a third party from a test run (§13.8).
+    settings.OPENAI_API_KEY = ""
     # Ship-default `["google"]`, blanked with the rest: the voice failover chain
     # must not reach a real vendor because a developer happens to hold a key.
     settings.TTS_FALLBACK_PROVIDERS = []
@@ -73,17 +78,23 @@ def offline_media(tmp_path: Path, settings: Any) -> Path:
     settings.MEDIA_CDN_BASE_URL = ""
     settings.IMAGE_PROVIDER = "local"
     settings.TTS_PROVIDER = "local"
+    # Deterministic lexical vectors, so the pgvector column, the HNSW index and the
+    # ordering of a nearest-neighbour query are all genuinely exercised with no key
+    # and no spend. See `media.adapters.embedding.LocalHashEmbeddingProvider` on
+    # what this is and is not.
+    settings.EMBEDDING_PROVIDER = "local"
     return tmp_path
 
 
 class ScriptedAIProvider:
     """Stands in for Claude, answering by contract and recording every prompt.
 
-    It dispatches on the schema it is handed — `StoryPlan` or `Beat` — rather than
-    on call order, so a test that only cares about the beat does not have to know
-    that a plan is generated first.
+    It dispatches on the schema it is handed — `StoryPlan`, `Beat` or
+    `SessionMemories` — rather than on call order, so a test that only cares about
+    the beat does not have to know that a plan is generated first, or that ending
+    the sitting asks for memories.
 
-    Four things it does deliberately:
+    Five things it does deliberately:
 
     * **It echoes the child's seeds back.** The narration is built around the first
       "loves X" line it can find in the prompt, so a test can follow one seed from
@@ -102,6 +113,12 @@ class ScriptedAIProvider:
     * **It can be told to answer badly.** `queue_beat_response` pushes raw strings,
       which is how the router's validate-and-repair path (§19.6) is exercised
       end-to-end instead of only in the router's own unit tests.
+    * **It consolidates sparingly.** Handed the memory schema (Day 8), it returns
+      one or two proposals read out of the session digest rather than one per beat.
+      Answering *at all* is the point: without this branch a scripted session would
+      hand the consolidator a beat object, which fails validation twice and lands as
+      a degradation — so `memory.consolidate` would be exercised only ever on its
+      rules half, and `beat_calls` would silently count the consolidator's attempts.
     """
 
     name = "scripted"
@@ -112,6 +129,7 @@ class ScriptedAIProvider:
         self.queued: list[str] = []
         self.plan_calls = 0
         self.beat_calls = 0
+        self.memory_calls = 0
 
     def queue_beat_response(self, *raw: str) -> None:
         """Answer the next beat call(s) with exactly these strings."""
@@ -134,6 +152,10 @@ class ScriptedAIProvider:
             self.plan_calls += 1
             return json.dumps(self.plan())
 
+        if schema.get("title") == "SessionMemories":
+            self.memory_calls += 1
+            return json.dumps(self.memories(user))
+
         self.beat_calls += 1
         if self.queued:
             return self.queued.pop(0)
@@ -152,6 +174,50 @@ class ScriptedAIProvider:
             ],
             "branch_themes": ["follow the river", "ask the dragonflies", "sing along"],
         }
+
+    @staticmethod
+    def memories(digest: str) -> dict[str, Any]:
+        """One or two memory proposals, read out of the session digest (§11.4).
+
+        Deliberately *few*, and deliberately about the child rather than the plot —
+        which is what the real prompt asks for, so a test that asserts "a played
+        session yields a handful of meaningful memories" is asserting against the
+        same shape a live model would return.
+
+        It names the child and the choice by parsing the digest it was handed, so a
+        proposal genuinely echoes something the child did. That matters beyond
+        realism: `consolidation._echoes_child` scores a proposal higher when it
+        names the child's own contribution, and a scripted answer that invented a
+        name would exercise the wrong branch of it.
+        """
+        name = (
+            match.group(1)
+            if (match := re.search(r"^Child: ([^,\n]+)", digest, re.M))
+            else "The child"
+        )
+        chosen = re.search(r'chose "([^"\n]+)"', digest)
+        said = re.search(r'said "([^"\n]+)"', digest)
+
+        proposals: list[dict[str, Any]] = []
+        if chosen:
+            proposals.append(
+                {
+                    "type": "event",
+                    "content": f"{name} chose {chosen.group(1).lower()} at the riverbank.",
+                    "entities": ["topic:rivers"],
+                    "valence": 0.7,
+                }
+            )
+        if said:
+            proposals.append(
+                {
+                    "type": "entity",
+                    "content": f"{name} called it {said.group(1)}.",
+                    "entities": [f"character:{said.group(1).lower()}"],
+                    "valence": 0.8,
+                }
+            )
+        return {"memories": proposals}
 
     #: The options a scripted decision beat offers. Two, with distinct keys and
     #: distinct icons, so a test can make genuinely *different* choices across two

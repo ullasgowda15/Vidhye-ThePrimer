@@ -425,6 +425,103 @@ IMAGE_MODERATION = env("IMAGE_MODERATION", default="auto")
 # Provider-relative, like the two above. Must be a vision-capable model.
 IMAGE_MODERATION_MODEL = env("IMAGE_MODERATION_MODEL", default="claude-haiku-4-5-20251001")
 
+# ---------------------------------------------------------------------------
+# Memory (PRODUCT.md §11)
+# ---------------------------------------------------------------------------
+# The model that consolidates a finished sitting into a few typed memory
+# candidates (§11.4, `apps.memory.prompts`). Provider-relative and riding the same
+# `AI_PROVIDER_ORDER` as the two above, so it is checked by `_check_model_pairing`
+# below for the same reason they are.
+#
+# Defaulted to *whatever the safety grader is using*, rather than to a model id of
+# its own. Both want the same kind of model — small, fast, good at reading a rubric
+# — and inheriting means a deployment that has already picked a provider-correct
+# small model does not have to pick a second one. A literal default here would have
+# shipped an Anthropic id into every OpenRouter deployment and been caught by
+# `_check_model_pairing` below as a boot failure on a configuration that was
+# otherwise entirely correct.
+AI_MEMORY_MODEL = env("AI_MEMORY_MODEL", default=AI_SAFETY_MODEL)
+
+# How long short-term memory lives in Redis (§11.2). "A few hours": long enough
+# that a consolidation job delayed by a worker restart still finds the sitting,
+# short enough that STM is genuinely ephemeral working memory rather than an
+# unpolicied second copy of every session (§13.8). The TTL is a backstop —
+# `consolidation` deletes the key when it is done with it.
+MEMORY_STM_TTL_S = env.int("MEMORY_STM_TTL_S", default=6 * 60 * 60)
+
+# The ceiling on one sitting's event log. A session is a handful of beats and a
+# handful of taps, so this is far above anything real; it exists so a client stuck
+# in a submit loop costs a trimmed list rather than an unbounded Redis key.
+MEMORY_STM_MAX_EVENTS = env.int("MEMORY_STM_MAX_EVENTS", default=500)
+
+# The salience score a candidate must reach to become a long-term memory (§11.4).
+# **This is the tuning dial of the whole memory system.** Too low and the table
+# fills with "the child tapped to carry on", retrieval stops being about what
+# matters, and every prompt gets more expensive; too high and the companion
+# forgets the dragon the child named. `memory.consolidate` logs the score of the
+# best *rejected* candidate on every run, which is how you tell which way to move
+# it.
+MEMORY_SALIENCE_THRESHOLD = env.float("MEMORY_SALIENCE_THRESHOLD", default=0.5)
+
+# The most memories one sitting may produce, whatever they scored. A ceiling as
+# well as a threshold because they fail differently: the threshold judges one
+# moment, this one says what a sitting *is*. Half an hour with a four-year-old
+# contains a handful of things worth remembering.
+MEMORY_MAX_PER_SESSION = env.int("MEMORY_MAX_PER_SESSION", default=6)
+
+# ---------------------------------------------------------------------------
+# "No use of child data to train third-party models" (§13.8) — what that means here
+# ---------------------------------------------------------------------------
+# Two settings in this section send a child's session to a third party:
+# `AI_MEMORY_MODEL` gets the session digest, and `EMBEDDING_PROVIDER` (below) gets
+# each memory's one-sentence content. Encryption at rest does nothing about either
+# — the plaintext is the request body — so the commitment is contractual and it is a
+# *deployment* obligation, written down here because this is where somebody choosing
+# a provider will look:
+#
+#   Every provider named in this file must be used under API terms that exclude
+#   inputs from model training. Anthropic and the OpenAI *API* both exclude API
+#   traffic from training by default; a self-serve consumer plan or a gateway that
+#   resells prompts (some free OpenRouter routes do) does not, and must not be put
+#   in `AI_PROVIDER_ORDER` or `EMBEDDING_PROVIDER` for that reason.
+#
+# What the code can do about it, it does: the digest carries each beat's first
+# clause rather than the whole story, `content` is one sentence, and neither
+# carries anything identifying beyond the child's first name (§13.5's scrub strips
+# PII on the way in). Data minimisation is the part of this that is enforceable in
+# software; the rest is a purchasing decision.
+
+# The key `memory.content` is encrypted with at rest (§11.10, §13.8). Unset here,
+# and derived from SECRET_KEY by `apps.common.crypto`, which keeps development
+# zero-setup; `prod.py` refuses to boot without a real one, because rotating
+# SECRET_KEY would otherwise orphan every memory ever written. Generate one with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+MEMORY_ENCRYPTION_KEY = env("MEMORY_ENCRYPTION_KEY", default="")
+
+# ---------------------------------------------------------------------------
+# Embeddings (PRODUCT.md §11.3, §16.6)
+# ---------------------------------------------------------------------------
+# The third adapter in `apps.media.adapters`, same shape as image and TTS: one
+# provider name, resolved by a registry, and `local` as the deliberate offline
+# choice. `local` is a hashing trick rather than a model — it makes the vector
+# column, the ANN index and the ordering of a nearest-neighbour query exercisable
+# with no key and no spend, and it is lexical, not semantic. Every consolidation
+# run says which was used.
+EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="openai")
+EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="text-embedding-3-small")
+
+# The width of `memory.embedding`, and therefore of every vector we store. Changing
+# it is a migration plus a re-embed of every row, not a config flip — which is why
+# `adapters.embedding.embed` rejects a provider whose output does not match rather
+# than padding or truncating.
+EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=1536)
+
+# Used by the embedding adapter and nowhere else. Anthropic publishes no embedding
+# model, so this is the one place the OpenAI key is load-bearing rather than a
+# fallback seam — which usefully means remembering and story-telling fail
+# independently.
+OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+
 
 # ---------------------------------------------------------------------------
 # Provider/model pairing — checked here, at boot (PRODUCT.md §13.3, §19.3)
@@ -471,6 +568,12 @@ def _check_model_pairing() -> None:
     models = {
         "AI_BEAT_MODEL": AI_BEAT_MODEL,
         "AI_SAFETY_MODEL": AI_SAFETY_MODEL,
+        # Same trap, one app over: `AI_MEMORY_MODEL` rides the same provider order
+        # and holds an Anthropic-flavoured default, so an OpenRouter deployment
+        # that forgot it would consolidate nothing — silently, every night, with
+        # only a warning in a worker log nobody reads (§11.4's model half degrades
+        # rather than failing).
+        "AI_MEMORY_MODEL": AI_MEMORY_MODEL,
     }
     for _setting, _model in models.items():
         looks_like_slug = "/" in _model

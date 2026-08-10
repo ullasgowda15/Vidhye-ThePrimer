@@ -68,6 +68,24 @@ if IMAGE_MODERATION == "off":  # noqa: F405
         "illustrations are actually looked at before a child sees them (§13.8)."
     )
 
+# ---------------------------------------------------------------------------
+# Child memory needs a key of its own (PRODUCT.md §11.10, §13.8)
+# ---------------------------------------------------------------------------
+# `apps.common.crypto` derives a key from SECRET_KEY when this is unset, which is
+# what makes development zero-setup. That derivation is not weaker cryptography —
+# it is a key with the wrong *lifecycle*. Rotating SECRET_KEY is a routine thing to
+# do after a leak, and doing it would silently make every memory ever written
+# undecryptable: the most sensitive data we hold, lost, by a correct security
+# action. §11.10 calls durability a first-class SLO, so this fails the boot.
+if not MEMORY_ENCRYPTION_KEY:  # noqa: F405
+    raise ImproperlyConfigured(
+        "MEMORY_ENCRYPTION_KEY must be set outside development, so that child "
+        "memory (§11.10) does not share a lifecycle with SECRET_KEY — rotating "
+        "SECRET_KEY would otherwise orphan every memory ever written. Generate "
+        'one with: python -c "from cryptography.fernet import Fernet; '
+        'print(Fernet.generate_key().decode())"'
+    )
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

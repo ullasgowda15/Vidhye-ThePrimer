@@ -64,6 +64,29 @@ class PlaySession(UUIDModel):
         blank=True,
     )
 
+    #: The session-row half of §11.1's "Redis + session row" short-term memory.
+    #: A small, bounded mirror of the working memory in Redis: counters, and the
+    #: things the *child* originated (what they said, what they named, what they
+    #: picked). Written by `apps.memory.stm.mirror`.
+    #:
+    #: Not a duplicate of the Redis log and not a place to grow one. Redis holds
+    #: the full ordered sequence and expires it in hours; this holds only the parts
+    #: consolidation would be sorry to lose, because they are the highest-salience
+    #: candidates there are (§11.4) and Redis is allowed to restart. Bounded in
+    #: `stm.MAX_DIGEST_HIGHLIGHTS` so a long sitting cannot turn one JSON column
+    #: into a transcript.
+    stm_digest = models.JSONField(default=dict, blank=True)
+
+    #: When long-term memory was written from this sitting (§11.4), or null.
+    #:
+    #: The idempotency gate on `memory.tasks.consolidate`. Celery is at-least-once,
+    #: so a redelivered task would otherwise double a child's memories — and
+    #: "remembers the same afternoon twice" is a specific, visible way for the
+    #: companion to feel broken. Stamped even when a sitting produced nothing worth
+    #: keeping, because "we looked and there was nothing" is a completed
+    #: consolidation and leaving it null would make it a permanent retry.
+    consolidated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-started_at"]
         indexes = [models.Index(fields=["child", "-started_at"])]

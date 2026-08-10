@@ -31,7 +31,7 @@ COMPOSE := docker compose -f infra/docker-compose.yml
 .PHONY: help venv install up down logs migrate migrations run worker front build \
         test test-backend test-frontend lint lint-backend lint-frontend format \
         typecheck schema client superuser hello-beat smoke smoke-media smoke-story \
-        render-companion render-consistency redteam ping clean
+        render-companion render-consistency redteam memories ping clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -92,6 +92,9 @@ smoke-media: ## Live media smoke test (needs Cloudflare + ElevenLabs keys). Neve
 
 smoke-story: ## Live story smoke test: plan + beat + art + voice. make smoke-story CHILD=<uuid>
 	cd backend && $(ABS_PY) manage.py smoke_story --child $(CHILD) $(SMOKE_ARGS)
+
+memories: ## What the companion remembers: make memories CHILD=<uuid> [MEM_ARGS="--like dragon"]
+	cd backend && $(ABS_PY) manage.py memories --child $(CHILD) $(MEM_ARGS)
 
 ping: ## Round-trip a task through Celery to prove the worker is live
 	cd backend && $(ABS_PY) manage.py shell -c \

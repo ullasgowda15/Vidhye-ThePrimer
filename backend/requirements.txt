@@ -25,3 +25,9 @@ boto3==1.35.99
 # Already present transitively (anthropic/openai both use it); declared because
 # the image adapter calls an image API over raw HTTP rather than through an SDK.
 httpx==0.28.1
+
+# Child memory is encrypted at rest at the application level (§11.10, §13.8) —
+# `apps.common.crypto`. Fernet gives authenticated AES-CBC + HMAC with a versioned
+# token; the standard library has no AES at all, so this is a real dependency
+# rather than a convenience.
+cryptography==44.0.0
