@@ -165,3 +165,82 @@ def test_router_rejects_an_empty_context() -> None:
 
     with pytest.raises(AIConfigurationError):
         router.generate_beat({"system": "", "user": ""})
+
+
+# ---------------------------------------------------------------------------
+# The adapter boundary (Day 7 fix, P0-1)
+# ---------------------------------------------------------------------------
+# The invariant every layer above this one depends on: **the AI layer raises
+# `AIError` and nothing else.** `create_beat` catches `AIError` to serve a warm
+# fallback, `classifier.classify` catches it to degrade rather than pass, and
+# `stream_beat` catches it to end the stream cleanly. Before the fix an SDK
+# timeout satisfied none of those handlers and blew through all three at once,
+# leaving a four-year-old on the thinking companion indefinitely.
+def _timeout() -> Exception:
+    import httpx
+    import openai
+
+    return openai.APITimeoutError(request=httpx.Request("POST", "https://openrouter.test"))
+
+
+def test_an_sdk_timeout_leaves_the_anthropic_adapter_as_an_aierror(monkeypatch) -> None:
+    import anthropic
+
+    from apps.story.ai.router import AIError, AnthropicProvider, ProviderError
+
+    class Timeout:
+        def __init__(self, **_: Any) -> None:
+            self.messages = self
+
+        def create(self, **_: Any) -> Any:
+            raise _timeout()
+
+    monkeypatch.setattr(anthropic, "Anthropic", Timeout)
+
+    with pytest.raises(ProviderError) as caught:
+        AnthropicProvider(api_key="k", model="claude-opus-5").generate_json(
+            system="be warm", messages=[], schema={}
+        )
+
+    assert isinstance(caught.value, AIError), "the whole point: handlers key on AIError"
+    # The original is kept rather than swallowed — "we were rate-limited" and
+    # "the model id is wrong" call for different actions.
+    assert isinstance(caught.value.__cause__, type(_timeout()))
+    assert "APITimeoutError" in str(caught.value)
+
+
+def test_an_sdk_timeout_leaves_the_openrouter_adapter_as_an_aierror(monkeypatch, settings) -> None:
+    import openai
+
+    from apps.story.ai.router import AIError, OpenRouterProvider, ProviderError
+
+    class Timeout:
+        def __init__(self, **_: Any) -> None:
+            self.chat = self
+            self.completions = self
+
+        def create(self, **_: Any) -> Any:
+            raise _timeout()
+
+    monkeypatch.setattr(openai, "OpenAI", Timeout)
+    settings.AI_STRUCTURED_OUTPUT_MODE = "auto"
+
+    with pytest.raises(ProviderError) as caught:
+        OpenRouterProvider(api_key="k", model="vendor/model").generate_json(
+            system="be warm", messages=[], schema={}
+        )
+
+    assert isinstance(caught.value, AIError)
+    assert isinstance(caught.value.__cause__, type(_timeout()))
+
+
+def test_an_unimplemented_seam_raises_an_aierror_too() -> None:
+    """A seam is not an exception to the contract.
+
+    `NotImplementedError` is not an `AIError`, so a caller holding this provider
+    directly would have produced the same dead stream as a timeout did.
+    """
+    from apps.story.ai.router import AIError, OpenAIProvider
+
+    with pytest.raises(AIError):
+        OpenAIProvider().generate_json(system="s", messages=[], schema={})

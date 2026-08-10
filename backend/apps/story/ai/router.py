@@ -14,6 +14,9 @@ the `Beat` schema gets exactly **one** repair attempt and then raises. The
 bounded blast radius matters: the caller above us (Day 7) turns a raise into a
 safe fallback beat, so the child sees a slightly generic story rather than an
 error — but only if we fail fast instead of retrying forever.
+
+**This module raises `AIError` and nothing else.** That is a contract, not a
+tendency — see `_transport_error`.
 """
 
 from __future__ import annotations
@@ -81,6 +84,33 @@ class BeatValidationError(StructuredOutputError):
     """A response came back but never satisfied the Beat schema."""
 
 
+def _transport_error(provider: str, model: str, exc: BaseException) -> ProviderError:
+    """Wrap anything an SDK threw. **This is the AI layer's boundary.**
+
+    Everything above this module keys on `AIError`: `orchestrator.create_beat`
+    turns one into a pre-vetted fallback beat (§19.6), `safety.classifier` turns
+    one into a degradation rather than a pass (§13.3), and `streaming.stream_beat`
+    turns one into a clean `done` frame. None of those handlers fire for an
+    `openai.APITimeoutError`, an `anthropic.APIStatusError`, a 429 or a 400 —
+    those are SDK types, and they are not `AIError` subclasses.
+
+    So the commonest real failure in the product used to escape all three at once:
+    no warm fallback, no degradation incident, and an SSE generator that died
+    after its open frame, leaving a four-year-old watching the companion think
+    forever. `StoryPage` has no error state *by design* (§4.9 forbids the spinner
+    and §13 forbids showing a child an error), which is exactly why the layer
+    below it must never hand it something it cannot render.
+
+    Every `generate_json` therefore catches `Exception` and comes through here.
+    The original is kept as `__cause__` — a caller that genuinely needs to know it
+    was a 429 can still ask, and the operator log keeps the type name because
+    "rate-limited" and "wrong model id" read identically in the message alone.
+    """
+    return ProviderError(
+        f"Provider '{provider}' (model '{model}') failed: {type(exc).__name__}: {exc}"
+    )
+
+
 @runtime_checkable
 class StructuredProvider(Protocol):
     """One LLM provider, reduced to the only thing the router needs from it."""
@@ -130,38 +160,48 @@ class AnthropicProvider:
         messages: list[dict[str, Any]],
         schema: dict[str, Any],
     ) -> str:
-        import anthropic
+        # Everything is inside the try, including the import and the client
+        # construction: `_transport_error` is a boundary, and a boundary with a
+        # line above it is not one. `except AIError: raise` keeps this method's
+        # own considered refusals ("Claude declined the request") from being
+        # re-labelled as transport failures.
+        try:
+            import anthropic
 
-        # Structured output: the provider constrains generation to the Beat
-        # schema, so we validate a well-formed candidate rather than parsing
-        # prose (§19.6). `effort` keeps a single beat cheap — this is a short,
-        # well-specified generation, not a reasoning problem.
-        output_config: OutputConfigParam = {
-            "format": {"type": "json_schema", "schema": schema},
-            "effort": "medium",
-        }
+            # Structured output: the provider constrains generation to the Beat
+            # schema, so we validate a well-formed candidate rather than parsing
+            # prose (§19.6). `effort` keeps a single beat cheap — this is a short,
+            # well-specified generation, not a reasoning problem.
+            output_config: OutputConfigParam = {
+                "format": {"type": "json_schema", "schema": schema},
+                "effort": "medium",
+            }
 
-        client = anthropic.Anthropic(api_key=self._api_key)
-        response = client.messages.create(
-            model=self._model,
-            max_tokens=MAX_OUTPUT_TOKENS,
-            system=system,
-            messages=cast("list[MessageParam]", messages),
-            output_config=output_config,
-        )
+            client = anthropic.Anthropic(api_key=self._api_key)
+            response = client.messages.create(
+                model=self._model,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                system=system,
+                messages=cast("list[MessageParam]", messages),
+                output_config=output_config,
+            )
 
-        # A safety classifier can decline before any content is produced. That is
-        # a 200 with an empty `content`, so check the stop reason first.
-        if response.stop_reason == "refusal":
-            detail = getattr(response, "stop_details", None)
-            category = getattr(detail, "category", None) or "unspecified"
-            raise ProviderError(f"Claude declined the request (category: {category}).")
+            # A safety classifier can decline before any content is produced. That
+            # is a 200 with an empty `content`, so check the stop reason first.
+            if response.stop_reason == "refusal":
+                detail = getattr(response, "stop_details", None)
+                category = getattr(detail, "category", None) or "unspecified"
+                raise ProviderError(f"Claude declined the request (category: {category}).")
 
-        for block in response.content:
-            if block.type == "text":
-                return block.text
+            for block in response.content:
+                if block.type == "text":
+                    return block.text
 
-        raise ProviderError("Claude returned no text content.")
+            raise ProviderError("Claude returned no text content.")
+        except AIError:
+            raise
+        except Exception as exc:
+            raise _transport_error(self.name, self._model, exc) from exc
 
 
 class OpenRouterProvider:
@@ -239,53 +279,63 @@ class OpenRouterProvider:
         messages: list[dict[str, Any]],
         schema: dict[str, Any],
     ) -> str:
-        from openai import BadRequestError, OpenAI
+        # See `_transport_error`. The inner `except BadRequestError` still runs
+        # first — it is the nearer handler — so the strict-to-JSON-mode degrade is
+        # unaffected; what changes is that the *re-raise* under `strict`, and every
+        # timeout, 429 and 5xx underneath it, leaves here as a `ProviderError`
+        # rather than as an SDK type nothing above us catches.
+        try:
+            from openai import BadRequestError, OpenAI
 
-        client = OpenAI(
-            api_key=self._api_key,
-            base_url=self._base_url,
-            default_headers={
-                "HTTP-Referer": settings.OPENROUTER_SITE_URL,
-                "X-Title": self._ATTRIBUTION_TITLE,
-            },
-        )
-        payload: list[dict[str, Any]] = [{"role": "system", "content": system}, *messages]
+            client = OpenAI(
+                api_key=self._api_key,
+                base_url=self._base_url,
+                default_headers={
+                    "HTTP-Referer": settings.OPENROUTER_SITE_URL,
+                    "X-Title": self._ATTRIBUTION_TITLE,
+                },
+            )
+            payload: list[dict[str, Any]] = [{"role": "system", "content": system}, *messages]
 
-        if self._mode == self._STRICT:
-            try:
-                return self._complete(
-                    client,
-                    payload,
-                    {
-                        "type": "json_schema",
-                        "json_schema": {"name": "beat", "strict": True, "schema": schema},
-                    },
-                )
-            except BadRequestError:
-                if self._policy is StructuredOutputMode.STRICT:
-                    # The operator asked for enforced structure. Degrading here
-                    # would hand back a weaker guarantee than they configured.
-                    raise
-                logger.warning(
-                    "Model %s rejected a strict json_schema response format; "
-                    "falling back to JSON mode + validate-and-repair.",
-                    self._model,
-                )
-                self._mode = self._JSON_MODE
+            if self._mode == self._STRICT:
+                try:
+                    return self._complete(
+                        client,
+                        payload,
+                        {
+                            "type": "json_schema",
+                            "json_schema": {"name": "beat", "strict": True, "schema": schema},
+                        },
+                    )
+                except BadRequestError:
+                    if self._policy is StructuredOutputMode.STRICT:
+                        # The operator asked for enforced structure. Degrading here
+                        # would hand back a weaker guarantee than they configured.
+                        raise
+                    logger.warning(
+                        "Model %s rejected a strict json_schema response format; "
+                        "falling back to JSON mode + validate-and-repair.",
+                        self._model,
+                    )
+                    self._mode = self._JSON_MODE
 
-        # JSON mode constrains syntax but not shape, so the schema has to travel in
-        # the prompt. ("json" appearing in the messages is also what OpenAI-compatible
-        # APIs require before they will honour `json_object` at all.)
-        payload[0] = {
-            "role": "system",
-            "content": (
-                f"{system}\n\n"
-                "Return only a single JSON object conforming exactly to this JSON Schema. "
-                "No prose, no markdown fences.\n\n"
-                f"{json.dumps(schema)}"
-            ),
-        }
-        return self._complete(client, payload, {"type": self._JSON_MODE})
+            # JSON mode constrains syntax but not shape, so the schema has to travel
+            # in the prompt. ("json" appearing in the messages is also what
+            # OpenAI-compatible APIs require before they will honour `json_object`.)
+            payload[0] = {
+                "role": "system",
+                "content": (
+                    f"{system}\n\n"
+                    "Return only a single JSON object conforming exactly to this JSON Schema. "
+                    "No prose, no markdown fences.\n\n"
+                    f"{json.dumps(schema)}"
+                ),
+            }
+            return self._complete(client, payload, {"type": self._JSON_MODE})
+        except AIError:
+            raise
+        except Exception as exc:
+            raise _transport_error(self.name, self._model, exc) from exc
 
     def _complete(
         self,
@@ -351,7 +401,13 @@ class _UnimplementedProvider:
         messages: list[dict[str, Any]],
         schema: dict[str, Any],
     ) -> str:
-        raise NotImplementedError(f"Provider '{self.name}' is not implemented yet.")
+        # An `AIError`, not a `NotImplementedError`: this module's contract with
+        # everything above it is that it raises `AIError` and nothing else
+        # (`_transport_error`), and a seam is not an exception to a contract.
+        # Unreachable through `select_provider`, which skips it for having no
+        # credentials — but a caller holding a provider directly is not a bug that
+        # should reach a child as a dead stream.
+        raise AIConfigurationError(f"Provider '{self.name}' is not implemented yet.")
 
 
 class OpenAIProvider(_UnimplementedProvider):

@@ -16,6 +16,16 @@ ignore = [
     "RUF012", # mutable class attrs need ClassVar — noisy on Django Meta/admin
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# RUF001/RUF002 flag characters that look like ASCII and are not — a Greek iota
+# posing as an I, a fullwidth bracket posing as `<`. These three files are *about*
+# exactly that: the confusables table that folds them, the red-team corpus that
+# attacks with them, and the tests that assert on both. The rule is there to catch
+# one arriving by accident; here every one is deliberate and load-bearing.
+"apps/safety/scrub.py" = ["RUF001", "RUF002"]
+"apps/safety/redteam/corpus.py" = ["RUF001", "RUF002"]
+"apps/safety/redteam/test_redteam.py" = ["RUF001", "RUF002"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["config", "apps"]
 

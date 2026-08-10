@@ -4,7 +4,17 @@ Everything a parent typed, everything a child said, everything a model wrote
 earlier and everything retrieval will hand back on Day 8 is **data**. This module
 is what makes that true of the bytes rather than only of the intention.
 
-Three defences, in the order they matter:
+Four defences, in the order they matter:
+
+**The text is normalised first.** Every pattern below is a list of characters, so
+every pattern below is defeated by a character that looks like one and is not:
+`＜system_identity＞` in fullwidth, `Ιgnore` with a Greek capital iota, a
+zero-width space inside the word `ignore`. NFKC folding plus a confusables table
+puts all three back into the form the patterns are written against, so one
+normalisation closes a family rather than one string (§13.5). What it cannot do is
+translate: an instruction in Spanish is a real gap and is recorded as one in
+`redteam.corpus.KNOWN_OPEN` rather than assumed away — the model classifier is the
+recall layer, here as everywhere else.
 
 **Delimiters are taken away.** `prompting.layers` wraps each layer in an XML-ish
 tag, so the single most effective attack on this prompt is a profile field
@@ -33,6 +43,7 @@ the model being wrong is survivable.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -68,6 +79,79 @@ _LAYER_NAMES = (
 INJECTION = "prompt_injection"
 PII = "pii_in_input"
 OVERLONG = "overlong_input"
+
+
+# ---------------------------------------------------------------------------
+# Normalisation (§13.5) — see the module docstring's first defence
+# ---------------------------------------------------------------------------
+#: Characters with no width, no meaning to a reader, and one use to an attacker:
+#: breaking a word in half so a pattern stops seeing it. Deleted outright.
+#:
+#: `U+200D` (zero-width joiner) is in the list even though it is load-bearing in
+#: emoji sequences — a family emoji typed into an interests box will arrive as its
+#: separate faces. That is a cosmetic loss in a prompt, and the alternative is a
+#: character that can sit inside `ig<ZWJ>nore` and is exempt from removal.
+_INVISIBLE = dict.fromkeys(
+    ord(char)
+    for char in (
+        "­"  # soft hyphen
+        "​‌‍"  # zero-width space / non-joiner / joiner
+        "⁠﻿"  # word joiner / BOM
+        "‪‫‬‭‮"  # bidi embedding + override
+        "⁦⁧⁨⁩"  # bidi isolates
+    )
+)
+
+#: Non-Latin letters that render as Latin ones. Only the confusables that appear
+#: in the words these patterns are made of — this is a defence, not a
+#: transliteration table, and a bigger map is more chances to mangle a real name.
+# fmt: off
+_CONFUSABLES = str.maketrans(
+    {
+        # Greek
+        "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
+        "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+        "α": "a", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "ο": "o", "ρ": "p",
+        "τ": "t", "υ": "u", "ϲ": "c",
+        # Cyrillic
+        "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+        "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X", "Ѕ": "S", "І": "I",
+        "Ј": "J",
+        "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "о": "o", "р": "p",
+        "с": "c", "т": "t", "у": "y", "х": "x", "ѕ": "s", "і": "i", "ј": "j",
+        "һ": "h", "ԁ": "d", "ӏ": "l",
+    }
+)
+# fmt: on
+
+_CONFUSABLE_CHARS = frozenset(chr(code) for code in _CONFUSABLES)
+_ASCII_LETTER = re.compile(r"[A-Za-z]")
+
+
+def _defang(value: str) -> str:
+    """Put look-alike characters back into the form the patterns are written in.
+
+    Three steps and one restraint:
+
+    * **NFKC.** Folds the compatibility forms — fullwidth `＜` to `<`, a
+      non-breaking space to a space, the ligature `ﬁ` to `fi`. This is the step
+      that closes `＜system_identity＞`.
+    * **Invisibles deleted**, so `ig<ZWSP>nore` is `ignore` again.
+    * **Confusables folded, but only in mixed-script text.** `Ιgnore` is Latin
+      with one Greek letter in it and is an attack; `Ιωάννα` is a child's name and
+      is not. Requiring an ASCII letter *and* a confusable in the same field is
+      what separates them, and it is why a family whose profile is written wholly
+      in Cyrillic still gets their own alphabet back out of this function.
+
+    The folded text is what gets stored and rendered, not merely what gets
+    matched. Matching on one string and emitting another would mean the prompt
+    still carried the homoglyph — neutralising the pattern while shipping the
+    payload, which is the worse half of both options.
+    """
+    text = unicodedata.normalize("NFKC", value).translate(_INVISIBLE)
+    if _ASCII_LETTER.search(text) and any(char in _CONFUSABLE_CHARS for char in text):
+        text = text.translate(_CONFUSABLES)
+    return text
 
 
 def _pattern(source: str) -> re.Pattern[str]:
@@ -190,13 +274,15 @@ def _strip_brackets(text: str) -> str:
 def scrub(value: str, *, cap: int = MAX_FIELD_CHARS) -> Scrubbed:
     """Neutralise one untrusted string.
 
-    Order matters. Injection shapes are matched **before** the brackets come off,
-    so a forged `</memory_bundle>` is *named* rather than silently turning into
-    the word `memory_bundle`; and truncation happens last, so a jailbreak hidden
-    past the cap is still found and reported rather than merely cut off.
+    Order matters. Normalisation comes **first**, because every pattern below is a
+    list of characters and a pattern cannot match a character it has never seen
+    (`_defang`). Injection shapes are then matched **before** the brackets come
+    off, so a forged `</memory_bundle>` is *named* rather than silently turning
+    into the word `memory_bundle`; and truncation happens last, so a jailbreak
+    hidden past the cap is still found and reported rather than merely cut off.
     """
     findings: list[str] = []
-    text = value
+    text = _defang(value)
 
     for name, pattern in _INJECTION_PATTERNS:
         text, count = pattern.subn(REDACTION, text)

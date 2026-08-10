@@ -472,7 +472,26 @@ def turn_from(beat: Beat | None) -> dict[str, Any] | None:
         "retries": choice.retries,
         "consequence": choice.consequence_summary,
         "next_hint": beat.next_hint,
+        # Not prompt content, and `guard_beat_inputs` removes it before anything is
+        # assembled. It is here so the input guard's distress pass can recognise an
+        # utterance `record_choice` has *already* escalated, and file one incident
+        # and one parent alert between them rather than two (§13.10).
+        "choice_id": str(choice.pk),
     }
+
+
+def utterance_ref(choice_id: Any) -> str:
+    """The identity of one thing a child said, as the escalation dedupe keys on it.
+
+    One function rather than an f-string at two call sites, because the two sites
+    are `record_choice` (where the words arrive) and `guard_beat_inputs` (where
+    they are read a second time on the next generation) — and if those two ever
+    disagree by so much as a prefix the dedupe silently stops working and a family
+    gets two alerts for one sentence. That is a failure mode no test would notice
+    unless it was looking for it, and the review's own rule about alerts is that
+    the ones a family learns to ignore are worse than none.
+    """
+    return f"choice:{choice_id}" if choice_id else ""
 
 
 def guard_beat_inputs(
@@ -486,13 +505,22 @@ def guard_beat_inputs(
     *verdict* (a distress signal escalates rather than merely being scrubbed) and
     the prompt builder needs the *text*, and running the guard twice would write
     two incidents for one beat.
+
+    `choice_id` is lifted out of the turn and handed to the guard as the
+    utterance's identity, not as prompt content — the model must not be told a
+    row id, and the guard must be able to tell "this is the sentence
+    `record_choice` already escalated" from "this is a second disclosure".
     """
+    turn = dict(prev_choice) if prev_choice else None
+    choice_id = str(turn.pop("choice_id", "") or "") if turn is not None else ""
+    ref = utterance_ref(choice_id)
     return safety.guard_input(
         {
             "memory": seed_memories(child),
-            "turn": dict(prev_choice) if prev_choice else None,
+            "turn": turn,
         },
         child,
+        utterance_ref=ref,
     )
 
 
@@ -686,9 +714,18 @@ def _status_for(decision: safety.Decision) -> str:
     `UNCHECKED` is never written here any more, and that is the point of the
     column: a beat row that still says `unchecked` after Day 7 is a beat that was
     written by something which bypassed this function.
+
+    Order is a choice. `REWRITTEN` wins over `DEGRADED` when both are true because
+    it is the rarer and more actionable fact — it says the layer *changed this
+    beat* — and because the rewrite always has its own incident carrying
+    `degraded` in `detail`, while a degradation that is not recorded here is only
+    findable by correlating timestamps. That correlation is precisely what the
+    `DEGRADED` member exists to stop anyone having to do.
     """
     if decision.detail.get("rewrites"):
         return Beat.SafetyStatus.REWRITTEN
+    if decision.ungraded:
+        return Beat.SafetyStatus.DEGRADED
     return Beat.SafetyStatus.PASSED
 
 
@@ -1404,6 +1441,15 @@ def record_choice(
     whether the child was right, because nothing in this product does (§8.5): an
     unrecognised key is recorded as what the child sent and the next beat carries
     on warmly from it.
+
+    **This is where §13.10's escalation ingress lives.** The child's words are read
+    for distress here, on the request that receives them, and not as a side effect
+    of generating the next beat — because on three of the four ingress paths there
+    is no next beat to be a side effect of: the close generates nothing, a child
+    who leaves generates nothing, and a prefetched beat is replayed rather than
+    generated. All three dropped a disclosure silently until Day 7's review proved
+    it. The check runs before this function returns, so it has happened by the time
+    the endpoint answers `202`.
     """
     adventure = beat.adventure
     try:
@@ -1425,6 +1471,7 @@ def record_choice(
                 retries=retries,
                 assisted=assisted,
             )
+        created = True
     except IntegrityError:
         existing = Choice.objects.filter(beat=beat).first()
         if existing is None:
@@ -1435,7 +1482,25 @@ def record_choice(
             beat.id,
             existing.chosen_key,
         )
-        return existing, False
+        choice, created = existing, False
+
+    # §13.10, on the submitted `value` rather than on the stored one, and on the
+    # duplicate path as well as the created one: a second tap carrying a
+    # disclosure the first did not is a thing the child said, whether or not the
+    # unique constraint kept the row. `ref` is the choice this utterance belongs
+    # to, so `guard_input`'s second pass on the next generation recognises it and
+    # the family gets one alert (`safety.guard_child_utterance`).
+    safety.guard_child_utterance(
+        value,
+        adventure.child,
+        ref=utterance_ref(choice.pk),
+        surface="choice_submitted",
+        adventure=adventure,
+        beat=beat,
+    )
+
+    if not created:
+        return choice, False
 
     logger.info(
         "story.choice adventure=%s beat=%s key=%s latency_ms=%s retries=%d assisted=%d",

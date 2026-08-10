@@ -631,3 +631,45 @@ def test_the_prompt_does_not_grow_with_the_story(started, auth, fake_ai) -> None
     # And it is a real summary, not an empty one that would pass the bound for the
     # wrong reason.
     assert "Aarav chose" in adventure.running_summary
+
+
+@pytest.mark.django_db(transaction=True, serialized_rollback=True)
+def test_the_endpoint_that_receives_a_disclosure_escalates_before_it_answers(
+    started, auth, caplog
+) -> None:
+    """§13.10's ingress, at the surface the child's words actually arrive on.
+
+    Day 7's review probed here and found nothing: the distress check lived inside
+    `create_beat`, so it only ran when a next beat happened to be generated. This
+    asserts the property that has to hold whatever the story does next — by the
+    time the `202` is written, the incident exists and the parent-notify path has
+    run. Everything downstream (the close, the child leaving, a prefetched beat) is
+    then irrelevant to whether the alarm was raised, which is the whole point.
+    """
+    from apps.safety.models import Action, SafetyIncident, Severity
+
+    adventure = started["adventure"]
+    beat, _ = read_beat(started["body"]["streamUrl"], started["token"])
+
+    with caplog.at_level("ERROR"):
+        response = auth.post(
+            choice_url(adventure.id),
+            {"beatId": beat["beatId"], "choiceKey": "continue", "value": "my dad hits me"},
+            format="json",
+        )
+
+    assert response.status_code == 202, response.data
+
+    incident = SafetyIncident.objects.get(category="child_distress")
+    assert incident.severity == Severity.CRITICAL
+    assert incident.action_taken == Action.ESCALATED
+    assert incident.escalated is True
+    assert incident.detail["surface"] == "choice_submitted"
+    assert "safety.parent_notify" in caplog.text
+    # The incident is a record of what fired, never of what the child said (§13.8).
+    assert "dad" not in str(incident.detail).lower()
+
+    # And the child is told nothing at all — the response is the same `202` any
+    # other tap gets, with no hint that anything happened (§13.10).
+    assert set(response.data) == {"choiceId", "beatId", "recorded", "streamUrl"}
+    assert response.data["recorded"] is True

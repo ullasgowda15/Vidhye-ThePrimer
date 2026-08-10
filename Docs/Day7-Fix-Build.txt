@@ -1,0 +1,81 @@
+Day 7 fix pass — transport-error fallbacks, escalation ingress, injection +
+classifier hardening.
+
+What changed, and why each one is a safety fix rather than a bug fix
+
+P0-1 — the AI layer now raises AIError and nothing else.
+  Both adapters (AnthropicProvider.generate_json, OpenRouterProvider.generate_json)
+  wrap their whole body: except AIError -> re-raise, except Exception -> ProviderError
+  with the original kept as __cause__. The unimplemented seams raise
+  AIConfigurationError instead of NotImplementedError, because a seam is not an
+  exception to a contract.
+  Why it matters: three separate handlers above the router key on AIError —
+  create_beat's warm fallback (§19.6), the classifier's degradation (§13.3) and
+  stream_beat's clean close. An SDK timeout satisfied none of them, so one blip
+  produced no fallback, no incident, and an SSE generator that died after its open
+  frame. StoryPage has no error state by design, so the child watched the companion
+  think forever — the spinner §4.9 forbids, arriving through the guard meant to
+  prevent it.
+  classifier.classify now catches Exception (not just AIError), and guard_output has
+  a second catch behind it. Two locks on one door, deliberately: the review found
+  P0-1 by throwing a class nobody had listed.
+
+P0-2 — a disclosure is caught where it arrives.
+  pipeline.guard_child_utterance runs inside record_choice, on the request that
+  receives the child's words and before the 202 returns. guard_input keeps its
+  check as the defence-in-depth second pass; an utterance ref (orchestrator
+  .utterance_ref, one function so the two sites cannot drift) dedupes them to one
+  incident and one parent alert.
+  Why it matters: the check used to live inside create_beat, so it only ever ran as
+  a side effect of generating the *next* beat. Three of four ingress paths generate
+  no next beat — the close, the child leaving, a prefetched beat — and all three
+  dropped a disclosure silently. The utterance is also walked as a structure rather
+  than str()'d, so Week 2's voice-transcript object is read, not stringified.
+
+P1-1 — normalisation, and an honest record of what is still open.
+  scrub._defang runs first: NFKC, invisible characters deleted, and confusables
+  folded when the text is mixed-script (an ASCII letter plus a look-alike). That
+  closes the Greek-iota, fullwidth, NBSP and zero-width families in one function
+  while leaving Ivanov, Ιωάννα and 夕陽 untouched — verified both ways.
+  corpus.KNOWN_OPEN records the five families it does not close (Spanish, German,
+  base64, bare imperative, and a homoglyph outside the table — that last one found
+  by attacking the fix). A test asserts they are *still* open, so a future fix has
+  to move them rather than leave the record wrong.
+  Criterion 3 and the Day-7 end state are restated in Docs/Build/Day7.md: every
+  recorded injection shape is neutralised, and the classifier is the recall layer.
+
+P1-2 — the classifier can actually be called.
+  config/settings/base.py refuses the boot when the provider that will actually be
+  selected disagrees with AI_BEAT_MODEL or AI_SAFETY_MODEL's shape. It mirrors
+  select_provider (first provider in order *with a key*) rather than reading
+  AI_PROVIDER_ORDER[0], so it cannot cry wolf. IMAGE_MODERATION_MODEL is
+  deliberately excluded — it calls Anthropic directly, not through the router.
+  .env.example now says AI_SAFETY_MODEL must be capable, not cheap.
+
+P1-3 — the fallback close names its own beat.
+  Each of the six templates carries a tomorrow_hook. Five of six closes used to
+  promise a snail the child had never seen.
+
+P2-1 — Beat.SafetyStatus.DEGRADED (migration 0006).
+  Written when the classifier was configured to run and could not — not when it is
+  deliberately off, which is CI's and dev's state and would otherwise put "degraded"
+  on every beat and make the column mean nothing.
+
+What is verified, and what is not
+
+Verified by attacking, not only by asserting: transport errors at plan, beat and
+classifier; all four escalation ingress paths plus the dedupe and its inverse;
+homoglyph/fullwidth/zero-width/NBSP injection with a false-positive sweep over real
+non-Latin names; the boot check in both directions; per-template hooks over the
+whole pool; the SSE stream ending on a playable beat.
+
+Not verified, unchanged from Day 7: the classifier's and vision moderator's real
+recall. There is no live provider here. Everything proven about the classifier is
+plumbing — independence, degradation, verdict combination. Real recall is §19.7's
+offline eval suite.
+
+Still yours: set AI_SAFETY_MODEL to a capable slug in .env and play one adventure
+with a real key, watching for safety.classifier log lines. That is the highest-value
+hour available now that the two bugs stopping it running are fixed.
+
+Stopping here — not starting Day 8.

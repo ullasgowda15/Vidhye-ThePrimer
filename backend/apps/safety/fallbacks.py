@@ -30,8 +30,9 @@ pays for the picture, and the rest are free. The narration is personalised, so t
 their own name is what makes this not read as canned.
 
 Adding one is welcome; every entry must (a) end warm, (b) ask something with no
-wrong answer, (c) name no location the story might contradict, and (d) pass the
-red-team suite's own policy check, which is asserted in `test_fallbacks.py`.
+wrong answer, (c) name no location the story might contradict, (d) carry a
+`tomorrow_hook` that names something **in its own template**, and (e) pass the
+red-team suite's own policy check, which is asserted in the tests beside it.
 """
 
 from __future__ import annotations
@@ -78,6 +79,7 @@ _YOUNGER: tuple[dict[str, Any], ...] = (
             ),
         ),
         "next_hint": "whatever the child picks -> the snail reaches a leaf and settles happily",
+        "tomorrow_hook": "Tomorrow, let's come back and see if that snail found its leaf.",
     },
     {
         "narration": (
@@ -103,6 +105,7 @@ _YOUNGER: tuple[dict[str, Any], ...] = (
             ),
         ),
         "next_hint": "whatever the child picks -> the breeze settles and everything is calm",
+        "tomorrow_hook": "Tomorrow, let's come back and see if the breeze wants to play.",
     },
     {
         "narration": (
@@ -128,6 +131,7 @@ _YOUNGER: tuple[dict[str, Any], ...] = (
             ),
         ),
         "next_hint": "whatever the child picks -> the stone is admired and the moment stays gentle",
+        "tomorrow_hook": "Tomorrow, let's come back and find another warm stone.",
     },
 )
 
@@ -161,6 +165,7 @@ _OLDER: tuple[dict[str, Any], ...] = (
         "next_hint": (
             "whatever the child picks -> the ants get their crumb home and everyone is pleased"
         ),
+        "tomorrow_hook": "Tomorrow, let's come back and see if the ants are still busy.",
     },
     {
         "narration": (
@@ -188,6 +193,10 @@ _OLDER: tuple[dict[str, Any], ...] = (
         ),
         "next_hint": (
             "whatever the child picks -> the quiet is enjoyed together and nothing is hurried"
+        ),
+        "tomorrow_hook": (
+            "Tomorrow, let's come back when the light goes golden again, and "
+            "have the quiet bit together."
         ),
     },
     {
@@ -217,6 +226,7 @@ _OLDER: tuple[dict[str, Any], ...] = (
         "next_hint": (
             "whatever the child picks -> the reflection ripples and settles, and all is calm"
         ),
+        "tomorrow_hook": "Tomorrow, let's come back and see if the puddle still has the sky in it.",
     },
 )
 
@@ -275,9 +285,15 @@ def safe_fallback_beat(
 
     narration = template["narration"].format(**fill)
     if is_final:
+        # The hook comes from the *selected* template. It used to be one fixed
+        # sentence about a snail appended to whichever beat was drawn, so five
+        # closes out of six promised a child something they had never seen — the
+        # Day-5 misattribution class, landing in the one beat whose whole job is
+        # to make tomorrow worth coming back for (§8.8). A close that names the
+        # thing the child was actually just looking at is the entire point.
         narration = (
             f"{narration} 'Thank you for today, {child.first_name},' says {companion_name}. "
-            "'Tomorrow, let's go and see that little snail again. I found it right by the grass.'"
+            f"'{template['tomorrow_hook']}'"
         )
 
     interaction: dict[str, Any] = (

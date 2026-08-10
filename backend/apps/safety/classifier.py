@@ -198,31 +198,41 @@ def _router() -> ai_router.ModelRouter:
 def classify(text: str, child: Child) -> tuple[str, str, list[str], str]:
     """Grade one beat's child-facing text. Returns `(action, severity, categories, reason)`.
 
-    Raises `ClassifierUnavailable` when the guard is switched off or the provider
-    cannot answer. It deliberately does **not** return a pass in that case: a
-    guard that reports success when it did not run is worse than no guard, because
-    it makes the incident table say the beat was checked.
+    Raises `ClassifierUnavailable` when the guard is switched off or **anything at
+    all** goes wrong reaching it. It deliberately does not return a pass in that
+    case: a guard that reports success when it did not run is worse than no guard,
+    because it makes the incident table say the beat was checked.
+
+    `except Exception` rather than `except AIError`, and the breadth is the point.
+    The router now guarantees it raises only `AIError` (`ai_router._transport_error`)
+    — but this function sits directly on the child's path, `guard_output` catches
+    exactly one exception type, and the cost of being wrong about what can be
+    thrown here is a dead stream (§4.9). One guard's job is to fail; it is not this
+    one's job to be the reason the story stops.
     """
     if not is_enabled():
         raise ClassifierUnavailable("SAFETY_CLASSIFIER_ENABLED is off.")
 
-    context = {
-        "system": GRADER_SYSTEM.format(audience=audience_block(child)),
-        # The beat is fenced by the template, and the brackets it could use to
-        # break out of the fence are gone: `scrub` is not only for parent text.
-        "user": GRADER_REQUEST.format(beat=_fenced(text)),
-    }
-
     try:
+        context = {
+            "system": GRADER_SYSTEM.format(audience=audience_block(child)),
+            # The beat is fenced by the template, and the brackets it could use to
+            # break out of the fence are gone: `scrub` is not only for parent text.
+            "user": GRADER_REQUEST.format(beat=_fenced(text)),
+        }
         verdict = _router().generate_structured(
             context,
             model=SafetyVerdict,
             schema=json_schema_for(SafetyVerdict),
         )
-    except ai_router.AIError as exc:
-        raise ClassifierUnavailable(str(exc)) from exc
-
-    return _normalise(verdict)
+        return _normalise(verdict)
+    except ClassifierUnavailable:
+        raise
+    except Exception as exc:
+        # The type name travels into the incident's `reason`, because "the model id
+        # is not valid for this gateway" and "we were rate-limited" call for
+        # different actions and read identically without it.
+        raise ClassifierUnavailable(f"{type(exc).__name__}: {exc}") from exc
 
 
 def _fenced(text: str) -> str:

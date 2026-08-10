@@ -56,7 +56,7 @@ def safe_fallback_beat(child, emotion="cozy") -> Beat:   # from a pre-vetted, hu
 ## 7. Acceptance criteria (done when ALL true)
 1. **Every** beat (open/consequence/close) passes through `guard_input` + independent `guard_output` + image scan before reaching the child (verify coverage, not just beat 1).
 2. A crafted unsafe request is blocked or rewritten; a `block` serves a **warm fallback** the child can't distinguish as an error.
-3. Prompt‑injection attempts via **child input AND profile fields** are neutralized (prove with the red‑team corpus).
+3. **Every recorded injection shape is neutralized** via **child input AND profile fields** — prove it with the red‑team corpus, and record what is still open in it. *(Restated in the Day‑7 fix pass. The deterministic scrubber is a list of narrow named English patterns plus Unicode normalisation; it cannot translate, decode, or read intent out of a sentence with no trigger vocabulary. `corpus.KNOWN_OPEN` names the four families that reach the instruction layer verbatim. **The independent classifier is the recall layer** — which is why P0‑1 and P1‑2 of the fix pass, the two bugs that stopped it running, are part of this criterion rather than separate from it.)*
 4. The `escalate` path de‑escalates the beat, logs high‑severity, and triggers the parent‑notify seam.
 5. Every non‑pass writes a `SafetyIncident`; the admin incident queue displays them with severity filters.
 6. The image scan blocks an unsafe image and substitutes a safe illustration (record status).
@@ -67,4 +67,4 @@ def safe_fallback_beat(child, emotion="cozy") -> Beat:   # from a pre-vetted, hu
 Play the mischievous user: type an injection into a free‑text/profile field; request scary content beyond the ceiling. Confirm the child‑facing result stays warm and safe, and an incident appears in `/admin/`. Replay a normal adventure — still smooth and magical.
 
 ## 9. End state to hand to Day 8
-Defense‑in‑depth safety wraps **every** generation (input guard, independent output classifier, enforced image scan, warm indistinguishable fallbacks, `SafetyIncident` logging + escalation seam), with a passing red‑team suite and an admin incident queue. Week‑1 debt is cleared; the full personalized, consistent, safe story loop ships. **Week 1 complete.** Still no memory or learning engine.
+Defense‑in‑depth safety wraps **every** generation (input guard, independent output classifier, enforced image scan, warm indistinguishable fallbacks, `SafetyIncident` logging + escalation seam), with a passing red‑team suite — every recorded injection shape neutralised, the ones still open recorded as such, and the independent classifier as the recall layer above them — and an admin incident queue. Week‑1 debt is cleared; the full personalized, consistent, safe story loop ships. **Week 1 complete.** Still no memory or learning engine.

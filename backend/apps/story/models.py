@@ -183,10 +183,19 @@ class Beat(UUIDModel):
         `UNCHECKED` is the Day-4 truth and it is written down rather than
         implied: the output classifier lands on Day 7, and a column with no
         unchecked state would make every unmoderated beat look moderated.
+
+        `DEGRADED` is that same argument applied one level in, and it exists
+        because without it the question "which beats did the *independent*
+        classifier actually approve?" had no answer in the database. A beat that
+        the keyword policy passed while the classifier was unreachable was stored
+        as `passed`, identical to one both guards read. It is written only when
+        the classifier was configured to run and could not — a deployment that
+        switched it off chose that, and `prod.py` will not boot having chosen it.
         """
 
         UNCHECKED = "unchecked", "Not yet checked"
         PASSED = "passed", "Passed"
+        DEGRADED = "degraded", "Passed the deterministic guard; the classifier could not run"
         REWRITTEN = "rewritten", "Rewritten by the safety layer"
         BLOCKED = "blocked", "Blocked"
 

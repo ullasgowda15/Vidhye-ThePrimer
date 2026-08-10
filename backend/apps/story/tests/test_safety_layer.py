@@ -67,9 +67,9 @@ class TestEveryBeatIsGuarded:
 
         guarded_inputs: list[int] = []
 
-        def spy_input(context: dict[str, Any], child: Any) -> Any:
+        def spy_input(context: dict[str, Any], child: Any, **kwargs: Any) -> Any:
             guarded_inputs.append(len(context))
-            return real_input(context, child)
+            return real_input(context, child, **kwargs)
 
         monkeypatch.setattr(orchestrator.safety, "guard_output", spy_output)
         monkeypatch.setattr(orchestrator.safety, "guard_input", spy_input)
@@ -388,3 +388,363 @@ def test_the_prefetch_does_not_persist_a_fallback(adventure: Adventure, fake_ai:
         orchestrator.create_beat(adventure, seq=1, allow_fallback=False)
 
     assert not Beat.objects.filter(adventure=adventure).exists()
+
+
+# ---------------------------------------------------------------------------
+# P0-1 — a provider transport error is a warm fallback, never a dead stream
+# ---------------------------------------------------------------------------
+def _timeout() -> Exception:
+    import httpx
+    import openai
+
+    return openai.APITimeoutError(request=httpx.Request("POST", "https://openrouter.test"))
+
+
+def _raises(exc: Exception) -> Any:
+    def blow_up(*args: Any, **kwargs: Any) -> Any:
+        raise exc
+
+    return blow_up
+
+
+@pytest.fixture
+def timing_out_ai(monkeypatch: Any, settings: Any) -> Any:
+    """A **real** adapter in front of an SDK that times out.
+
+    The scripted provider is no use for this: it stands *in place of* an adapter,
+    so an exception raised from it would prove only that a test can raise one.
+    What is under test is the adapter boundary itself, so the boundary has to be
+    in the path — a real `OpenRouterProvider` with a real `openai.APITimeoutError`
+    coming up through it.
+    """
+    import openai
+
+    from apps.story.ai.router import ModelRouter, OpenRouterProvider
+
+    class Timeout:
+        def __init__(self, **_: Any) -> None:
+            self.chat = self
+            self.completions = self
+
+        def create(self, **_: Any) -> Any:
+            raise _timeout()
+
+    monkeypatch.setattr(openai, "OpenAI", Timeout)
+    settings.AI_STRUCTURED_OUTPUT_MODE = "auto"
+    provider = OpenRouterProvider(api_key="test-key", model="vendor/model")
+    monkeypatch.setattr(
+        ModelRouter,
+        "from_settings",
+        classmethod(lambda cls, **_: ModelRouter(providers=[provider])),
+    )
+    return provider
+
+
+class TestATransportErrorIsAWarmBeat:
+    def test_a_timeout_mid_adventure_persists_a_fallback_beat_and_an_incident(
+        self, adventure: Adventure, timing_out_ai: Any
+    ) -> None:
+        """§19.6, for the *commonest* real failure rather than only the schema one.
+
+        Before the fix `except ai_router.AIError` never fired for a timeout, so no
+        fallback was written, no incident was filed, and the exception went all the
+        way out through the SSE generator.
+        """
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        assert beat.pk is not None, "nothing was persisted, so the stream had nothing to send"
+        assert beat.safety_status == Beat.SafetyStatus.BLOCKED
+        assert beat.model == "fallback:output_guard"
+        assert beat.narration.strip() and len(beat.options) >= 2, "it has to be playable"
+        assert (beat.learning or {})["skill_evidence_key"] == FALLBACK_EVIDENCE_KEY
+
+        incident = SafetyIncident.objects.get(category=policy.MALFORMED)
+        assert incident.action_taken == Action.BLOCKED
+        assert incident.beat_id == beat.id
+
+    def test_a_timeout_while_planning_still_starts_the_story(
+        self, child: Any, timing_out_ai: Any
+    ) -> None:
+        """Probe L, reversed. `create_adventure` used to raise `APITimeoutError` out
+        of `build_plan`, so the POST that starts a story 500'd."""
+        Companion.objects.create(child=child, archetype="dragon", name="Pip")
+
+        started = orchestrator.create_adventure(child)
+
+        assert started.pk is not None
+        assert started.plan["source"] == "fallback"
+
+    # `transaction=True` because `stream_beat` offloads the generation to a
+    # thread with its own connection (§16.4) — the same reason the API-level
+    # stream tests need it.
+    @pytest.mark.django_db(transaction=True, serialized_rollback=True)
+    def test_the_child_gets_a_playable_beat_rather_than_a_dead_stream(
+        self, adventure: Adventure, timing_out_ai: Any
+    ) -> None:
+        """The promise §4.9 makes, checked where the child is.
+
+        `StoryPage` has no error state by design and `onEnd` leaves the status where
+        it was, so a generator that dies after `: open` is a companion that thinks
+        forever. What the stream must carry is a `beat` frame and then a `done`.
+        """
+        import asyncio
+
+        from apps.story import streaming
+
+        async def collect() -> list[bytes]:
+            return [chunk async for chunk in streaming.stream_beat(adventure)]
+
+        frames = b"".join(asyncio.run(collect())).decode()
+
+        assert "event: beat" in frames, "the child was left on the thinking companion"
+        assert "event: done" in frames
+        # And nothing in the payload tells them anything went wrong (§13).
+        for word in ("error", "sorry", "unavailable", "timeout"):
+            assert word not in frames.lower()
+
+    def test_the_prefetch_still_refuses_to_commit_a_fallback(
+        self, adventure: Adventure, timing_out_ai: Any
+    ) -> None:
+        """Wrapping the transport must not quietly widen what the prefetch writes.
+
+        Nobody is waiting on a prefetch, so a blip there must still cost a
+        speculative task rather than commit the child to a generic beat
+        (`allow_fallback=False`). The fix changes the exception's *type*, not the
+        posture that reads it.
+        """
+        from apps.story.ai.router import AIError
+
+        with pytest.raises(AIError):
+            orchestrator.create_beat(adventure, seq=1, allow_fallback=False)
+
+        assert not Beat.objects.filter(adventure=adventure).exists()
+
+
+class TestAClassifierThatErrorsDegrades:
+    def test_a_raw_sdk_exception_from_the_grader_is_a_degradation_not_a_raise(
+        self, child: Any, settings: Any, monkeypatch: Any
+    ) -> None:
+        """Probe M. `guard_output` caught only `ClassifierUnavailable`, and an
+        `APITimeoutError` is not one — so the guard that exists to stop a child
+        seeing an error was the thing raising it."""
+        from apps.safety import classifier, pipeline
+
+        settings.SAFETY_CLASSIFIER_ENABLED = True
+        monkeypatch.setattr(classifier, "_router", _raises(_timeout()))
+
+        decision = pipeline.guard_output(pipeline.safe_fallback_beat(child, seq=1), child)
+
+        assert decision.degraded is True
+        assert decision.ungraded is True, "the classifier was meant to run and did not"
+        assert decision.passed, "the deterministic verdict still stands"
+        incident = SafetyIncident.objects.get(category=policy.CLASSIFIER_UNAVAILABLE)
+        assert incident.action_taken == Action.DEGRADED
+        assert "APITimeoutError" in incident.detail["reason"]
+
+    def test_the_deterministic_verdict_survives_the_degradation(
+        self, child: Any, settings: Any, monkeypatch: Any
+    ) -> None:
+        """A guard that could not run is not a pass — and is not an amnesty either."""
+        from apps.safety import classifier, pipeline
+        from apps.story.ai import schemas
+
+        settings.SAFETY_CLASSIFIER_ENABLED = True
+        monkeypatch.setattr(classifier, "_router", _raises(_timeout()))
+
+        unsafe = schemas.Beat.model_validate(
+            json.loads(_unsafe("Pip found a gun behind the tree."))
+        )
+        decision = pipeline.guard_output(unsafe, child)
+
+        assert decision.action == policy.BLOCK
+        assert decision.degraded is True
+
+    def test_something_unexpected_out_of_the_grader_is_caught_too(
+        self, child: Any, settings: Any, monkeypatch: Any
+    ) -> None:
+        """The second lock on the same door.
+
+        `classify` converts everything it can reach; this asserts `guard_output`
+        does not *depend* on that being exhaustive, because the review found P0-1
+        precisely by throwing a class nobody had listed.
+        """
+        from apps.safety import pipeline
+
+        settings.SAFETY_CLASSIFIER_ENABLED = True
+        monkeypatch.setattr(
+            pipeline.classifier, "classify", _raises(RuntimeError("nobody listed this one"))
+        )
+
+        decision = pipeline.guard_output(pipeline.safe_fallback_beat(child, seq=1), child)
+
+        assert decision.degraded is True
+        assert decision.passed
+
+
+# ---------------------------------------------------------------------------
+# P2-1 — a beat row can say whether the strong guard graded it
+# ---------------------------------------------------------------------------
+def test_a_beat_the_classifier_never_graded_says_so_on_the_row(
+    adventure: Adventure, fake_ai: Any, settings: Any, monkeypatch: Any
+) -> None:
+    """`passed` used to mean "both guards approved" and "the keyword list approved
+    while the strong guard was unreachable" indistinguishably, so "which beats were
+    actually graded?" was a question you answered by correlating timestamps."""
+    from apps.safety import classifier
+
+    settings.SAFETY_CLASSIFIER_ENABLED = True
+    monkeypatch.setattr(classifier, "_router", _raises(_timeout()))
+
+    beat = orchestrator.create_beat(adventure, seq=1)
+
+    assert beat.safety_status == Beat.SafetyStatus.DEGRADED
+
+
+def test_a_deliberately_disabled_classifier_is_not_a_degraded_beat(
+    adventure: Adventure, fake_ai: Any
+) -> None:
+    """The counterweight, and the reason `ungraded` is narrower than `degraded`.
+
+    CI and offline development run with the classifier off on purpose. Writing
+    `degraded` on every beat of every run would make the column mean nothing — the
+    same argument `_degraded` makes about not filing an incident per beat.
+    `prod.py` refuses to boot with the flag off, so this state is development's.
+    """
+    beat = orchestrator.create_beat(adventure, seq=1)
+
+    assert beat.safety_status == Beat.SafetyStatus.PASSED
+
+
+# ---------------------------------------------------------------------------
+# P0-2 — a disclosure is caught where it arrives, on every ingress path
+# ---------------------------------------------------------------------------
+DISCLOSURE = "my dad hits me"
+
+
+def _the_alarm_was_raised() -> Any:
+    """One critical, escalated `child_distress` incident, and exactly one."""
+    incident = SafetyIncident.objects.get(category=policy.DISTRESS)
+    assert incident.severity == Severity.CRITICAL
+    assert incident.action_taken == Action.ESCALATED
+    assert incident.escalated is True, "the parent-notify path ran"
+    # Still no copy of what the child said, on this path either (§13.8).
+    assert DISCLOSURE not in str(incident.detail).lower()
+    return incident
+
+
+class TestEveryIngressPathEscalates:
+    """The three holes the Day-7 review proved, and the control that hid them.
+
+    Every one of these is a disclosure in `Choice.value` that produced **zero**
+    incidents before the fix, because the check lived inside `create_beat` and
+    none of these paths generates a beat. The exposure is limited today — the
+    shipped client only sends tapped keys — which is the argument for closing it
+    now: Week 2 opens free text and voice, and an escalation path added after the
+    surface that produces escalations is a path that has never run (§13.10).
+    """
+
+    def test_a_disclosure_answering_the_close(self, adventure: Adventure, fake_ai: Any) -> None:
+        last = adventure.estimated_beats
+        close = orchestrator.create_beat(adventure, seq=last)
+
+        orchestrator.record_choice(close, chosen_key="count", value=DISCLOSURE)
+
+        # There is no next beat to notice it on: this is the end of the story.
+        assert orchestrator.schedule_advance(adventure, after=close) == orchestrator.ADVANCE_FINAL
+        _the_alarm_was_raised()
+
+    def test_a_disclosure_and_then_the_child_leaves(
+        self, adventure: Adventure, fake_ai: Any
+    ) -> None:
+        from apps.story.models import PlaySession
+        from apps.story.tasks import advance_adventure
+
+        first = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.record_choice(first, chosen_key="count", value=DISCLOSURE)
+
+        # The tab closes before the worker gets to the prefetch, so the beat that
+        # would have read the disclosure is never generated.
+        orchestrator.end_adventure(adventure, reason=PlaySession.EndedReason.EXIT)
+        assert advance_adventure(str(adventure.id), str(first.id)) == "skipped"
+        assert not Beat.objects.filter(adventure=adventure, seq=2).exists()
+
+        _the_alarm_was_raised()
+
+    def test_a_disclosure_when_the_next_beat_was_already_prefetched(
+        self, adventure: Adventure, fake_ai: Any
+    ) -> None:
+        first = orchestrator.create_beat(adventure, seq=1)
+        # The worker got there first, so beat 2 is replayed rather than generated
+        # and `guard_input` never runs on this turn at all.
+        orchestrator.create_beat(adventure, seq=2)
+
+        orchestrator.record_choice(first, chosen_key="count", value=DISCLOSURE)
+
+        assert orchestrator.schedule_advance(adventure, after=first) == orchestrator.ADVANCE_READY
+        _the_alarm_was_raised()
+
+    def test_the_endpoint_has_already_escalated_by_the_time_it_answers(
+        self, adventure: Adventure, fake_ai: Any
+    ) -> None:
+        """Where the words actually arrive. The `202` is the product's promise that
+        the tap registered; the alarm must not be waiting behind a worker."""
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        choice, created = orchestrator.record_choice(beat, chosen_key="count", value=DISCLOSURE)
+
+        assert created
+        incident = _the_alarm_was_raised()
+        assert incident.detail["surface"] == "choice_submitted"
+        assert incident.beat_id == beat.id, "a reviewer can click through to the beat"
+
+    def test_the_mid_story_control_still_files_exactly_one(
+        self, adventure: Adventure, fake_ai: Any
+    ) -> None:
+        """The path that always worked, now guarded twice and still filing once.
+
+        Two passes read the same sentence — `record_choice` on the way in and
+        `guard_input` on the next generation — and an alert a family learns to
+        ignore is worse than no alert, which includes learning to ignore it because
+        it arrives twice (§13.10).
+        """
+        first = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.record_choice(first, chosen_key="count", value=DISCLOSURE)
+
+        beat = orchestrator.create_beat(adventure, seq=2, prev_choice=orchestrator.turn_from(first))
+
+        # The second pass still de-escalates the beat: dedupe suppresses the
+        # duplicate *alert*, never the comfort the child gets.
+        assert beat.model == "fallback:child_input"
+        _the_alarm_was_raised()
+
+    def test_a_second_disclosure_is_not_deduped_away(
+        self, adventure: Adventure, fake_ai: Any
+    ) -> None:
+        """The dedupe is keyed on the utterance, not on the child.
+
+        A child who says something worrying twice has said it twice. Suppressing
+        the second would be the failure mode of a dedupe that reached too wide.
+        """
+        first = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.record_choice(first, chosen_key="count", value=DISCLOSURE)
+        second = orchestrator.create_beat(adventure, seq=2)
+        orchestrator.record_choice(second, chosen_key="count", value="I want to die")
+
+        assert SafetyIncident.objects.filter(category=policy.DISTRESS).count() == 2
+
+    def test_a_disclosure_nested_inside_the_payload_is_still_read(
+        self, adventure: Adventure, fake_ai: Any
+    ) -> None:
+        """`Choice.value` is a `JSONField` and the client decides its shape.
+
+        Week 2's voice turn is an object, not a string. A guard that called `str()`
+        on the payload would work by accident today and stop working the day
+        somebody adds a key.
+        """
+        beat = orchestrator.create_beat(adventure, seq=1)
+
+        orchestrator.record_choice(
+            beat, chosen_key="say", value={"transcript": DISCLOSURE, "confidence": 0.9}
+        )
+
+        _the_alarm_was_raised()

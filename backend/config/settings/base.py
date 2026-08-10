@@ -425,6 +425,81 @@ IMAGE_MODERATION = env("IMAGE_MODERATION", default="auto")
 # Provider-relative, like the two above. Must be a vision-capable model.
 IMAGE_MODERATION_MODEL = env("IMAGE_MODERATION_MODEL", default="claude-haiku-4-5-20251001")
 
+
+# ---------------------------------------------------------------------------
+# Provider/model pairing — checked here, at boot (PRODUCT.md §13.3, §19.3)
+# ---------------------------------------------------------------------------
+# `AI_BEAT_MODEL` and `AI_SAFETY_MODEL` are *provider-relative* and both ride one
+# `AI_PROVIDER_ORDER`. That makes one specific mistake very easy and completely
+# silent: put `openrouter` first, set `AI_BEAT_MODEL` to a slug, and forget that
+# `AI_SAFETY_MODEL` still holds its Anthropic-flavoured default. Beats generate
+# fine; the gateway answers `400 … is not a valid model ID` to *every* classifier
+# call, and the strongest guard in the product is off. Day 7's review found
+# exactly this on the founder's own machine.
+#
+# It fails the boot rather than logging, for the same reason `prod.py` fails the
+# boot on `SAFETY_CLASSIFIER_ENABLED=0`: a deployment that is quietly less safe
+# than it looks is worse than one that will not start. Unlike those checks this
+# one runs in **every** environment, because the misconfiguration it catches is a
+# development-machine mistake that only shows up as a degradation storm.
+#
+# Deliberately narrow. It checks the *shape* of the id against the provider that
+# will actually be selected — a slug has a vendor prefix, a Claude id does not —
+# and nothing else. Whether the model exists is the provider's answer to give.
+def _selected_ai_provider() -> str:
+    """The provider `ModelRouter.select_provider` will pick: first in order with a key."""
+    credentials = {"anthropic": ANTHROPIC_API_KEY, "openrouter": OPENROUTER_API_KEY}
+    for _name in AI_PROVIDER_ORDER:
+        if credentials.get(_name):
+            return str(_name)
+    # No key configured for anything: nothing will be called, so there is no
+    # pairing to be wrong. `select_provider` raises its own clear error later.
+    return ""
+
+
+def _check_model_pairing() -> None:
+    from django.core.exceptions import ImproperlyConfigured
+
+    provider = _selected_ai_provider()
+    if not provider:
+        return
+
+    # `IMAGE_MODERATION_MODEL` is deliberately absent: it does not go through the
+    # router. `media.moderation.ClaudeImageModerator` calls Anthropic directly, so
+    # it is a Claude id whatever `AI_PROVIDER_ORDER` says, and checking it here
+    # would refuse a perfectly correct configuration.
+    models = {
+        "AI_BEAT_MODEL": AI_BEAT_MODEL,
+        "AI_SAFETY_MODEL": AI_SAFETY_MODEL,
+    }
+    for _setting, _model in models.items():
+        looks_like_slug = "/" in _model
+        if provider == "openrouter" and not looks_like_slug:
+            raise ImproperlyConfigured(
+                f"{_setting}='{_model}' is not an OpenRouter model slug, but "
+                f"openrouter is the provider that will be selected "
+                f"(AI_PROVIDER_ORDER={list(AI_PROVIDER_ORDER)}). OpenRouter will "
+                f"answer 400 to every call. Set {_setting} to a 'vendor/model' "
+                f"slug valid for your gateway."
+                + (
+                    " AI_SAFETY_MODEL is the independent safety grader (§13.3) — "
+                    "give it a capable model, not the cheapest free one on the list."
+                    if _setting == "AI_SAFETY_MODEL"
+                    else ""
+                )
+            )
+        if provider == "anthropic" and looks_like_slug:
+            raise ImproperlyConfigured(
+                f"{_setting}='{_model}' looks like an OpenRouter slug, but "
+                f"anthropic is the provider that will be selected "
+                f"(AI_PROVIDER_ORDER={list(AI_PROVIDER_ORDER)}). Use a Claude "
+                f"model id, or put openrouter first in AI_PROVIDER_ORDER."
+            )
+
+
+_check_model_pairing()
+
+
 # ---------------------------------------------------------------------------
 # Illustration + voice adapters (PRODUCT.md §16.6, §5.8)
 # ---------------------------------------------------------------------------

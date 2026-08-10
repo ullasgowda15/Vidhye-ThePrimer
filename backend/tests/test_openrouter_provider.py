@@ -176,9 +176,14 @@ def test_strict_mode_refuses_to_degrade(settings, fake_openai) -> None:
     fake_openai.outcomes = [bad_request()]
 
     provider = OpenRouterProvider()
-    with pytest.raises(openai.BadRequestError):
+    # A `ProviderError`, not the raw `openai.BadRequestError` it wraps: since the
+    # Day-7 fix this adapter is a boundary, and everything above it — the fallback
+    # beat, the classifier's degradation, the SSE handler — keys on `AIError`. The
+    # original is still reachable as `__cause__`, so nothing is lost but the leak.
+    with pytest.raises(ProviderError) as caught:
         provider.generate_json(system="be warm", messages=[], schema=SCHEMA)
 
+    assert isinstance(caught.value.__cause__, openai.BadRequestError)
     assert len(fake_openai.calls) == 1  # no fallback attempt
     assert provider.output_mode == "json_schema"
 

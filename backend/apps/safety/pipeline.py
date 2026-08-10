@@ -37,7 +37,7 @@ will be "when did it start" and the answer has to be in a table.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,7 +46,7 @@ from django.conf import settings
 from apps.profiles.models import Child
 from apps.safety import classifier, escalation, incidents, policy
 from apps.safety.fallbacks import safe_fallback_beat
-from apps.safety.models import Action, Severity
+from apps.safety.models import Action, SafetyIncident, Severity
 from apps.safety.policy import BLOCK, ESCALATE, PASS, REWRITE
 from apps.safety.scrub import scrub, scrub_value
 
@@ -59,6 +59,7 @@ __all__ = [
     "PASS",
     "REWRITE",
     "Decision",
+    "guard_child_utterance",
     "guard_input",
     "guard_output",
     "max_rewrites",
@@ -71,6 +72,14 @@ __all__ = [
 #: leading underscore makes "this is metadata, not prompt content" visible at
 #: every call site rather than only here.
 GUARD_KEY = "_guard"
+
+#: What `Decision.detail["classifier"]` says when the independent guard was
+#: configured to run and could not. Distinguished from `CLASSIFIER_DISABLED`
+#: because only one of the two is a fault: an installation that switched the
+#: classifier off chose that (and `prod.py` refuses to boot having chosen it),
+#: while one that *tried and failed* has a beat nothing strong ever graded.
+CLASSIFIER_UNAVAILABLE = "unavailable"
+CLASSIFIER_DISABLED = "disabled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +114,20 @@ class Decision:
     def category(self) -> str:
         """The single label this decision is filed under. Worst rule first."""
         return self.categories[0] if self.categories else "unspecified"
+
+    @property
+    def ungraded(self) -> bool:
+        """The independent classifier was **meant** to run on this and did not.
+
+        Narrower than `degraded`, which is also true when the classifier is
+        deliberately switched off. The two need separating because they land in
+        different places: `degraded` is the honest statement about *this verdict*
+        and rides on every incident, while this one is what `Beat.safety_status`
+        records — and a column that said `degraded` on every beat of every CI run
+        would say nothing at all, the same way an incident per beat is how a queue
+        stops being read (`_degraded`).
+        """
+        return self.detail.get("classifier") == CLASSIFIER_UNAVAILABLE
 
     def as_detail(self) -> dict[str, Any]:
         """The incident's `detail` blob. Rule names only — never beat text."""
@@ -153,7 +176,9 @@ def _from_findings(findings: list[policy.Finding], *, degraded: bool = False) ->
 # ---------------------------------------------------------------------------
 # Input guard (§13.5, §13.10)
 # ---------------------------------------------------------------------------
-def guard_input(context: dict[str, Any], child: Child) -> dict[str, Any]:
+def guard_input(
+    context: dict[str, Any], child: Child, *, utterance_ref: str = ""
+) -> dict[str, Any]:
     """Neutralise everything in `context` that did not come from us.
 
     `context` is the *prompt inputs*, not the assembled prompt: today
@@ -168,11 +193,15 @@ def guard_input(context: dict[str, Any], child: Child) -> dict[str, Any]:
     `offered_labels` feeds a post-write check), and a guard that mutated its
     argument would silently change that too.
 
-    The child's own words get a second pass. Anything the child said — a `say`
-    answer today, free text and voice from Week 2 — is read for the distress
-    signals of §13.10, and one found there escalates: the incident is written at
-    critical severity and the parent-notify seam fires. That is the only branch in
-    this file that is about the child rather than about the model.
+    The child's own words get a second pass — **second**, deliberately. Since the
+    Day-7 fix the distress check runs where the utterance *arrives*
+    (`guard_child_utterance`, called by `orchestrator.record_choice`), because a
+    disclosure that is only read when the next beat is generated is a disclosure
+    dropped whenever there is no next beat: the close, the child leaving, a
+    prefetched beat. This pass stays because defence in depth is the whole design
+    of §13.2 and because it covers a caller that reaches generation another way;
+    `utterance_ref` is what stops the two passes filing two alerts about one
+    sentence.
     """
     guarded: dict[str, Any] = {}
     findings: list[str] = []
@@ -184,31 +213,109 @@ def guard_input(context: dict[str, Any], child: Child) -> dict[str, Any]:
         guarded[key] = cleaned
         findings.extend(found)
 
-    decision = _input_decision(context, child, tuple(dict.fromkeys(findings)))
+    decision = _input_decision(
+        context, child, tuple(dict.fromkeys(findings)), utterance_ref=utterance_ref
+    )
     guarded[GUARD_KEY] = decision
     return guarded
+
+
+def guard_child_utterance(
+    value: Any,
+    child: Child,
+    *,
+    ref: str = "",
+    surface: str = "child_input",
+    adventure: Any = None,
+    beat: Any = None,
+) -> Decision:
+    """Read something the **child** said for the distress signals of §13.10.
+
+    Called at every point a child's words enter the system, not at the point a
+    beat happens to be generated. Those were the same place until Day 7's review
+    proved they are not: a disclosure typed as the answer to the warm close, or
+    said just before the child closes the tab, or said when the next beat had
+    already been prefetched, produces no generation at all — and produced no
+    incident either, on three of the four ingress paths.
+
+    Returns the `Decision` so the caller can de-escalate the story if it is in a
+    position to; the alert does not wait for that and never has. **Never raises.**
+    A guard that took the story down would turn "a child said something worrying"
+    into "the app stopped working", which is the worst possible pairing
+    (`apps.safety.incidents` makes the same argument about the incident write).
+
+    `ref` identifies the *utterance*, so the same sentence read twice — once here
+    and once by `guard_input` on the next generation — is one incident and one
+    parent alert. An alert a family learns to ignore is worse than no alert
+    (§13.10), and that includes learning to ignore it because it arrives twice.
+    """
+    try:
+        findings = policy.check_child_utterance(_utterance_text(value))
+    except Exception:
+        # See "never raises" above. There is nothing else to do with a payload we
+        # cannot even read as text, but taking the story down over it is not it.
+        logger.exception("safety.utterance_unreadable child=%s surface=%s", child.id, surface)
+        return Decision()
+    if not findings:
+        return Decision()
+
+    decision = _from_findings(findings)
+    if _already_escalated(child, ref):
+        logger.info("safety.escalation_deduped child=%s surface=%s ref=%s", child.id, surface, ref)
+        return decision
+
+    incident = incidents.record(
+        category=decision.category,
+        action=Action.ESCALATED,
+        severity=Severity.CRITICAL,
+        child=child,
+        adventure=adventure,
+        beat=beat,
+        # `ref` is an opaque row id, not the child's words — the rule in
+        # `apps.safety.incidents` holds: this table records what fired, never what
+        # fired it.
+        detail={**decision.as_detail(), "surface": surface, "ref": ref},
+        escalated=False,
+    )
+    if incident is not None:
+        escalation.notify_parent(incident)
+    return decision
+
+
+def _already_escalated(child: Child, ref: str) -> bool:
+    """Has this exact utterance already raised the alarm?
+
+    Swallows its own failure on purpose. If the dedupe query cannot run, the
+    honest direction is a second alert rather than a missed one — so a broken
+    read here degrades to the pre-fix behaviour and never to silence.
+    """
+    if not ref:
+        return False
+    try:
+        return SafetyIncident.objects.filter(
+            child=child,
+            category=policy.DISTRESS,
+            action_taken=Action.ESCALATED,
+            detail__ref=ref,
+        ).exists()
+    except Exception:
+        logger.exception("safety.escalation_dedupe_failed child=%s ref=%s", child.id, ref)
+        return False
 
 
 def _input_decision(
     context: Mapping[str, Any],
     child: Child,
     findings: tuple[str, ...],
+    *,
+    utterance_ref: str = "",
 ) -> Decision:
     """The verdict on the inputs, and the incidents that go with it."""
-    distress = policy.check_child_utterance(_child_said(context))
-    if distress:
-        decision = _from_findings(distress)
-        incident = incidents.record(
-            category=decision.category,
-            action=Action.ESCALATED,
-            severity=Severity.CRITICAL,
-            child=child,
-            detail={**decision.as_detail(), "surface": "child_input"},
-            escalated=False,
-        )
-        if incident is not None:
-            escalation.notify_parent(incident)
-        return decision
+    distress = guard_child_utterance(
+        _child_said(context), child, ref=utterance_ref, surface="child_input"
+    )
+    if distress.escalates:
+        return distress
 
     if not findings:
         return Decision()
@@ -243,7 +350,29 @@ def _child_said(context: Mapping[str, Any]) -> str:
     turn = context.get("turn") or {}
     if not isinstance(turn, Mapping):
         return ""
-    return " ".join(str(turn.get(key)) for key in ("value", "text") if turn.get(key) is not None)
+    return " ".join(
+        _utterance_text(turn.get(key)) for key in ("value", "text") if turn.get(key) is not None
+    )
+
+
+def _utterance_text(value: Any) -> str:
+    """Whatever the child sent, flattened to text the distress rules can read.
+
+    `Choice.value` is a `JSONField` and the client decides its shape: a string
+    today, and from Week 2 a transcript object or a list of them. Walking the
+    structure rather than calling `str()` on it is what keeps a disclosure nested
+    one level down from being checked as `{'text': 'my dad hits me'}` — which
+    happens to match, and would stop matching the day someone adds a key.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        return " ".join(_utterance_text(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        return " ".join(_utterance_text(item) for item in value)
+    return str(value)
 
 
 def scrub_profile_field(value: str, *, cap: int | None = None) -> str:
@@ -313,6 +442,14 @@ def guard_output(beat: Any, child: Child) -> Decision:
         action, severity, categories, reason = classifier.classify(text, child)
     except classifier.ClassifierUnavailable as exc:
         return _degraded(deterministic, child, str(exc))
+    except Exception as exc:
+        # `classify` already converts everything it can reach into the line above.
+        # This is the second lock on the same door: this function is on the child's
+        # path, the thing above it renders no error state (§4.9), and the review
+        # that found P0-1 found it precisely because one exception class nobody had
+        # thought about walked through a handler that named only one other.
+        logger.exception("safety.guard_output_crashed child=%s", child.id)
+        return _degraded(deterministic, child, f"{type(exc).__name__}: {exc}")
 
     logger.info(
         "safety.classifier child=%s %s",
@@ -339,7 +476,8 @@ def _degraded(deterministic: Decision, child: Child, why: str) -> Decision:
     is a deliberate configuration and would otherwise write one row per beat,
     which is how an incident queue becomes something nobody reads.
     """
-    if classifier.is_enabled():
+    enabled = classifier.is_enabled()
+    if enabled:
         logger.error("safety.classifier_unavailable child=%s reason=%s", child.id, why)
         incidents.record(
             category=policy.CLASSIFIER_UNAVAILABLE,
@@ -357,6 +495,10 @@ def _degraded(deterministic: Decision, child: Child, why: str) -> Decision:
         categories=deterministic.categories,
         markers=deterministic.markers,
         degraded=True,
+        # Carried on the decision rather than re-derived by the caller, so the
+        # beat row and the incident agree about whether the strong guard was even
+        # attempted. See `Decision.ungraded`.
+        detail={"classifier": CLASSIFIER_UNAVAILABLE if enabled else CLASSIFIER_DISABLED},
     )
 
 
