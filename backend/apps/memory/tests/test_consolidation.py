@@ -123,6 +123,59 @@ def test_a_played_session_yields_a_few_typed_embedded_memories(closed, aarav) ->
         assert memory.source_adventure_id is not None
 
 
+def test_a_session_of_taps_does_not_become_a_row_per_tap(closed, aarav) -> None:
+    """The transcript failure the founder's first real session produced.
+
+    Seven beats, five branch picks, and the memory table came back four rows of
+    `Spidey chose <label>` with nothing about the elephant they met. The rows were
+    not duplicates — five different labels are five different sentences — so no
+    lexical filter could have saved it. `candidates._acts` now proposes one branch
+    pick per adventure, the one the child weighed longest.
+    """
+    consolidation.consolidate_session(closed)
+
+    picks = [
+        memory.content
+        for memory in Memory.objects.filter(child=aarav, type=MemoryType.EVENT)
+        if "chose" in memory.content
+    ]
+    assert len(picks) <= 1, picks
+
+    # And the one kept is the deliberated one, not merely the first or the last.
+    # `played` pauses 6.1s on the river and taps the dragonflies in 1.5s.
+    if picks:
+        assert "river" in picks[0].lower(), picks
+
+
+def test_meeting_a_character_can_clear_the_threshold_on_its_own(aarav) -> None:
+    """§11.5 calls relationships first-class; the arithmetic has to agree.
+
+    At `MET_SOMEONE = 0.5` the best a newly-met character could score was 0.480
+    against a 0.50 threshold — so no character a child met was *ever* rememberable,
+    uncontested. Asserted as arithmetic rather than through a session, because that
+    is the form the bug took: invisible until a real elephant went unremembered.
+    """
+    from apps.memory import candidates as rules
+    from apps.memory.salience import WEIGHTS, Candidate, Signals, salience, threshold
+
+    met = Candidate(
+        type=MemoryType.ENTITY,
+        content="Aarav met Ellie the elephant.",
+        signals=Signals(
+            child_initiated=rules.MET_SOMEONE,
+            emotional_intensity=0.5,
+            novelty=1.0,
+        ),
+    )
+    assert salience(met) >= threshold(), (
+        f"a first-class §11.5 relationship memory scores {salience(met):.3f} "
+        f"against a threshold of {threshold():.2f} and can never be written"
+    )
+    # It must still sit below something the child authored themselves (§11.4).
+    assert rules.MET_SOMEONE < rules.SPOKE
+    assert WEIGHTS["child_initiated"] == max(WEIGHTS.values())
+
+
 def test_what_consolidation_writes_is_ciphertext_on_disk(closed, aarav) -> None:
     """`test_crypto` proves the field; this proves the *write path* uses it.
 

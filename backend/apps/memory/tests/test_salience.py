@@ -233,21 +233,26 @@ def test_a_memory_with_no_anchor_is_compared_whole() -> None:
     assert len(selection.duplicates) == 1
 
 
-def test_identity_and_novelty_ask_different_questions_of_different_text() -> None:
-    """The split `select` depends on, pinned directly.
+def test_the_beat_anchor_counts_as_neither_sameness_nor_staleness() -> None:
+    """Both failures this rule exists for, measured on real sessions.
 
-    Identity reads the gist, so the same act in two scenes is one memory. Novelty
-    reads the whole sentence, so it stays a usable continuous score instead of
-    collapsing to a handful of values off a four-token gist — which is what made
-    two genuinely different choices both score as barely novel.
+    The anchor is scene-setting `candidates` appends for readability. Reading it as
+    *identity* let a repeated tap through as two memories. Reading it as
+    *familiarity* did the opposite and worse: two genuinely different memories drawn
+    from the same beat share that clause, so the second looked stale — which is how
+    "Spidey went to find Ellie" scored 0.431 and the elephant went unremembered.
     """
     held = ['Spidey chose "Count the spiders" — Good morning, Spidey!']
-    repeat = 'Spidey chose "Count the spiders" — the garden gate creaked open at dawn.'
 
-    # Same act, different scene: one memory...
+    # Same act, different scene -> one memory, whatever the scene says.
+    repeat = 'Spidey chose "Count the spiders" — the garden gate creaked open at dawn.'
     assert is_the_same_memory(repeat, held) is True
-    # ...but not *nothing* new, because where it happened is real information.
-    assert novelty_against(repeat, held) > 0.3
+
+    # Different memory, *same* scene -> not the same memory, and genuinely new.
+    # This is the Ellie case: the shared clause must not make it look familiar.
+    from_the_same_beat = "Spidey went to find Ellie — Good morning, Spidey!"
+    assert is_the_same_memory(from_the_same_beat, held) is False
+    assert novelty_against(from_the_same_beat, held) > 0.7
 
 
 def test_two_tellings_of_one_moment_become_one_memory() -> None:

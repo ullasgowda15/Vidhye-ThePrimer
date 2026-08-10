@@ -27,9 +27,15 @@ because §8.9 needs them for difficulty), which is a happy redundancy rather tha
 a reason to skip either — the rows survive Redis, and the log survives the
 retention job that will eventually prune the rows (§17.5).
 
-**Nothing here decides anything.** Every function returns proposals. The threshold
-and the cap live in `salience`, so the question "why do we have this memory" has
-one place to look.
+**Nothing here decides what is worth keeping** — the threshold and the cap live in
+`salience`, so "why do we have this memory" has one place to look. What this module
+*does* decide is what counts as one moment, and that is a different question. An
+adventure has one emotional high point (`_feelings`) and one decision the child
+actually weighed (`_acts`), and proposing every beat's emotion and every tap
+instead would hand the salience pass a dozen near-equal candidates and rely on a
+lexical filter to undo it. It cannot: five different choice labels are five
+different sentences, so they all survive as duplicates-in-meaning. Aggregating here
+is the only place that can be done correctly.
 """
 
 from __future__ import annotations
@@ -59,9 +65,29 @@ CHOSE_A_BRANCH = 0.6
 ANSWERED = 0.4
 CARRIED_ON = 0.0
 
-#: The child met someone the world will remember and re-draw (`companion.Character`).
-#: Not authored by them, but not ours either — they were there when it happened.
-MET_SOMEONE = 0.5
+#: The child's own choice pointed at this character — they picked the card that led
+#: to them ("See the marching elephant"). §11.5's own examples are all of this
+#: shape: *named* the dragon, *chose* to help the lost frog. Seeking someone out is
+#: an act, and it sits just below inventing their name.
+SOUGHT_OUT = 0.75
+
+#: The child met someone the world will remember and re-draw
+#: (`companion.Character`), without having chosen to. Not authored by them, but not
+#: quite ours either — they were there when it happened.
+#:
+#: **This deliberately does not clear the threshold on its own**, and the reason is
+#: worth stating because it looks like a bug. A character the model invented and the
+#: child walked past is scenery, however carefully we persisted its descriptor —
+#: re-read §11.5 and every one of its first-class examples is something the child
+#: *did*. So a merely-encountered character becomes a memory only when the moment
+#: carried real feeling: at 0.65 it clears when the introducing beat was delighted
+#: or awed, and falls just short when the beat was mildly curious. That is §11.4's
+#: design doing its job rather than failing.
+#:
+#: The founder's first session is the case that taught this: Ellie the elephant was
+#: unremembered at 0.4977, and the fix was not a bigger number — it was noticing
+#: that Spidey had *chosen* "See the marching elephant", which is `SOUGHT_OUT`.
+MET_SOMEONE = 0.65
 
 #: Emotion words, as `(intensity, valence)`. `Beat.emotion` is a free-text
 #: snake_case compound from the generator ("playful_curious", "tender_brave"), so
@@ -119,6 +145,12 @@ EMOTION_FLOOR = 0.6
 #: How many chosen labels must share a topic word before it reads as a
 #: preference rather than a coincidence (§11.7's interest graph, in miniature).
 PREFERENCE_REPEATS = 2
+
+#: What one retry on a `choose` beat is worth as thinking time, when ranking which
+#: decision the child weighed most. Two seconds, which is roughly what a change of
+#: mind costs a four-year-old — and a guess, deliberately a modest one, since this
+#: only ever decides *which* of several picks represents the adventure.
+RETRY_AS_THINKING_MS = 2000
 
 _WORD = re.compile(r"[a-z][a-z']+")
 
@@ -192,17 +224,35 @@ def _acts(
     child_name: str,
     entity_counts: Counter[str],
 ) -> list[Candidate]:
-    """One candidate per thing the child actually did (§11.4's child-initiated).
+    """What the child did, as candidates (§11.4's child-initiated).
 
-    A `say` answer becomes an `event` in the child's own words; a branch pick
-    becomes an `event` about the path they took; a counted or tapped answer
-    becomes a `skill_moment`, because what is memorable about it is the *doing*
-    rather than the branch. A tap that only carried the story on becomes a
-    candidate too, scored at zero on the factor that matters — proposed so the
-    threshold is what rejects it, rather than a rule here quietly deciding a whole
-    class of moment is never worth remembering.
+    A `say` answer becomes an `event` in the child's own words; a counted or tapped
+    answer becomes a `skill_moment`, because what is memorable is the *doing* rather
+    than the branch. Both are one candidate per beat: they are rare, and each is
+    genuinely distinct evidence.
+
+    **Branch picks are different, and get exactly one candidate for the whole
+    adventure.** A seven-beat story contains five or six of them, every one scoring
+    just over the threshold — so proposing each produced a memory table that was
+    four rows of "Spidey chose ⟨label⟩" and nothing about the elephant they met.
+    That is the transcript §11.4 exists to prevent, arriving by volume instead of by
+    length, and the near-duplicate filter cannot help because the labels genuinely
+    differ.
+
+    So the most *deliberated* pick represents the adventure, and the recurrence is
+    carried by the `preference` type (§11.7) where it belongs. This is the same
+    narrowing `_feelings` already does for emotion — an adventure has one emotional
+    high point and one decision the child actually weighed, and a friend remembers
+    those rather than the route.
+
+    A tap that only carried the story on is still proposed, scored at zero on the
+    factor that matters, so the threshold rejects it rather than a rule here quietly
+    deciding a whole class of moment can never be remembered.
     """
     proposals: list[Candidate] = []
+    #: `(deliberation, seq, candidate)` for every real branch pick, so the most
+    #: weighed one can be chosen once the whole adventure has been read.
+    branch_picks: list[tuple[int, int, Candidate]] = []
 
     for beat in beats:
         choice = next(iter(beat.choices.all()), None)
@@ -257,27 +307,59 @@ def _acts(
             continue
 
         offered = len(beat.options)
-        proposals.append(
-            Candidate(
-                type=MemoryType.EVENT,
-                content=(
-                    f'{child_name} chose "{label}" — {_anchor(beat)}'
-                    if label
-                    else f"{child_name} carried on — {_anchor(beat)}"
-                ),
-                entities=entities,
-                valence=valence,
-                signals=Signals(
-                    child_initiated=CHOSE_A_BRANCH if offered > 1 else CARRIED_ON,
-                    emotional_intensity=intensity,
-                    skill_milestone=_milestone(beat, choice, asks),
-                    repetition=repetition,
-                ),
-                source_adventure_id=adventure.pk,
-            )
+        pick = Candidate(
+            type=MemoryType.EVENT,
+            content=(
+                f'{child_name} chose "{label}" — {_anchor(beat)}'
+                if label
+                else f"{child_name} carried on — {_anchor(beat)}"
+            ),
+            entities=entities,
+            valence=valence,
+            signals=Signals(
+                child_initiated=CHOSE_A_BRANCH if offered > 1 else CARRIED_ON,
+                emotional_intensity=intensity,
+                skill_milestone=_milestone(beat, choice, asks),
+                repetition=repetition,
+            ),
+            source_adventure_id=adventure.pk,
         )
+        if offered > 1:
+            branch_picks.append((_deliberation(choice), beat.seq, pick))
+        else:
+            # Not a decision at all — one card, or none we can name. Proposed so the
+            # threshold rejects it, and never competing to represent the adventure.
+            proposals.append(pick)
+
+    if branch_picks:
+        # Most weighed first; the later beat wins a tie, being nearer the story's
+        # turning point. `seq` is unique per adventure, so the candidates themselves
+        # are never compared — they are not orderable and do not need to be.
+        branch_picks.sort(key=lambda entry: (-entry[0], -entry[1]))
+        proposals.append(branch_picks[0][2])
+        if len(branch_picks) > 1:
+            logger.info(
+                "memory.branch_picks_folded adventure=%s picks=%d kept_seq=%d",
+                adventure.pk,
+                len(branch_picks),
+                branch_picks[0][1],
+            )
 
     return proposals
+
+
+def _deliberation(choice: Choice) -> int:
+    """How much the child weighed this decision, in milliseconds of thinking.
+
+    Dwell plus a flat allowance per retry. §11.2 names dwell as a signal precisely
+    because it separates "thought about it" from "tapped the first thing", and on a
+    `choose` beat a retry is not a mistake — there is no wrong option (§8.5) — it is
+    the child changing their mind, which is more deliberation rather than less.
+
+    A missing latency reads as zero rather than as average: an old row, or a client
+    that did not send one, should not be able to win the adventure's one slot.
+    """
+    return (choice.latency_ms or 0) + (choice.retries or 0) * RETRY_AS_THINKING_MS
 
 
 def _skill_sentence(child_name: str, beat: Beat, choice: Choice, asks: str, answer: str) -> str:
@@ -379,6 +461,16 @@ def _cast(
     A character the child *named* — their spoken answer contains the name — is
     marked as theirs, which is the single most reciprocity-rich memory the product
     can hold (§9.3).
+
+    **The memory carries the moment they were introduced in**, like every other type
+    here. It did not, at first, and "Spidey met Ellie." turned out to be the whole
+    row: three words, no context, and nothing a companion could warmly bring up
+    later. It also scored 0.4977 against a 0.50 threshold on the founder's own
+    session — because a three-token sentence shares its only distinctive word with
+    everything else about that child, so lexical novelty can never rate it highly.
+    Both problems have the same fix: say what happened. The context is what makes
+    §11.5's "high fidelity" true, and the length is what stops the scoring from
+    punishing brevity we chose ourselves.
     """
     introduced = list(
         Character.objects.filter(child=adventure.child, first_seen_adventure=adventure)
@@ -394,30 +486,45 @@ def _cast(
         for choice in beat.choices.all()
         if choice.value is not None
     )
+    # Every label the child actually picked, so a character they *went to find* can
+    # be told apart from one who simply walked through the scene.
+    chosen_labels = " ".join(
+        str((beat.option(choice.chosen_key) or {}).get("label") or "").lower()
+        for beat in beats
+        for choice in beat.choices.all()
+    )
+    origin = _introducing_beats(beats)
 
     proposals: list[Candidate] = []
     for character in introduced:
         named_by_child = bool(character.name) and character.name.lower() in spoken
+        sought_out = _referenced_in(character, chosen_labels)
         # `role` is blank on every row today — `ai.schemas.CastMember` has no such
         # field, so nothing fills it. Read anyway rather than hard-coding the bare
         # name, because "Bramble the lantern-keeper" is what this memory should say
         # the day the generated cast member carries a role.
         role = f" the {character.role}" if character.role else ""
+        beat = origin.get(character.key)
+        # The introducing beat's own emotion, rather than a flat guess. Meeting
+        # someone is warm by default in this product — there are no hostile
+        # characters (§13.2's absolute rules) — so that is the fallback when the
+        # beat that introduced them can no longer be identified.
+        intensity, valence = _emotion_of(beat.emotion) if beat is not None else (0.5, 0.5)
+        if named_by_child:
+            met, initiated = f"{child_name} named {character.name}{role}", SPOKE
+        elif sought_out:
+            met, initiated = f"{child_name} went to find {character.name}{role}", SOUGHT_OUT
+        else:
+            met, initiated = f"{child_name} met {character.name}{role}", MET_SOMEONE
         proposals.append(
             Candidate(
                 type=MemoryType.ENTITY,
-                content=(
-                    f"{child_name} named {character.name}{role}."
-                    if named_by_child
-                    else f"{child_name} met {character.name}{role}."
-                ),
+                content=f"{met} — {_anchor(beat)}" if beat is not None else f"{met}.",
                 entities=[f"character:{character.key}"],
-                # Meeting someone is a warm thing by default in this product —
-                # there are no hostile characters (§13.2's absolute rules).
-                valence=0.5,
+                valence=valence,
                 signals=Signals(
-                    child_initiated=SPOKE if named_by_child else MET_SOMEONE,
-                    emotional_intensity=0.5,
+                    child_initiated=initiated,
+                    emotional_intensity=intensity,
                     repetition=_repetition(
                         [f"character:{character.key}"], entity_counts, len(beats)
                     ),
@@ -426,6 +533,42 @@ def _cast(
             )
         )
     return proposals
+
+
+def _referenced_in(character: Character, text: str) -> bool:
+    """Did the child's own words or picks point at this character?
+
+    Matches the name and the key, because a generated option says "See the marching
+    elephant" while the character's key is `elephant` and its name is `Ellie` — the
+    label almost never uses the name, since the child has not been introduced yet.
+    That asymmetry is the whole reason to check both.
+
+    Deliberately a substring test on short strings. The alternative — fuzzy matching
+    a label against a character — would start crediting the child with choices they
+    did not make, and over-crediting is the one direction this must not fail in.
+    """
+    haystack = text.lower()
+    for token in (character.name, character.key.replace("_", " ")):
+        candidate = str(token or "").strip().lower()
+        if len(candidate) > 2 and candidate in haystack:
+            return True
+    return False
+
+
+def _introducing_beats(beats: list[Beat]) -> dict[str, Beat]:
+    """Which beat first introduced each character, by key.
+
+    Read from `scene.new_characters`, which is where `companion.cast.remember` got
+    the character from in the first place — so this is the same claim, not a guess.
+    `Character.first_seen_adventure` records the adventure but not the beat, and the
+    beat is what carries the moment worth remembering.
+    """
+    origin: dict[str, Beat] = {}
+    for beat in beats:
+        for entry in (beat.scene or {}).get("new_characters") or []:
+            if isinstance(entry, dict) and (key := str(entry.get("key") or "").strip()):
+                origin.setdefault(key, beat)
+    return origin
 
 
 # ---------------------------------------------------------------------------
