@@ -87,6 +87,18 @@ class PlaySession(UUIDModel):
     #: consolidation and leaving it null would make it a permanent retry.
     consolidated_at = models.DateTimeField(null=True, blank=True)
 
+    #: When the skill model was updated from this sitting (§10.5), or null.
+    #:
+    #: The same idempotency gate as `consolidated_at`, one field along, and it
+    #: matters more here. A redelivered consolidation writes memories that are
+    #: deduped downstream; a redelivered mastery update would fold the same
+    #: evidence into a running estimate twice, and a child who counted five frogs
+    #: once would look like a child who did it twice — invisibly, permanently, and
+    #: in the number a parent is shown on Day 12. Stamped even when a sitting
+    #: produced no evidence at all, because "we looked and there was nothing" is a
+    #: completed update.
+    learning_updated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-started_at"]
         indexes = [models.Index(fields=["child", "-started_at"])]
@@ -125,12 +137,25 @@ class Adventure(UUIDModel):
     #: *against* it, which is what stops a branching story from wandering.
     plan = models.JSONField(default=dict, blank=True)
 
-    # Nullable today: the Learning Engine's objective selector is Day 10, so a
-    # Day-4 adventure carries the placeholder objective and nothing chose it.
-    # "Nobody has selected an objective yet" and "the objective is the empty
-    # string" are different states, and only one of them is a bug.
+    #: The objective this sitting quietly practises, as a `learning.Objective`
+    #: **code** rather than its id (see that model on why), chosen once by
+    #: `learning.select_objective` before the plan is generated (§10.3, §8.10).
+    #:
+    #: Still nullable, and the null still means something: a child whose age the
+    #: catalog has nothing for gets a story with no learning directive rather than
+    #: no story. "Nobody selected an objective" and "the objective is the empty
+    #: string" are different states, and only one of them is a bug.
+    #:
+    #: Read back by the mastery update, which is why it is written down rather
+    #: than re-derived: it says what the child's answers in this story were
+    #: evidence *about* (§10.5), and a re-derivation would drift with the catalog.
     primary_objective_id = models.CharField(max_length=64, null=True, blank=True)  # noqa: DJ001
+    #: §8.10's optional interleaved second objective. Unused at MVP — one
+    #: objective per sitting, done properly.
     secondary_objective_id = models.CharField(max_length=64, null=True, blank=True)  # noqa: DJ001
+    #: Where the sitting *started* (§10.4). The live value adapts within the
+    #: session from in-story evidence and is computed per beat
+    #: (`learning.adapt`); this is the estimate it began from.
     difficulty = models.FloatField(default=0.4)
 
     status = models.CharField(
@@ -234,8 +259,17 @@ class Beat(UUIDModel):
     scene = models.JSONField(default=dict, blank=True)
     #: `{type, prompt_audio, expected, choices}` — null when the beat asks nothing.
     interaction = models.JSONField(null=True, blank=True)
-    #: `{objective_id, difficulty, skill_evidence_key}` — null when nothing is
-    #: being practised. Day 10 reads these back as mastery evidence.
+    #: `{objective_id, difficulty, skill_evidence_key}` (§8.10). `objective_id` is
+    #: `"none"` on every beat that practised nothing — a transition, a plain
+    #: decision point, a safe fallback — which is what makes "this beat exercised
+    #: the objective" a fact on the row rather than something reconstructed later
+    #: from an interaction type.
+    #:
+    #: Two of the three fields are **ours**, stamped by
+    #: `orchestrator.learning_tag_for` over whatever the model returned: the tag
+    #: exists so the objective can be verified as exercised, and a tag the writer
+    #: self-reported would verify nothing. `difficulty` is read straight back by
+    #: the mastery update as the difficulty the child faced (§10.5).
     learning = models.JSONField(null=True, blank=True)
     emotion = models.CharField(max_length=32, blank=True)
 

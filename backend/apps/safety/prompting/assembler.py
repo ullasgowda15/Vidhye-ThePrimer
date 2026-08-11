@@ -233,20 +233,44 @@ def _memory_block(memory: Sequence[Mapping[str, Any]] | None) -> str:
 
 
 def _learning_block(objective: Mapping[str, Any] | None) -> str:
+    """The objective this adventure is quietly practising (§8.10, §10.3).
+
+    Three lines and their order is the argument. The objective says *what*; the
+    demand — filled in by the Learning Engine from the child's difficulty, so it
+    arrives as "five countable things" rather than as `0.55` — says what the story
+    must therefore contain (§8.9); and the last line says the only thing that
+    matters about both, which is that the child must never be able to tell.
+
+    `demand` is optional so that a caller with no engine behind it (a smoke
+    command, a red-team fixture) still produces a valid, safe prompt. Its absence
+    means the model is told what to teach and left to size it, which is the
+    pre-Day-10 behaviour and is strictly worse — it is not, however, unsafe, and a
+    prompt layer is the wrong place to start raising.
+
+    The catalog is content we wrote and shipped in a migration, not a text box a
+    parent filled in, so it is rendered rather than scrubbed — the same reasoning
+    as the companion's personality preset above. A future call site that fed this
+    layer *generated* text would need to revisit that.
+    """
     if not objective:
         return (
             "No learning objective is set for this beat. Do not invent one — keep the "
             "beat playful and let the story lead."
         )
-    return "\n".join(
-        [
-            f"Primary objective: {objective.get('code', 'unknown')} — "
-            f"{objective.get('description', '')}".rstrip(),
-            f"Target difficulty: {objective.get('difficulty', 0.5)} (0 easiest, 1 hardest).",
-            "Embed it invisibly: the child is playing, not being tested. Never announce "
-            "the objective, never grade the answer.",
-        ]
+
+    lines = [
+        f"Primary objective: {objective.get('code', 'unknown')} — "
+        f"{objective.get('description', '')}".rstrip(),
+        f"Target difficulty: {objective.get('difficulty', 0.5)} (0 easiest, 1 hardest).",
+    ]
+    if demand := str(objective.get("demand") or "").strip():
+        lines.append(f"What that means for this adventure: {demand}")
+    lines.append(
+        "Embed it invisibly: the child is playing, not being tested. Never announce "
+        "the objective, never name the skill, never grade the answer. The child must "
+        "finish the story believing they went somewhere, not that they were taught."
     )
+    return "\n".join(lines)
 
 
 def _plan_block(plan: Mapping[str, Any] | None, running_summary: str) -> str:

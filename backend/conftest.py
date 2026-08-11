@@ -105,11 +105,21 @@ class ScriptedAIProvider:
       a `Chose:` line, the narration names it. That is what lets a test assert the
       thing §8.5 actually requires — that a consequence beat is recognisably about
       *this* choice — rather than merely that some beat came back.
-    * **It reads its own position out of the prompt.** Beat one is a counting beat,
-      the middle beats offer illustrated choices, and the beat the prompt calls the
-      last one closes warmly with a hook. A scripted adventure therefore has the
-      same *shape* as a generated one, which is what makes playing one end to end
-      in CI worth anything.
+    * **It reads its own position out of the prompt.** Beats offer illustrated
+      choices, and the beat the prompt calls the last one closes warmly with a
+      hook. A scripted adventure therefore has the same *shape* as a generated one,
+      which is what makes playing one end to end in CI worth anything. Beat one
+      used to be hard-coded as a counting beat, because before Day 10 nothing else
+      ever produced one and the scaffolding path could not otherwise be reached;
+      the Learning Engine owns that now (`orchestrator.learning_seqs`), and a fixed
+      count outside its asks would be a beat that looks like evidence and is not.
+    * **It answers the Learning Engine's ask.** From Day 10 a beat that carries one
+      of `story_prompts`' learning rules comes back in the shape that rule asked
+      for, with the *number the engine chose* in `interaction.expected` — five
+      stepping stones when the child is ready for five (§8.9). Without this the
+      whole loop of §5.5 would be untestable end to end: no beat would ever carry
+      an expected answer, so no tap could ever become evidence, and every mastery
+      test would have to hand-build the rows it claims a story produced.
     * **It can be told to answer badly.** `queue_beat_response` pushes raw strings,
       which is how the router's validate-and-repair path (§19.6) is exercised
       end-to-end instead of only in the router's own unit tests.
@@ -260,6 +270,104 @@ class ScriptedAIProvider:
         greeting += f" Come on — {companion} has somewhere new to show you today."
         return {"greeting": greeting, "remembered": remembered}
 
+    @staticmethod
+    def learning_ask(user: str) -> dict[str, Any] | None:
+        """The interaction the Learning Engine's rule asked for, or None.
+
+        Reads the *user turn* rather than being told, for the same reason the
+        choice echo does: the thing under test is that the engine's number reached
+        the prompt at all, and a fixture handed the number directly would pass
+        while `story_prompts.learning_rule` was rendering nothing.
+        """
+        from apps.story.ai.prompts import story as story_prompts
+
+        if counted := re.search(r"interaction\.expected to (\d+)", user):
+            quantity = int(counted.group(1))
+            return {
+                "kind": "count",
+                "quantity": quantity,
+                "interaction": {
+                    "type": "count",
+                    "prompt_audio": "How many can you see?",
+                    "expected": quantity,
+                    "choices": None,
+                },
+            }
+
+        if "which group has more" in user:
+            more = re.search(r"— (\d+) of one kind and (\d+) of another", user)
+            quantity = int(more.group(1)) if more else 3
+            return {
+                "kind": "compare",
+                "quantity": quantity,
+                "interaction": {
+                    "type": "choose",
+                    "prompt_audio": "Which side has more?",
+                    "expected": "the_big_cluster",
+                    "choices": [
+                        {
+                            "key": "the_big_cluster",
+                            "label": "The crowded stones",
+                            "icon_prompt": "a crowded cluster of mossy stones",
+                        },
+                        {
+                            "key": "the_small_cluster",
+                            "label": "The quiet stones",
+                            "icon_prompt": "a few scattered mossy stones",
+                        },
+                    ],
+                },
+            }
+
+        if "point at the thing it describes" in user:
+            novel = story_prompts.NOVEL_WORD in user
+            return {
+                "kind": "word",
+                "quantity": 0,
+                "novel": novel,
+                "interaction": {
+                    "type": "choose",
+                    "prompt_audio": "Which one is it?",
+                    "expected": "the_enormous_one",
+                    "choices": [
+                        {
+                            "key": "the_enormous_one",
+                            "label": "The great grey boulder",
+                            "icon_prompt": "an enormous grey boulder in the reeds",
+                        },
+                        {
+                            "key": "the_tiny_one",
+                            "label": "The little pebble",
+                            "icon_prompt": "a tiny smooth pebble on wet sand",
+                        },
+                    ],
+                },
+            }
+        return None
+
+    @staticmethod
+    def learning_narration(subject: str, asked: dict[str, Any]) -> str:
+        """A learning beat written as a scene, never as a question about a skill.
+
+        Deliberately free of the words a lesson would use. The Day-10 tests read
+        these back and assert that a reviewer would see a story — an assertion
+        worth nothing if the fixture cheerfully narrated "let's practise counting".
+        """
+        if asked["kind"] == "count":
+            return (
+                f"the river goes quiet, and {asked['quantity']} little {subject} "
+                "are sitting along the fallen log in the sun."
+            )
+        if asked["kind"] == "compare":
+            return (
+                "Pip stops by two heaps of mossy stones — one crowded and "
+                "chattering, one quiet with room to spare."
+            )
+        return (
+            "an enormous grey boulder leans over the reeds, and beside it a "
+            "tiny pebble glints on the wet sand."
+        )
+
     #: The options a scripted decision beat offers. Two, with distinct keys and
     #: distinct icons, so a test can make genuinely *different* choices across two
     #: play-throughs and see the story diverge.
@@ -271,6 +379,8 @@ class ScriptedAIProvider:
 
     @staticmethod
     def beat(system: str, user: str = "") -> dict[str, Any]:
+        from apps.story.ai.prompts import story as story_prompts
+
         loved = re.search(r"loves ([^.\n]+)\.", system)
         subject = loved.group(1) if loved else "the woods"
 
@@ -280,6 +390,12 @@ class ScriptedAIProvider:
         # as context; this reads it so the test can prove it arrived.
         chosen = re.search(r"^Chose: (.+)$", system, re.MULTILINE)
         helped = "The companion helped them get there." in system
+
+        # The Learning Engine's ask for this beat, read back out of the user turn
+        # exactly as a real writer would read it. `None` on the beats that carry no
+        # objective, which is most of them.
+        asked = ScriptedAIProvider.learning_ask(user)
+        helped_here = story_prompts.SCAFFOLD_DEMAND in user
 
         opening = f"Pip peeks over the log. Three little {subject} sit in a row!"
         if is_final:
@@ -296,6 +412,17 @@ class ScriptedAIProvider:
         else:
             narration = opening
 
+        if asked is not None and not is_final:
+            # A learning beat. The objective is dissolved into the scene — never
+            # announced — because the assertion these fixtures exist to support is
+            # that a reader sees a story (§8.10, Day 10 criterion 3). It still
+            # names the child's choice and still opens with a hand when one was
+            # needed: carrying the objective does not excuse a beat from §8.5.
+            scene = ScriptedAIProvider.learning_narration(subject, asked)
+            narration = f"Because you chose {chosen.group(1)}, {scene}" if chosen else scene
+            if helped or helped_here:
+                narration = f"'Let's try it together,' says Pip. {narration}"
+
         interaction: dict[str, Any]
         if is_final:
             interaction = {
@@ -304,13 +431,8 @@ class ScriptedAIProvider:
                 "expected": None,
                 "choices": None,
             }
-        elif seq == 1:
-            interaction = {
-                "type": "count",
-                "prompt_audio": "How many can you count?",
-                "expected": 3,
-                "choices": None,
-            }
+        elif asked is not None:
+            interaction = asked["interaction"]
         else:
             interaction = {
                 "type": "choose",

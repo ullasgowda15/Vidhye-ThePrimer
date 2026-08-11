@@ -15,6 +15,9 @@ assembly testable without a model.
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from apps.learning import demands as learning_demands
+from apps.learning.demands import Demand
+
 #: Asked of the *plan* call. Short on purpose — a plan detailed enough to be a
 #: script would make the child's choices cosmetic (§8.5).
 PLAN_REQUEST = """\
@@ -87,9 +90,12 @@ say wrong or nearly or almost, and do not make this beat easier-looking than the
 last one in a way the child would notice. Nothing was lost and nothing is behind.\
 """
 
-#: Said on every beat that is not the last one. The 2-3 bound is §14.5's "one
-#: decision at a time, max 2-3 options"; the pictures are §14.4, because a text
-#: list excludes the entire audience.
+#: Said on every beat that is not the last one. §14.5 bounds a decision at "one at
+#: a time, max 2-3 options" and §8.9 decides *which* of those two it is from the
+#: child's difficulty — two cards is a real reduction in load and the only one
+#: available on a beat with no number in it. Rendered through `choice_rule`, never
+#: read directly. The pictures are §14.4, because a text list excludes the entire
+#: audience.
 #:
 #: "Different next-actions" is spelled out with its counter-example because the
 #: cosmetic variant is what a model reaches for under pressure: a live beat
@@ -100,7 +106,7 @@ last one in a way the child would notice. Nothing was lost and nothing is behind
 #: becomes guaranteed.
 CHOICE_RULE = """\
 End this beat by giving the child something to do. Prefer interaction.type \
-"choose" with two or three options in interaction.choices — each one a different \
+"choose" with {count} options in interaction.choices — each one a different \
 thing that happens next, each leading somewhere good. There are no wrong options \
 and no option that ends the story badly.
 
@@ -115,33 +121,113 @@ picture of it: a place, an object, an action, no characters and no writing in th
 image.\
 """
 
-#: Said instead of `CHOICE_RULE` on the one beat that asks the child to count
-#: (§10.3's objective, `orchestrator.asks_to_count`).
-#:
-#: This exists because `CHOICE_RULE` says "prefer choose", and a model given that
-#: on every beat picks `choose` every time — which left the numeracy objective
-#: riding along in the prompt as data that nothing ever acted on, and left §8.5's
-#: no-fail-states guarantee with nothing that *can* be answered wrongly and so no
-#: way to be exercised. A `choose` has no wrong answer; that is the point of it,
-#: and it is also why it cannot be the only thing a beat ever asks.
-#:
-#: The count is small and visible on purpose: the child answers by looking at the
-#: picture, not by knowing arithmetic, and the illustration has to actually show
-#: the things or the question is unanswerable.
-COUNT_RULE = """\
-End this beat by asking the child to count something. Set interaction.type to \
-"count", set interaction.expected to how many there are as a whole number of \
-three or fewer, and set interaction.choices to null — this beat asks for a \
-number, not a pick.
+# ---------------------------------------------------------------------------
+# The learning ask (§8.9, §8.10, §10.4)
+# ---------------------------------------------------------------------------
+# Said instead of `CHOICE_RULE` on the beats the Learning Engine has chosen to
+# carry the objective (`orchestrator.learning_ask_at`). One of the three below is
+# used per beat, selected by `demands.Demand.kind`.
+#
+# They exist because `CHOICE_RULE` says "prefer choose", and a model given that on
+# every beat picks `choose` every time — which left the numeracy objective riding
+# along in the prompt as data that nothing ever acted on, and left §8.5's
+# no-fail-states guarantee with nothing that *can* be answered wrongly and so no
+# way to be exercised. A `choose` between two good paths has no wrong answer; that
+# is the point of it, and it is also why it cannot be the only thing a beat asks.
+#
+# Every one of them is parameterised by a **number the engine chose**, not by an
+# adjective. "Count to five" and "count to ten" are the same instruction with a
+# different integer in it (§8.9), and handing the model the integer rather than
+# the difficulty float is what makes the answer the child gives evidence about the
+# difficulty they were actually set (§5.5's loop).
+#
+# And every one of them ends the same way, deliberately: nothing on screen may
+# read as a test, and neither option, number or word may be treated as a mark.
 
-The things being counted must be in the scene and named in \
-scene.illustration_prompt, so the child can answer by looking at the picture. \
-interaction.prompt_audio is the companion asking how many there are, in one \
-short sentence.
+#: Numeracy, counting. The count is small and visible on purpose: the child
+#: answers by looking at the picture, not by knowing arithmetic, and the
+#: illustration has to actually show the things or the question is unanswerable.
+COUNT_RULE = """\
+End this beat by asking the child to count something. Put exactly {quantity} of \
+one kind of thing in the scene, set interaction.type to "count", set \
+interaction.expected to {quantity}, and set interaction.choices to null — this \
+beat asks for a number, not a pick.
+
+Those {quantity} things must be in the scene and named in \
+scene.illustration_prompt, arranged so they can be counted at a glance, so the \
+child can answer by looking at the picture. interaction.prompt_audio is the \
+companion asking how many there are, in one short sentence.
 
 There is no wrong answer here. Do not hint at what happens if they miscount, do \
 not praise the right number in advance, and do not make the counting sound like \
 a test.\
+"""
+
+#: Numeracy, comparison. Answered by tapping a card rather than on the number pad,
+#: because "which is more" is a judgement about two groups and not a count of one.
+COMPARE_RULE = """\
+End this beat by putting two groups of things side by side — {more} of one kind \
+and {fewer} of another — and asking the child which group has more. Set \
+interaction.type to "choose" with exactly two options, one naming each group, and \
+set interaction.expected to the key of the option with {more} in it.
+
+Both groups must be in scene.illustration_prompt and countable at a glance, so \
+the child answers by looking rather than by knowing. Give each option an \
+icon_prompt showing its own group and nothing else.
+
+Neither option is a wrong option. Whichever the child taps, the story goes \
+somewhere good and the companion is delighted with them — the difference between \
+the two is recorded and never spoken.\
+"""
+
+#: Vocabulary. The word is *used*, never taught: §8.10's "embedded in the plot so
+#: the child never perceives a lesson" fails the moment a companion says "that
+#: word means…". So the instruction is to say it about something the picture makes
+#: obvious, and then to point.
+WORD_RULE = """\
+End this beat around one word, without ever saying that it is a word. Pick {familiarity} \
+that fits the objective above and describes something the picture shows plainly. Use it \
+naturally in the narration — the companion simply talks that way — and then ask the child \
+to point at the thing it describes.
+
+Set interaction.type to "choose" with exactly two options, each one a thing in the scene, \
+and set interaction.expected to the key of the one the word actually describes. Both must \
+be in scene.illustration_prompt and telling them apart must be possible from the picture \
+alone.
+
+Never define the word, never spell it, and never ask the child what it means. Neither \
+option is a wrong option: whichever they tap, the story goes somewhere good, and the \
+companion simply uses the word again, correctly, about the right thing.\
+"""
+
+#: `WORD_RULE`'s `{familiarity}`, from `Demand.novel_word` (§8.9's familiar vs.
+#: novel word).
+NOVEL_WORD = "a word this child has probably not met in a story yet"
+FAMILIAR_WORD = "an everyday word this child will already know"
+
+#: Appended to whichever rule above applies when the child struggled earlier in
+#: this same sitting (§10.4). It is the *companion* that changes, not the child's
+#: standing: the whole paragraph is about doing it together, and the last sentence
+#: exists because a beat that visibly shrinks tells a four-year-old they failed.
+SCAFFOLD_DEMAND = """\
+The child needed a hand earlier in this story, so do this one *with* them. The \
+companion starts out loud and leaves them the end of it — "one… two… you say the \
+next one!" — a hand held out, an answer modelled, getting there together as the \
+whole shape of the beat.
+
+Do not draw any attention to it. Nothing about earlier, no mention of a mistake, \
+no "let's try an easier one", nothing that frames this as a smaller thing than \
+the last one. The companion is being companionable, which is what they are always \
+like. Nothing was lost and nothing is behind.\
+"""
+
+#: The other half of §10.4, and the half that is usually forgotten: a child who
+#: found the last one easy is a child about to be bored.
+STRETCH_DEMAND = """\
+The child found the last one easy, so let this one reach a little further — more \
+to look at, arranged so they have to look properly rather than glance. Keep it \
+delightful rather than effortful, and keep every rule above: there is still no \
+wrong answer and still nothing that reads as a test.\
 """
 
 #: Said only on the last beat (§8.8). The hook is the reason a child asks to come
@@ -291,13 +377,57 @@ def safety_constraint(categories: Sequence[str]) -> str:
     return "\n\n".join([SAFETY_REWRITE_HEADER, *dict.fromkeys(guidance)])
 
 
+#: How a small number is said in an instruction. Two entries, because §14.5 allows
+#: exactly two values and a general number-speller would be code with one caller
+#: and nine untested branches.
+_NUMBER_WORDS = {2: "two", 3: "three"}
+
+#: What a beat offers when no objective is set at all — the pre-Day-10 wording,
+#: kept for that case only.
+DEFAULT_CHOICE_COUNT = 3
+
+
+def choice_rule(count: int = DEFAULT_CHOICE_COUNT) -> str:
+    """`CHOICE_RULE` with the number of cards the child's difficulty allows (§8.9)."""
+    return CHOICE_RULE.format(count=_NUMBER_WORDS.get(count, "two or three"))
+
+
+def learning_rule(demand: Demand) -> str:
+    """The instruction for a beat that carries the objective (§8.9, §8.10, §10.4).
+
+    One of three shapes, chosen by `demand.kind`, with the engine's number already
+    substituted in — plus the within-session adaptation, appended rather than
+    woven through, so a reviewer reading a live prompt can see at a glance whether
+    the companion was helping on that beat and why.
+
+    What this function very deliberately does *not* do is name the objective, the
+    difficulty, or the fact that anything is being practised. The objective's own
+    description travels in the `learning_directive` layer where it is framed as
+    something to dissolve into the plot; this is only ever the concrete ask
+    (§8.10). A reader of the finished beat sees a river with five stepping stones.
+    """
+    if demand.kind == learning_demands.COUNT:
+        rule = COUNT_RULE.format(quantity=demand.quantity)
+    elif demand.kind == learning_demands.COMPARE:
+        rule = COMPARE_RULE.format(more=demand.quantity, fewer=demand.smaller)
+    else:
+        rule = WORD_RULE.format(familiarity=NOVEL_WORD if demand.novel_word else FAMILIAR_WORD)
+
+    if demand.scaffold:
+        return "\n\n".join([rule, SCAFFOLD_DEMAND])
+    if demand.stretch:
+        return "\n\n".join([rule, STRETCH_DEMAND])
+    return rule
+
+
 def beat_request(
     *,
     seq: int,
     beat_id: str,
     is_first: bool,
     is_final: bool = False,
-    ask_to_count: bool = False,
+    demand: Demand | None = None,
+    ask_now: bool = False,
     stage: str = "",
     prev_choice: Mapping[str, Any] | None = None,
     characters: Sequence[str] = (),
@@ -316,6 +446,13 @@ def beat_request(
     beat of every sitting to be warm and safe, and a stateless call has no way to
     know it is writing the last one — a model told only "beat six of six" will
     happily leave the child mid-problem.
+
+    `demand` is what the Learning Engine decided this adventure is asking for, and
+    it is read on **every** beat rather than only on the learning ones: even a
+    plain decision point takes its card count from the child's difficulty (§8.9).
+    `ask_now` is what makes this the beat that actually carries the objective —
+    one thing decided by the orchestrator, so that "what to ask" and "when to ask
+    it" cannot drift apart in a model's judgement.
     """
     lines = [
         f'Write beat {seq} of this adventure. Use "{beat_id}" as its beat_id.',
@@ -337,8 +474,10 @@ def beat_request(
 
     if is_final:
         lines.append(FINAL_BEAT_RULE)
+    elif ask_now and demand is not None:
+        lines.append(learning_rule(demand))
     else:
-        lines.append(COUNT_RULE if ask_to_count else CHOICE_RULE)
+        lines.append(choice_rule(demand.choice_count if demand else DEFAULT_CHOICE_COUNT))
 
     lines.append(CAST_RULE.format(known=", ".join(characters) or "(only the companion)"))
 

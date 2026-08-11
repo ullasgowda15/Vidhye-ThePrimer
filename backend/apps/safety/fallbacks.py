@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from apps.learning.demands import NO_OBJECTIVE
 from apps.profiles.models import AGE_BAND_OLDER, AGE_BAND_YOUNGER, Child
 from apps.story.ai.schemas import Beat as BeatContract
 
@@ -325,7 +326,12 @@ def safe_fallback_beat(
             },
             "interaction": interaction,
             "learning": {
-                "objective_id": "none",
+                # A fallback teaches nothing, and says so in the one field the
+                # Learning Engine reads: `engine.evidence_from` refuses to draw
+                # evidence from a beat marked this way, so a degraded sitting is a
+                # sitting with less evidence rather than one that taught us
+                # something false about the child (§10.5).
+                "objective_id": NO_OBJECTIVE,
                 "difficulty": 0.0,
                 "skill_evidence_key": FALLBACK_EVIDENCE_KEY,
             },

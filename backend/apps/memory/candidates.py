@@ -46,6 +46,7 @@ from collections import Counter
 from typing import Any
 
 from apps.companion.models import Character
+from apps.learning.demands import NO_OBJECTIVE
 from apps.memory import entities, stm
 from apps.memory.models import MemoryType
 from apps.memory.salience import Candidate, Signals
@@ -705,9 +706,19 @@ def _entities_for(beat: Beat, *, extra: list[str] | None = None) -> list[str]:
 
 
 def _objective_ref(beat: Beat) -> list[str]:
-    """The objective this beat practised, so Day 10 can find its evidence."""
+    """The objective this beat practised, so the Learning Engine's evidence is
+    findable in the memory graph too (§10.5, §11.5).
+
+    Beats that practised nothing are skipped rather than tagged `objective:none`.
+    Most beats in a story are those, and an entity every transition carries is an
+    entity that means nothing — it would sit at the top of the recurrence count
+    (`_entity_recurrence`) and quietly inflate the salience of whichever beats
+    happened to be near it.
+    """
     objective = str((beat.learning or {}).get("objective_id") or "").strip()
-    return [f"objective:{objective}"] if objective else []
+    if not objective or objective == NO_OBJECTIVE:
+        return []
+    return [f"objective:{objective}"]
 
 
 def _entity_recurrence(beats: list[Beat]) -> Counter[str]:

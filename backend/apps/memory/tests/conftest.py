@@ -164,7 +164,12 @@ def no_media_worker(monkeypatch: Any) -> None:
 def played(
     aarav: Child, fake_ai: Any, fake_redis: FakeRedis, django_capture_on_commit_callbacks: Any
 ) -> PlaySession:
-    """A whole sitting: five beats, a counted answer, two branch choices, closed.
+    """A whole sitting: five beats, two branch choices, a count, a wobble, closed.
+
+    Which beats offer cards and which ask for a number is the Learning Engine's
+    from Day 10 (`orchestrator.learning_seqs`), so the answers below are written
+    against the *shape the engine produces* rather than against a fixed script.
+    Beats 1 and 3 are decision points; beats 2 and 4 carry the objective.
 
     Played through `orchestrator` rather than assembled with `objects.create`,
     because the thing under test is what a *real* session leaves behind — the STM
@@ -180,30 +185,39 @@ def played(
     with django_capture_on_commit_callbacks(execute=True):
         adventure = orchestrator.create_adventure(aarav)
 
-        # Beat 1 asks the child to count. They get it right, unaided — a skill
-        # milestone, and the highest-scoring `skill_moment` there is.
+        # Beat 1 is a branch, taken deliberately — the longest dwell in the sitting
+        # and the child's own pick, which is the highest-salience thing a beat can
+        # leave behind (§11.4).
         first = orchestrator.create_beat(adventure, seq=1)
-        orchestrator.record_choice(first, chosen_key="counted", value=3, latency_ms=4200)
+        orchestrator.record_choice(first, chosen_key="follow_river", latency_ms=6100)
 
-        # Beats 2 and 3 are branches. Different keys, so the story really diverges
-        # and the two events are not near-duplicates of each other.
+        # Beat 2 carries the objective. They count it right, unaided — a skill
+        # milestone, and the highest-scoring `skill_moment` there is.
         second = orchestrator.create_beat(
             adventure, seq=2, prev_choice=orchestrator.turn_from(first)
         )
-        orchestrator.record_choice(second, chosen_key="follow_river", latency_ms=6100)
+        orchestrator.record_choice(
+            second,
+            chosen_key="count",
+            value=(second.interaction or {}).get("expected"),
+            latency_ms=4200,
+        )
 
+        # Beat 3 is another branch, with a different key, so the story really
+        # diverges and the two events are not near-duplicates of each other.
         third = orchestrator.create_beat(
             adventure, seq=3, prev_choice=orchestrator.turn_from(second)
         )
         orchestrator.record_choice(third, chosen_key="ask_dragonflies", latency_ms=1500)
 
-        # Beat 4 is another branch, taken quickly and with help — a wobble, warmly
-        # scaffolded (§8.5). Worth *less* than the deliberate ones.
+        # Beat 4 carries the objective again, and this time it does not come easily
+        # — a wobble, warmly scaffolded (§8.5). Worth *less* than the deliberate
+        # ones, and the evidence §10.4 adapts on.
         fourth = orchestrator.create_beat(
             adventure, seq=4, prev_choice=orchestrator.turn_from(third)
         )
         orchestrator.record_choice(
-            fourth, chosen_key="follow_river", latency_ms=900, retries=2, assisted=True
+            fourth, chosen_key="count", value=1, latency_ms=900, retries=2, assisted=True
         )
 
         # The warm close asks nothing.
@@ -232,6 +246,10 @@ def closed(
     monkeypatch.setattr(
         story_orchestrator.consolidate, "delay", lambda session_id: enqueued.append(session_id)
     )
+    # From Day 10 the close enqueues a second job as well (§5.5). Stubbed for the
+    # same reason as the first: this suite owns neither a broker nor the skill
+    # model, and an un-stubbed `.delay` would put real traffic on both.
+    monkeypatch.setattr(story_orchestrator.update_from_session, "delay", lambda session_id: None)
 
     adventure = Adventure.objects.get(session=played)
     with django_capture_on_commit_callbacks(execute=True):

@@ -88,7 +88,12 @@ def test_a_rolled_back_close_enqueues_nothing(played, monkeypatch) -> None:
 def test_an_adventure_with_no_sitting_is_logged_rather_than_guessed_at(
     aarav, fake_ai, caplog, django_capture_on_commit_callbacks
 ) -> None:
-    """`session` is nullable by design (§17.2); the gap is visible, not silent."""
+    """`session` is nullable by design (§17.2); the gap is visible, not silent.
+
+    From Day 10 the same gap costs the mastery update too — both jobs are keyed on
+    the session id (`orchestrator._close_out_session`) — which is why the log line
+    is about closing the sitting out rather than about consolidation alone.
+    """
     adventure = orchestrator.create_adventure(aarav)
     orchestrator.create_beat(adventure, seq=1)
     adventure.session = None
@@ -97,7 +102,7 @@ def test_an_adventure_with_no_sitting_is_logged_rather_than_guessed_at(
     with caplog.at_level("WARNING"), django_capture_on_commit_callbacks(execute=True):
         orchestrator.end_adventure(adventure)
 
-    assert "story.consolidate_skipped" in caplog.text
+    assert "story.close_out_skipped" in caplog.text
     assert "no_session" in caplog.text
 
 

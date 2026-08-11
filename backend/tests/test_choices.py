@@ -117,6 +117,45 @@ def answer(auth, adventure_id: Any, beat: dict[str, Any], *, option: int = 0, **
     )
 
 
+def play_to_decision(auth, adventure_id: Any, stream_url: str, token: str) -> dict[str, Any]:
+    """Play forward until the child is offered cards, and return that beat.
+
+    Walked rather than indexed, because *which* beat is a decision point is the
+    Learning Engine's from Day 10 (`orchestrator.learning_seqs`): the beats
+    carrying the objective ask for a number instead, and a test that hard-coded
+    "beat two" would be asserting about the curriculum rather than about choices.
+    """
+    for _ in range(8):
+        beat, _ = read_beat(stream_url, token)
+        if beat.get("choices"):
+            return beat
+        assert answer(auth, adventure_id, beat).status_code == 202
+    raise AssertionError("the adventure never offered the child a choice")
+
+
+def decision_beat_without_media(auth, adventure, stream_url, token, monkeypatch) -> Beat:
+    """Play forward to the first decision point, written with its media suppressed.
+
+    Which is what a beat whose media worker died looks like — the case both tests
+    below repair. Celery is eager here (see the fixture at the top of this file),
+    so the prefetch generates the *next* beat inside the choice POST; suppressing
+    `schedule_beat_media` across that one call is what leaves it bare.
+    """
+    asks = set(orchestrator.learning_seqs(adventure))
+    target = next(seq for seq in range(2, adventure.estimated_beats) if seq not in asks)
+
+    for _ in range(target - 1):
+        beat, _ = read_beat(stream_url, token)
+        if beat["seq"] == target - 1:
+            monkeypatch.setattr(orchestrator, "schedule_beat_media", lambda beat: None)
+        assert answer(auth, adventure.id, beat).status_code == 202
+    monkeypatch.undo()
+
+    decision = Beat.objects.get(adventure=adventure, seq=target)
+    assert decision.options, "the first beat after the objective's asks offers cards"
+    return decision
+
+
 @pytest.mark.django_db(transaction=True, serialized_rollback=True)
 def test_a_whole_adventure_plays_to_a_warm_close(started, auth, fake_ai) -> None:
     """Milestone M1: a real story a child can play from start to finish.
@@ -134,14 +173,19 @@ def test_a_whole_adventure_plays_to_a_warm_close(started, auth, fake_ai) -> None
 
     seen: list[dict[str, Any]] = []
     picked: list[str] = []
-    for turn in range(expected_beats + 1):
+    for _turn in range(expected_beats + 1):
         beat, status = read_beat(stream_url, token)
         seen.append(beat)
         if status == "complete":
             break
+        # Indexed by how many decision points we have *taken*, not by beat number:
+        # from Day 10 the beats between them ask for a number instead of a pick
+        # (`orchestrator.learning_seqs`), and indexing by position would land on
+        # the same card at every fork and never actually branch.
+        option = len(picked)
         if beat.get("choices"):
-            picked.append(beat["choices"][turn % len(beat["choices"])]["key"])
-        assert answer(auth, adventure.id, beat, option=turn).status_code == 202
+            picked.append(beat["choices"][option % len(beat["choices"])]["key"])
+        assert answer(auth, adventure.id, beat, option=option).status_code == 202
     else:  # pragma: no cover - only reached if the loop never completes
         pytest.fail(f"the story never reached its close: {[b['seq'] for b in seen]}")
 
@@ -185,9 +229,7 @@ def test_two_play_throughs_with_different_choices_diverge(started, auth, parent,
     adventure = started["adventure"]
     stream_url, token = started["body"]["streamUrl"], started["token"]
 
-    first, _ = read_beat(stream_url, token)
-    answer(auth, adventure.id, first)
-    decision, _ = read_beat(stream_url, token)
+    decision = play_to_decision(auth, adventure.id, stream_url, token)
 
     options = decision["choices"]
     assert 2 <= len(options) <= 3, "§14.5: one decision at a time, two or three ways"
@@ -215,9 +257,7 @@ def test_two_play_throughs_with_different_choices_diverge(started, auth, parent,
         personality_preset="brave_spark",
     )
     hers = auth.post(adventures_url(sibling.id), {}, format="json").data
-    her_first, _ = read_beat(hers["streamUrl"], token)
-    answer(auth, hers["adventureId"], her_first)
-    her_decision, _ = read_beat(hers["streamUrl"], token)
+    her_decision = play_to_decision(auth, hers["adventureId"], hers["streamUrl"], token)
     auth.post(
         choice_url(hers["adventureId"]),
         {"beatId": her_decision["beatId"], "choiceKey": options[0]["key"], "latencyMs": 900},
@@ -239,8 +279,11 @@ def test_a_decision_beat_offers_illustrated_choices(started, auth) -> None:
     adventure = started["adventure"]
     stream_url, token = started["body"]["streamUrl"], started["token"]
 
-    first, _ = read_beat(stream_url, token)
-    answer(auth, adventure.id, first)
+    play_to_decision(auth, adventure.id, stream_url, token)
+    # Re-opened rather than read once. The card pictures deliberately arrive *after*
+    # the child's turn is handed over (the test below), so the first frame for a
+    # decision beat carries null icons by design; a replay is what a client that
+    # comes back to an unanswered beat sees, and by then they have landed.
     decision, status = read_beat(stream_url, token)
 
     assert status == "awaiting_choice"
@@ -275,16 +318,7 @@ def test_choice_icons_arrive_as_their_own_media_frames(started, auth, monkeypatc
     adventure = started["adventure"]
     stream_url, token = started["body"]["streamUrl"], started["token"]
 
-    first, _ = read_beat(stream_url, token)
-
-    # Answer with the media worker disarmed, so the consequence beat is written
-    # with no picture, no voice and no icons.
-    monkeypatch.setattr(orchestrator, "schedule_beat_media", lambda beat: None)
-    answer(auth, adventure.id, first)
-    monkeypatch.undo()
-
-    decision = Beat.objects.get(adventure=adventure, seq=2)
-    assert decision.options, "the scripted second beat is the decision point"
+    decision = decision_beat_without_media(auth, adventure, stream_url, token, monkeypatch)
     Beat.objects.filter(pk=decision.pk).update(
         updated_at=timezone.now() - dt.timedelta(seconds=orchestrator.MEDIA_RETRY_AFTER_S + 60)
     )
@@ -292,7 +326,7 @@ def test_choice_icons_arrive_as_their_own_media_frames(started, auth, monkeypatc
     events = frames_of(collect_stream(stream_url, token)[1])
 
     beat = next(payload for name, payload in events if name == "beat")
-    assert beat["seq"] == 2
+    assert beat["seq"] == decision.seq
     assert all(option["imageUrl"] is None for option in beat["choices"])
 
     icons = [
@@ -319,12 +353,7 @@ def test_the_child_gets_their_turn_before_the_card_pictures_land(
     adventure = started["adventure"]
     stream_url, token = started["body"]["streamUrl"], started["token"]
 
-    first, _ = read_beat(stream_url, token)
-    monkeypatch.setattr(orchestrator, "schedule_beat_media", lambda beat: None)
-    answer(auth, adventure.id, first)
-    monkeypatch.undo()
-
-    decision = Beat.objects.get(adventure=adventure, seq=2)
+    decision = decision_beat_without_media(auth, adventure, stream_url, token, monkeypatch)
     Beat.objects.filter(pk=decision.pk).update(
         updated_at=timezone.now() - dt.timedelta(seconds=orchestrator.MEDIA_RETRY_AFTER_S + 60)
     )

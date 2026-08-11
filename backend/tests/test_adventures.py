@@ -30,6 +30,7 @@ from apps.companion.models import Companion
 from apps.companion.service import create_companion
 from apps.media.models import MediaType
 from apps.profiles.models import Child
+from apps.story import orchestrator
 from apps.story.ai.schemas import Beat as BeatContract
 from apps.story.models import Adventure, Beat
 from tests.conftest import LOGIN_URL, PASSWORD
@@ -374,8 +375,11 @@ def test_the_stream_delivers_a_schema_valid_beat_then_done(started) -> None:
     events = frames_of(chunks)
     names = [event for event, _ in events]
     assert names[0] == "beat"
-    assert names[-1] == "done"
-    assert events[-1][1] == {"status": "awaiting_choice"}
+    # `done` is the child's turn, not the end of the connection: the opening offers
+    # cards, and their little pictures keep arriving afterwards rather than gating
+    # it (§14.5, `test_choices.test_the_child_gets_their_turn_before_the_card_pictures_land`).
+    done_at = names.index("done")
+    assert events[done_at][1] == {"status": "awaiting_choice"}
 
     _, beat = events[0]
     # The §8.1 contract, validated rather than eyeballed. The stream carries the
@@ -394,7 +398,7 @@ def test_the_stream_delivers_a_schema_valid_beat_then_done(started) -> None:
             "next_hint": "",
         }
     )
-    assert beat["interaction"]["type"] == "count"
+    assert beat["interaction"]["type"] == "choose"
     assert beat["emotion"] == "playful_curious"
 
 
@@ -430,7 +434,10 @@ def test_the_illustration_and_the_voice_both_attach_to_the_beat(started) -> None
     _, chunks = collect_stream(started["body"]["streamUrl"], started["token"])
     events = frames_of(chunks)
 
-    media = [payload for name, payload in events if name == "media"]
+    # The beat's *own* two assets. The card icons are media frames too and are
+    # `test_choices`' subject; here the question is that the scene and the voice
+    # each arrive and each land on the row.
+    media = [payload for name, payload in events if name == "media" and "choice" not in payload]
     assert len(media) == 2, media
     assert {"scene" in payload for payload in media} == {True, False}
 
@@ -447,7 +454,12 @@ def test_media_is_generated_in_parallel_and_the_timings_prove_it(started, caplog
     with caplog.at_level("INFO", logger="apps.story.orchestrator"):
         collect_stream(started["body"]["streamUrl"], started["token"])
 
-    timings = [line for line in caplog.text.splitlines() if "story.media.timing" in line]
+    timings = [
+        line
+        for line in caplog.text.splitlines()
+        if "story.media.timing" in line
+        and any(f"stage={stage} " in line for stage in orchestrator.MEDIA_STAGE_LABELS)
+    ]
     assert len(timings) == 2, caplog.text
 
     summary = next(line for line in caplog.text.splitlines() if "story.media.parallel" in line)
@@ -643,11 +655,15 @@ def test_a_beat_left_without_media_is_repaired_on_the_next_open(
     events = frames_of(chunks)
 
     assert "story.media_repair" in caplog.text
-    # Both assets reach this client, and both are on the beat for the next one.
-    assert sorted("scene" in payload for name, payload in events if name == "media") == [
-        False,
-        True,
-    ]
+    # Both of the beat's own assets reach this client, and both are on the beat for
+    # the next one. Card icons are repaired alongside them and are counted by
+    # `test_choices`; filtering them out keeps this test about the two that gate
+    # the child's turn.
+    assert sorted(
+        "scene" in payload
+        for name, payload in events
+        if name == "media" and "choice" not in payload
+    ) == [False, True]
     orphan.refresh_from_db()
     assert orphan.media_id is not None
     assert orphan.audio_id is not None

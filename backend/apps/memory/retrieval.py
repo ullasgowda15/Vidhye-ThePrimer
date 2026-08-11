@@ -35,8 +35,8 @@ greeted with their fears, their loves and their companion intact. The bundle say
 so (`degraded`) rather than quietly looking thin.
 
 What this module does **not** do: decide what a memory means, or pick a world from
-it. The learning engine is Day 10 and interest-graph world selection is Day 11;
-this returns the memories, and the prompt decides what to do with them.
+it. What to teach belongs to `apps.learning` and interest-graph world selection is
+Day 11; this returns the memories, and the prompt decides what to do with them.
 """
 
 from __future__ import annotations

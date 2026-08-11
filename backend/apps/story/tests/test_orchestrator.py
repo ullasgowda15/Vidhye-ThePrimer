@@ -24,6 +24,7 @@ from asgiref.sync import async_to_sync
 
 from apps.companion import cast
 from apps.companion.service import create_companion
+from apps.learning import demands
 from apps.media import prompts as media_prompts
 from apps.media import service as media_service
 from apps.profiles.models import Child
@@ -347,8 +348,11 @@ def test_a_beat_is_persisted_with_its_slices_split_out(frog_lover, fake_ai) -> N
     assert beat.seq == 1
     assert "frogs" in beat.narration
     assert beat.scene["illustration_prompt"]
-    assert (beat.interaction or {})["type"] == "count"
-    assert (beat.learning or {})["objective_id"] == "count_to_3"
+    assert (beat.interaction or {})["type"] == "choose"
+    # The opening establishes a world; it is not one of the beats the Learning
+    # Engine chose to carry the objective, and its tag says so (`learning_seqs`).
+    # Which beats *do* carry it is `apps.learning.tests.test_invisible`'s subject.
+    assert (beat.learning or {})["objective_id"] == "none"
     assert beat.emotion == "playful_curious"
     # From Day 7 every persisted beat has been through `guard_output`, so the
     # column says `passed` rather than `unchecked`. A row that still says
@@ -372,14 +376,17 @@ def test_beats_are_numbered_sequentially(frog_lover, fake_ai) -> None:
 
 def test_the_spoken_line_is_the_narration_plus_the_invitation(frog_lover, fake_ai) -> None:
     adventure = orchestrator.create_adventure(frog_lover)
-    beat = orchestrator.create_beat(adventure)
+    orchestrator.create_beat(adventure, seq=1)
+    # A beat that carries the objective (`learning_seqs`): it asks for a number, so
+    # its invitation is the last thing said rather than a list of cards.
+    beat = orchestrator.create_beat(adventure, seq=2)
 
     line = orchestrator.spoken_line(beat)
 
     # One clip, therefore one TTS call, and no silence where the child is being
     # asked a question.
     assert line.startswith(beat.narration)
-    assert line.endswith("How many can you count?")
+    assert line.endswith((beat.interaction or {})["prompt_audio"])
 
 
 class TestPromptAudioIsNotTheNarrationAgain:
@@ -444,7 +451,15 @@ class TestPromptAudioIsNotTheNarrationAgain:
     def test_a_repeating_provider_cannot_reach_the_child(self, frog_lover, fake_ai, caplog) -> None:
         """End to end, through the real router and the real write path."""
         beat_json = fake_ai.beat("loves frogs.")
-        beat_json["interaction"]["prompt_audio"] = beat_json["narration"]
+        # Cards would be read out after the question, so `spoken_line` below could
+        # not show what the child heard twice. A beat that asks for a number has
+        # nothing between the narration and its invitation.
+        beat_json["interaction"] = {
+            "type": "count",
+            "prompt_audio": beat_json["narration"],
+            "expected": 3,
+            "choices": None,
+        }
         fake_ai.queue_beat_response(json.dumps(beat_json))
 
         adventure = orchestrator.create_adventure(frog_lover)
@@ -790,11 +805,13 @@ class TestTheChoicesAChildIsOffered:
         things you may pick between (§14.4)."""
         adventure = orchestrator.create_adventure(frog_lover)
         orchestrator.create_beat(adventure, seq=1)
-        decision = orchestrator.create_beat(adventure, seq=2)
+        # Beat 3 rather than beat 2: from Day 10 the beats either side of it carry
+        # the objective (`learning_seqs`) and ask for a number, not a pick.
+        decision = orchestrator.create_beat(adventure, seq=3)
 
         line = orchestrator.spoken_line(decision)
 
-        assert decision.options, "the scripted second beat is a decision point"
+        assert decision.options, "the scripted middle beat is a decision point"
         for option in decision.options:
             assert option["label"] in line
         # One sentence, one TTS call, and it scans as a question.
@@ -963,14 +980,14 @@ class TestTheConsequenceIsAboutWhatTheChildActuallyDid:
         mistake for the one that happened.
         """
         adventure = orchestrator.create_adventure(frog_lover)
-        beat = orchestrator.create_beat(adventure, seq=2)
+        beat = orchestrator.create_beat(adventure, seq=3)
         orchestrator.record_choice(beat, chosen_key="follow_river")
 
         turn = orchestrator.turn_from(beat)
         assert turn is not None
         assert turn["offered_labels"] == [label for _, label, _ in fake_ai.OPTIONS[:2]]
 
-        system = orchestrator.build_beat_context(adventure, seq=3, prev_choice=turn)["system"]
+        system = orchestrator.build_beat_context(adventure, seq=4, prev_choice=turn)["system"]
         turn_layer = system.split("<current_turn")[1]
         assert "Chose: Follow the sparkling river" in turn_layer
         assert "dragonflies" not in turn_layer.casefold()
@@ -1050,45 +1067,64 @@ class TestThreeCardsThatAreOneAction:
         assert "story.choice_options_alike" in caplog.text
 
 
-class TestOneBeatAsksTheChildToCount:
+class TestSomeBeatsAskSomethingThatCanBeMissed:
     """§8.5's no-fail-states guarantee needs something that *can* be missed.
 
     `CHOICE_RULE` says "prefer choose" on every non-final beat, and a `choose` has
     no wrong answer — so before this, every beat in the database was a `choose`,
     the numeracy objective was prompt data nothing acted on, and the scaffolding
     path could never run in real play.
+
+    *Which* beats ask, and *what* they ask for, belongs to the Learning Engine from
+    Day 10 (`apps.learning.tests.test_invisible`). What is asserted here is the
+    orchestrator's half of the contract: the positions are chosen server-side and
+    never by the model, and the close outranks all of it.
     """
 
-    def test_the_midpoint_beat_asks_for_a_number(self, frog_lover, fake_ai) -> None:
+    def test_the_asks_avoid_the_opening_and_the_close(self, frog_lover, fake_ai) -> None:
         adventure = orchestrator.create_adventure(frog_lover)
 
-        asked = [
-            seq
-            for seq in range(1, adventure.estimated_beats + 1)
-            if orchestrator.asks_to_count(adventure, seq)
-        ]
+        asked = orchestrator.learning_seqs(adventure)
 
-        # Exactly one, and never the opening or the close: the first beat has a
-        # world to establish and the last one asks for nothing at all (§8.8).
-        assert len(asked) == 1
-        assert asked[0] not in (1, adventure.estimated_beats)
+        # The first beat has a world to establish and the last one asks for
+        # nothing at all (§8.8).
+        assert asked
+        assert 1 not in asked
+        assert adventure.estimated_beats not in asked
+        # Two, so a struggle at the first has a second one to be met at — §10.4's
+        # adaptation is *within* the session and cannot happen with a single ask.
+        assert len(asked) == 2
 
-    def test_the_counting_rule_replaces_the_choice_rule(self) -> None:
+    def test_the_learning_rule_replaces_the_choice_rule(self) -> None:
+        demand = demands.demand_for("count_to_5", "numeracy", 0.5)
+
         counting = story_prompts.beat_request(
-            seq=3, beat_id="b3", is_first=False, ask_to_count=True
+            seq=3, beat_id="b3", is_first=False, demand=demand, ask_now=True
         )
 
-        assert story_prompts.COUNT_RULE in counting
-        assert story_prompts.CHOICE_RULE not in counting
+        assert story_prompts.learning_rule(demand) in counting
+        assert story_prompts.choice_rule(demand.choice_count) not in counting
 
-    def test_the_close_is_still_an_ending_even_at_the_midpoint(self) -> None:
-        # `is_final` outranks the count: the last beat says goodnight (§8.8).
+    def test_a_beat_that_is_not_an_ask_still_takes_its_card_count_from_difficulty(self) -> None:
+        """§8.9: two cards or three is itself a difficulty decision."""
+        easy = demands.demand_for("count_to_5", "numeracy", 0.2)
+        hard = demands.demand_for("count_to_5", "numeracy", 0.8)
+
+        gentle = story_prompts.beat_request(seq=3, beat_id="b3", is_first=False, demand=easy)
+        stretched = story_prompts.beat_request(seq=3, beat_id="b3", is_first=False, demand=hard)
+
+        assert "two options" in gentle
+        assert "three options" in stretched
+
+    def test_the_close_is_still_an_ending_even_where_an_ask_was_due(self) -> None:
+        # `is_final` outranks the objective: the last beat says goodnight (§8.8).
+        demand = demands.demand_for("count_to_5", "numeracy", 0.5)
         final = story_prompts.beat_request(
-            seq=3, beat_id="b3", is_first=False, is_final=True, ask_to_count=True
+            seq=3, beat_id="b3", is_first=False, is_final=True, demand=demand, ask_now=True
         )
 
         assert story_prompts.FINAL_BEAT_RULE in final
-        assert story_prompts.COUNT_RULE not in final
+        assert story_prompts.learning_rule(demand) not in final
 
     def test_a_counting_beat_never_keeps_choice_cards(self) -> None:
         # The client picks the number pad by the *absence* of options, so cards on
@@ -1480,7 +1516,7 @@ class TestAMissingPictureNeverBlocksTheChild:
         # and not one: the scene plus an icon per card. That is the case the founder
         # test called out — three choices means four ways for the turn to hang — and
         # none of them may.
-        beat = orchestrator.create_beat(adventure, seq=2)
+        beat = orchestrator.create_beat(adventure, seq=3)
         beat.audio = orchestrator.narrate_beat(beat)
         beat.save(update_fields=["audio", "updated_at"])
         assert orchestrator.ILLUSTRATION_STAGE in orchestrator.pending_media_stages(beat)
@@ -1560,7 +1596,10 @@ class TestAMissingPictureNeverBlocksTheChild:
         pictures in it.
         """
         adventure = orchestrator.create_adventure(frog_lover)
-        beat = orchestrator.create_beat(adventure, seq=1)
+        orchestrator.create_beat(adventure, seq=1)
+        # A beat that asks for a number: no cards, so the only assets in flight are
+        # the scene and the voice, which is what the poll sequence below scripts.
+        beat = orchestrator.create_beat(adventure, seq=2)
 
         voice_only = {orchestrator.VOICE_STAGE: "/media/voice.mp3"}
         polls = [
@@ -1571,8 +1610,8 @@ class TestAMissingPictureNeverBlocksTheChild:
             orchestrator, "media_urls", lambda pk: polls[0] if len(polls) == 1 else polls.pop(0)
         )
         monkeypatch.setattr(orchestrator, "MEDIA_POLL_MIN_S", 0.01)
-        # Beat 1 is the counting beat, so it offers no cards and its stages are
-        # exactly the two the poll sequence above covers.
+        # A beat that asks for a number offers no cards, so its stages are exactly
+        # the two the poll sequence above covers.
         assert orchestrator.pending_media_stages(beat) == orchestrator.MEDIA_STAGE_LABELS
 
         async def follow() -> list[str]:
@@ -1775,7 +1814,10 @@ def test_a_persisted_beat_is_handed_to_the_media_worker(frog_lover, fake_ai, mon
 
 def test_pending_stages_name_what_is_missing(frog_lover, fake_ai) -> None:
     adventure = orchestrator.create_adventure(frog_lover)
-    beat = orchestrator.create_beat(adventure)
+    orchestrator.create_beat(adventure, seq=1)
+    # A beat that asks for a number owes two assets; a decision point owes one more
+    # per card (`TestTheChoicesAChildIsOffered`).
+    beat = orchestrator.create_beat(adventure, seq=2)
 
     assert set(orchestrator.pending_media_stages(beat)) == {
         orchestrator.ILLUSTRATION_STAGE,

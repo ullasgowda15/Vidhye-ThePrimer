@@ -52,9 +52,20 @@ the story has changed. The bundle is token-bounded, so a family three years in p
 what a family three days in pays, and it enters through `guard_input` and the DATA
 fence like every other untrusted string (§13.5).
 
-What is deliberately *not* here yet: the objective selector (Day 10) and
-interest-graph world selection (Day 11). Each has a named seam and a placeholder,
-so those days are wiring rather than redesign.
+**The story teaches, and nobody can tell.** From Day 10 the objective is not a
+constant in this file: `learning.select_objective` picks one at the child's edge
+before the plan is generated, so the arc is *planned around* it (§8.10), and
+`learning.demand_for_adventure` turns the difficulty into a number the beat can
+actually contain — five stepping stones, two cards instead of three, a word the
+child has not met. Two beats per adventure carry the ask (`learning_seqs`), the
+second one already adapted to how the first went (§10.4), and every beat is
+stamped with what it exercised so the mastery update can read the child's play
+back as evidence (§10.5). Nothing about any of it reaches the child: there is no
+score, no verdict, no beat that can be failed, and the word "objective" appears
+nowhere a companion could say it.
+
+What is deliberately *not* here yet: interest-graph world selection (Day 11). It
+has a named seam and a placeholder, so that day is wiring rather than redesign.
 """
 
 from __future__ import annotations
@@ -76,6 +87,10 @@ from apps.companion import cast
 from apps.companion import scenes as companion_scenes
 from apps.companion import service as companion_service
 from apps.companion.models import Character
+from apps.learning import demands
+from apps.learning import engine as learning
+from apps.learning.demands import Demand
+from apps.learning.tasks import update_from_session
 from apps.media import prompts as media_prompts
 from apps.media import service as media_service
 from apps.media import stock as media_stock
@@ -102,15 +117,6 @@ from apps.story.summary import refresh_running_summary
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-#: The objective every Day-4 adventure carries. The Learning Engine's ZPD
-#: selector is Day 10 (§10.3); until then one gentle numeracy objective keeps the
-#: learning layer *exercised* rather than absent, which is the difference between
-#: a seam and a hole. `difficulty` comes from the adventure, not from here.
-PLACEHOLDER_OBJECTIVE: dict[str, Any] = {
-    "code": "count_to_3",
-    "description": "Count a small group of visible things, up to three, out loud.",
-}
 
 #: Used when plan generation cannot be completed. Not a "safe fallback beat"
 #: (that is Day 7's output-guard work) — this is the ordinary graceful
@@ -277,31 +283,69 @@ def recall(child: Child, context: str) -> memory_retrieval.MemoryBundle:
     return memory_retrieval.retrieve(child, context)
 
 
-def objective_for(adventure: Adventure) -> dict[str, Any]:
-    """The learning directive for this adventure's beats (§10.3, Day 10)."""
-    return {**PLACEHOLDER_OBJECTIVE, "difficulty": adventure.difficulty}
+def objective_directive(
+    objective: Any,
+    difficulty: float,
+    demand: Demand | None = None,
+) -> dict[str, Any]:
+    """The `learning_directive` layer's content, from a catalog row (§19.1, §8.10).
 
+    A plain mapping rather than the model object, because the assembler is a pure
+    prompt builder and must not be handed something that can lazily hit the
+    database halfway through rendering a safety layer.
 
-def asks_to_count(adventure: Adventure, seq: int) -> bool:
-    """Is this the beat that asks the child to count something (§10.3, §8.5)?
-
-    One beat per adventure, at its midpoint. Deliberately decided here rather
-    than left to the model: `CHOICE_RULE` tells every other beat to prefer
-    `choose`, and a model reading "prefer" on every beat picks it every time —
-    which is how the numeracy objective ended up riding in the prompt as data
-    nothing acted on, and how §8.5's no-fail-states guarantee ended up with
-    nothing that *could* be answered wrongly and so no way to be exercised.
-
-    The midpoint because the opening has to establish the world before it can ask
-    anything of the child, and the close asks for nothing at all (§8.8).
-
-    A stand-in for Day 10's selector, not a small version of it: there is no skill
-    model here, no spaced retrieval and no difficulty-driven demand. When the
-    Learning Engine lands it decides *what* to ask and *when*, and this goes.
+    `demand` is what turns a float into a sentence about a riverbank (§8.9); its
+    absence leaves the model to size the ask itself, which is the pre-Day-10
+    behaviour and is a degradation rather than a failure.
     """
-    if seq <= 1 or is_final_seq(adventure, seq):
-        return False
-    return seq == (adventure.estimated_beats + 1) // 2
+    return {
+        "code": objective.code,
+        "description": objective.description,
+        "difficulty": round(float(difficulty), 2),
+        "demand": demand.summary() if demand is not None else "",
+    }
+
+
+def learning_seqs(adventure: Adventure) -> tuple[int, ...]:
+    """The positions in this adventure that carry the objective (§8.10).
+
+    Two of them: the first beat after the opening, and the last beat before the
+    close. Never the opening, which has a world to establish before it can ask the
+    child for anything, and never the close, which asks for nothing at all (§8.8).
+
+    **Two rather than one, because one cannot adapt.** §10.4 requires difficulty to
+    move *within* a sitting on live evidence, and a single ask per story leaves
+    nothing for that evidence to change — the adaptation would only ever show up in
+    tomorrow's adventure, which is spacing, not adaptation. Two, spread apart with
+    ordinary story between them, is the smallest arrangement in which a child who
+    struggles at the first one is met more gently at the second.
+
+    Not more than two, because the ratio is the invisibility. A five-beat story
+    with four asks in it is a worksheet with pictures, whatever the wording of the
+    beats (Principle #1).
+    """
+    last = total_beats(adventure)
+    first_middle, last_middle = FIRST_BEAT_SEQ + 1, last - 1
+    if last_middle <= first_middle:
+        # A story too short to hold two asks and still be a story. One, at the
+        # midpoint, and the adaptation waits for tomorrow.
+        return (first_middle,) if first_middle < last else ()
+    return (first_middle, last_middle)
+
+
+def learning_ask_at(adventure: Adventure, seq: int) -> Demand | None:
+    """The concrete ask for the beat at `seq`, or None if it carries no objective.
+
+    Deliberately decided here rather than left to the model. `CHOICE_RULE` tells
+    every other beat to prefer `choose`, and a model reading "prefer" on every beat
+    picks it every time — which is how the numeracy objective ended up riding in
+    the prompt as data nothing acted on, and how §8.5's no-fail-states guarantee
+    ended up with nothing that *could* be answered wrongly and so no way to be
+    exercised at all.
+    """
+    if seq not in learning_seqs(adventure):
+        return None
+    return learning.demand_for_adventure(adventure)
 
 
 def _known_characters(child: Child) -> list[str]:
@@ -339,7 +383,7 @@ def _known_characters(child: Child) -> list[str]:
 # ---------------------------------------------------------------------------
 # The plan
 # ---------------------------------------------------------------------------
-def build_plan(child: Child) -> dict[str, Any]:
+def build_plan(child: Child, selection: learning.Selection | None = None) -> dict[str, Any]:
     """Generate the adventure skeleton (§8.1).
 
     Falls back to `FALLBACK_SKELETON` if the provider cannot produce a valid
@@ -357,13 +401,26 @@ def build_plan(child: Child) -> dict[str, Any]:
     **This is §11.9's "story start".** The arc is chosen once and every beat is
     written against it, so it is the highest-leverage place a memory can land: a
     plan that knows the child named a dragon Sparkle is a plan Sparkle can be in.
+
+    **And it is where the objective has to arrive** (§8.10). The plan is what
+    decides there is a river with stepping stones in it; a beat handed "five
+    countable things" against a skeleton that never mentioned any is a beat that
+    has to invent a reason for them mid-story. So the selector runs before this
+    call and its choice travels into the planning prompt — which is the difference
+    between an objective embedded in a plot and one bolted onto a beat.
     """
+    objective = (
+        objective_directive(selection.objective, selection.difficulty, selection.demand)
+        if selection is not None
+        else None
+    )
+
     bundle = recall(child, plan_context(child))
     guarded = safety.guard_input({"memory": bundle.as_prompt()}, child)
     layers = assembler.assemble(
         child,
         memory=guarded.get("memory") or [],
-        objective=PLACEHOLDER_OBJECTIVE,
+        objective=objective,
         plan=None,
         output_schema=json_schema_for(StoryPlan),
     )
@@ -409,8 +466,17 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
     stream, where its latency is hidden behind something a child enjoys looking
     at. Generating it here would mean a slow POST followed by an instant stream,
     which is the same total wait with nothing on screen for most of it (§14.5).
+
+    **The objective is chosen first, once, and then written down** (§10.3). Once
+    rather than per beat, because a sitting practises one thing (§8.10) and a
+    selector re-run mid-story could hand beat four a different objective from beat
+    two. Written down rather than recomputed, because `primary_objective_id` and
+    `difficulty` are what the mastery update reads back afterwards to know what the
+    child's answers were evidence *about* — a story whose objective could only be
+    re-derived would be a story whose evidence drifted with the catalog.
     """
-    plan = build_plan(child)
+    selection = learning.select_objective(child)
+    plan = build_plan(child, selection)
     # A sitting begins when a story does, unless the caller already had one. It is
     # created here rather than left null because `end` has to be able to say how
     # long the child played and why they stopped (§13.6) — a wellbeing signal the
@@ -421,13 +487,20 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
         session=session,
         title=str(plan.get("title") or "")[:200],
         plan=plan,
-        primary_objective_id=PLACEHOLDER_OBJECTIVE["code"],
+        # Null when the catalog has nothing for this child's age. The column is
+        # nullable precisely so that "nobody selected an objective" stays
+        # distinguishable from "the objective was the empty string" (§17.2), and
+        # the beats fall back to a story with no directive rather than to no story.
+        primary_objective_id=selection.code if selection else None,
+        **({"difficulty": selection.difficulty} if selection else {}),
     )
     logger.info(
-        "story.adventure_started adventure=%s child=%s beats=%d",
+        "story.adventure_started adventure=%s child=%s beats=%d objective=%s difficulty=%.2f",
         adventure.id,
         child.id,
         adventure.estimated_beats,
+        adventure.primary_objective_id or "-",
+        adventure.difficulty,
     )
     return adventure
 
@@ -672,10 +745,25 @@ def build_beat_context(
         )
     turn = guarded.get("turn")
 
+    # Resolved once and used twice — the *directive* (what is being practised, in
+    # the system layer) and the *ask* (what this beat therefore does, in the user
+    # turn) have to describe the same difficulty, and computing them separately is
+    # how they would eventually stop doing so. It also keeps the evidence scan
+    # behind `adapt` to one pass per generation rather than two.
+    objective = learning.objective_by_code(adventure.primary_objective_id)
+    demand = learning.demand_for_adventure(adventure) if objective is not None else None
+    directive = (
+        objective_directive(
+            objective, demand.difficulty if demand else adventure.difficulty, demand
+        )
+        if objective is not None
+        else None
+    )
+
     layers = assembler.assemble(
         child,
         memory=guarded.get("memory") or [],
-        objective=objective_for(adventure),
+        objective=directive,
         plan=adventure.plan,
         running_summary=adventure.running_summary,
         turn=turn,
@@ -686,7 +774,8 @@ def build_beat_context(
         beat_id=f"b{seq}",
         is_first=seq == 1,
         is_final=is_final_seq(adventure, seq),
-        ask_to_count=asks_to_count(adventure, seq),
+        demand=demand,
+        ask_now=seq in learning_seqs(adventure),
         stage=stage,
         prev_choice=turn,
         characters=_known_characters(child),
@@ -764,9 +853,17 @@ def create_beat(
 
     elapsed_ms = decision.detail.get("gen_ms", 0)
     status = _status_for(decision)
+    # Re-read after the generation rather than reused from the prompt build: a
+    # rewrite loop may have taken several seconds, and the beat is being stamped
+    # with what the engine believes *now*. In practice they agree; when they do
+    # not it is because the child answered something on another connection, and
+    # the newer answer is the true one.
+    demand = learning.demand_for_adventure(adventure)
 
     try:
-        beat = _persist_beat(adventure, seq, contract, model=model, safety_status=status)
+        beat = _persist_beat(
+            adventure, seq, contract, model=model, safety_status=status, demand=demand
+        )
     except IntegrityError:
         # Another stream on the same adventure wrote this position while we were
         # generating. The unique constraint settles it and we adopt their beat
@@ -1002,6 +1099,12 @@ def _persist_fallback(
             contract,
             model=f"fallback:{reason}",
             safety_status=Beat.SafetyStatus.BLOCKED,
+            # The fallback's own tag stands: it teaches nothing and says so
+            # (`safety.fallbacks`). Stamping this adventure's objective onto it
+            # would make a beat the child was *rescued* into look like a beat that
+            # exercised counting, and the mastery update would read the tap that
+            # followed as evidence about a skill nothing asked for (§10.5).
+            stamp_learning=False,
         )
     except IntegrityError:
         winner = adventure.beats.filter(seq=seq).first()
@@ -1070,7 +1173,12 @@ def dedupe_prompt_audio(narration: str, interaction: dict[str, Any]) -> dict[str
     return interaction
 
 
-def normalise_choices(interaction: dict[str, Any], *, is_final: bool) -> dict[str, Any]:
+def normalise_choices(
+    interaction: dict[str, Any],
+    *,
+    is_final: bool,
+    max_choices: int = MAX_CHOICES,
+) -> dict[str, Any]:
     """Make a generated interaction one a child's screen can actually present.
 
     Two rules, and both exist because the client cannot invent its way out of a
@@ -1083,12 +1191,17 @@ def normalise_choices(interaction: dict[str, Any], *, is_final: bool) -> dict[st
     invitation survives, because "shall we come back tomorrow?" is warmth and not
     a question anyone has to answer.
 
-    **At most three options, each with its own key.** §14.5 caps a decision at two
-    or three, which is a claim about how much a four-year-old can hold at once and
-    not a layout preference. Duplicate keys are dropped rather than merged: two
-    cards that report the same tap are two cards the consequence cannot tell
+    **At most `max_choices` options, each with its own key.** §14.5 caps a decision
+    at two or three, which is a claim about how much a four-year-old can hold at
+    once and not a layout preference; from Day 10 §8.9 decides *which* of the two
+    from the child's difficulty, so a struggling three-year-old is handed two cards
+    and a confident six-year-old three. `MAX_CHOICES` remains the hard ceiling and
+    the default, because a caller with no engine behind it must still not be able
+    to put four cards on a tablet. Duplicate keys are dropped rather than merged:
+    two cards that report the same tap are two cards the consequence cannot tell
     apart.
     """
+    cap = max(1, min(int(max_choices), MAX_CHOICES))
     interaction = dict(interaction)
 
     if is_final:
@@ -1119,7 +1232,7 @@ def normalise_choices(interaction: dict[str, Any], *, is_final: bool) -> dict[st
             continue
         seen.add(key)
         kept.append(dict(option))
-        if len(kept) == MAX_CHOICES:
+        if len(kept) == cap:
             break
 
     if len(kept) != len(options):
@@ -1284,6 +1397,35 @@ def _log_choice_distinctness(beat: Beat) -> None:
         )
 
 
+def learning_tag_for(adventure: Adventure, seq: int, demand: Demand | None) -> dict[str, Any]:
+    """What `Beat.learning` records about this beat, from *our* side (§8.10).
+
+    The model fills the whole tag in its response, and one field of it is worth
+    keeping: `skill_evidence_key`, the writer's own name for what the beat asked
+    ("count_stepping_stones"), which is the only part of it the writer is in a
+    position to know. The other two are ours and are overwritten here, because
+    §8.10's tag exists so we can "later verify the objective was actually
+    exercised" — and a tag whose objective and difficulty were self-reported by
+    the thing being verified verifies nothing. It would also be the number the
+    mastery update reads back as the difficulty the child faced (§10.5), which
+    makes a model's guess at it a direct corruption of the skill model.
+
+    `NO_OBJECTIVE` on every beat that is not one of `learning_seqs` — a transition,
+    a plain decision point — so that "this beat exercised the objective" is a fact
+    on the row rather than something reconstructed later from an interaction type.
+    `difficulty` is stamped on those beats anyway, because it is true of them and
+    it is what makes a story's adaptation legible in the data.
+    """
+    if demand is None:
+        return {"objective_id": demands.NO_OBJECTIVE, "difficulty": round(adventure.difficulty, 2)}
+
+    exercised = seq in learning_seqs(adventure)
+    return {
+        "objective_id": demand.objective_code if exercised else demands.NO_OBJECTIVE,
+        "difficulty": round(demand.difficulty, 2),
+    }
+
+
 @transaction.atomic
 def _persist_beat(
     adventure: Adventure,
@@ -1292,6 +1434,8 @@ def _persist_beat(
     *,
     model: str = "",
     safety_status: str = Beat.SafetyStatus.UNCHECKED,
+    demand: Demand | None = None,
+    stamp_learning: bool = True,
 ) -> Beat:
     """Write the beat and extend the adventure's emotion arc, together.
 
@@ -1321,7 +1465,18 @@ def _persist_beat(
             adventure.id,
             seq,
         )
-    interaction = normalise_choices(interaction, is_final=is_final_seq(adventure, seq))
+    interaction = normalise_choices(
+        interaction,
+        is_final=is_final_seq(adventure, seq),
+        max_choices=demand.choice_count if demand is not None else MAX_CHOICES,
+    )
+
+    # The writer's evidence key, our objective and our difficulty. See
+    # `learning_tag_for`; `stamp_learning=False` is the fallback path, whose tag
+    # already says the truthful thing (`safety.fallbacks`).
+    learning_tag = contract.learning.model_dump(mode="json")
+    if stamp_learning:
+        learning_tag = {**learning_tag, **learning_tag_for(adventure, seq, demand)}
 
     scene = contract.scene.model_dump(mode="json")
     beat = Beat.objects.create(
@@ -1330,7 +1485,7 @@ def _persist_beat(
         narration=contract.narration,
         scene=scene,
         interaction=interaction,
-        learning=contract.learning.model_dump(mode="json"),
+        learning=learning_tag,
         emotion=contract.emotion,
         model=model,
         next_hint=contract.next_hint,
@@ -1688,7 +1843,7 @@ def end_adventure(
         # Inside the transaction that closed the sitting, so the enqueue cannot
         # happen for a close that rolled back — and so a client sending `end`
         # twice enqueues once, because the second call returned at the guard above.
-        transaction.on_commit(lambda: _consolidate_session(locked, reason))
+        transaction.on_commit(lambda: _close_out_session(locked, reason))
 
     logger.info(
         "story.adventure_ended adventure=%s status=%s reason=%s beats=%d",
@@ -1702,27 +1857,51 @@ def end_adventure(
     return locked
 
 
-def _consolidate_session(adventure: Adventure, reason: str) -> None:
-    """Close short-term memory and hand the sitting to the consolidation job.
+def _close_out_session(adventure: Adventure, reason: str) -> None:
+    """Everything a finished sitting owes the future, handed to workers (§5.4, §5.5).
 
-    Two steps, in this order. The `session_end` event goes into STM *first*, so the
-    log the job reads knows how the sitting ended — a warm close and a child who
-    wandered off contain the same beats and are two different things to remember
-    about a session (§13.6).
+    Three steps, in this order.
 
-    A sitting with no session row cannot be consolidated: the STM key is the
-    session id, and `consolidate` takes one. That is a documented gap rather than a
-    silent one — `session` is nullable because a retention job may prune it
-    (§17.2) — and it is logged, because an adventure ending without a sitting would
-    mean the memory pipeline was quietly not running.
+    The `session_end` event goes into STM **first**, so the log the consolidation
+    job reads knows how the sitting ended — a warm close and a child who wandered
+    off contain the same beats and are two different things to remember about a
+    session (§13.6).
+
+    Then the two jobs, and they are siblings rather than a pipeline: memory
+    consolidation reads the sitting for what is worth *remembering* (§11.4), the
+    learning update reads the same sitting for what it says the child can *do*
+    (§10.5). Neither depends on the other's output and neither may run inline —
+    both are enqueued off the request that a four-year-old's device makes just
+    before the screen says goodnight.
+
+    **A failure to enqueue one must not cost the other.** They are separate `.delay`
+    calls in separate `try` blocks for that reason: a broker that rejects the first
+    would otherwise silently drop the second, and a child's mastery would stop
+    moving because their memories failed to queue.
+
+    A sitting with no session row gets neither: both tasks are keyed on the session
+    id. That is a documented gap rather than a silent one — `session` is nullable
+    because a retention job may prune it (§17.2) — and it is logged, because an
+    adventure ending without a sitting would mean two pipelines were quietly not
+    running.
     """
     session = adventure.session
     if session is None:
-        logger.warning("story.consolidate_skipped adventure=%s reason=no_session", adventure.pk)
+        logger.warning("story.close_out_skipped adventure=%s reason=no_session", adventure.pk)
         return
 
     memory_capture.session_closing(session, adventure_id=adventure.pk, reason=reason)
-    consolidate.delay(str(session.pk))
+    session_id = str(session.pk)
+
+    try:
+        consolidate.delay(session_id)
+    except Exception:
+        logger.exception("story.consolidate_enqueue_failed session=%s", session_id)
+
+    try:
+        update_from_session.delay(session_id)
+    except Exception:
+        logger.exception("story.learning_enqueue_failed session=%s", session_id)
 
 
 def _finalise_session(adventure: Adventure, reason: str) -> None:
