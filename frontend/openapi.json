@@ -1297,7 +1297,7 @@
             },
             "ChoiceRequestRequest": {
                 "type": "object",
-                "description": "What the child's tap sends back (§18.6).\n\nEvery field but `beatId` and `choiceKey` is a *signal*, not an answer. §18.6\nnames `latencyMs` and `retries`; `assisted` joins them because the companion\nscaffolding is the thing that distinguishes \"found it easy\" from \"got there\nwith help\", and Day 10 reads all three as learning evidence (§10.4). They are\nrecorded on every interaction, including a tap that only means \"carry on\", so\nthe evidence is not silently missing for the beats that asked something simple.\n\nNothing here is validated against the beat's `expected`. There is no wrong\nanswer to check against (§8.5), so `choiceKey` is accepted as sent and the\nconsequence is written warmly from whatever arrived.",
+                "description": "What the child's tap sends back (§18.6).\n\nEvery field but `beatId` and `choiceKey` is a *signal*, not an answer. §18.6\nnames `latencyMs` and `retries`; `assisted` joins them because the companion\nscaffolding is the thing that distinguishes \"found it easy\" from \"got there\nwith help\", and `apps.learning` reads all three as evidence (§10.4). They are\nrecorded on every interaction, including a tap that only means \"carry on\", so\nthe evidence is not silently missing for the beats that asked something simple.\n\nNothing here is validated against the beat's `expected`. There is no wrong\nanswer to check against (§8.5), so `choiceKey` is accepted as sent and the\nconsequence is written warmly from whatever arrived.",
                 "properties": {
                     "beatId": {
                         "type": "string",

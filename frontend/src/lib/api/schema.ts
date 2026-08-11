@@ -609,7 +609,7 @@ export interface components {
          *     Every field but `beatId` and `choiceKey` is a *signal*, not an answer. §18.6
          *     names `latencyMs` and `retries`; `assisted` joins them because the companion
          *     scaffolding is the thing that distinguishes "found it easy" from "got there
-         *     with help", and Day 10 reads all three as learning evidence (§10.4). They are
+         *     with help", and `apps.learning` reads all three as evidence (§10.4). They are
          *     recorded on every interaction, including a tap that only means "carry on", so
          *     the evidence is not silently missing for the beats that asked something simple.
          *
