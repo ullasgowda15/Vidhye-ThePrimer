@@ -6,13 +6,18 @@ a POST is never redirected (which would drop its body).
 
 from django.urls import path
 
-from apps.companion.views import CompanionCatalogView, CompanionView
+from apps.companion.views import CompanionCatalogView, CompanionView, GreetingView
 
 urlpatterns = [
     path(
         "children/<uuid:child_id>/companion",
         CompanionView.as_view(),
         name="companion-detail",
+    ),
+    path(
+        "children/<uuid:child_id>/greeting",
+        GreetingView.as_view(),
+        name="companion-greeting",
     ),
     path("companion-catalog", CompanionCatalogView.as_view(), name="companion-catalog"),
 ]

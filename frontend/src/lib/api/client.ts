@@ -34,6 +34,8 @@ export type ConsentRecordRequest = components['schemas']['ConsentRecordRequest']
 export type Companion = components['schemas']['Companion'];
 export type CompanionRequest = components['schemas']['CompanionRequest'];
 export type CompanionCatalog = components['schemas']['CompanionCatalog'];
+/** What the companion says when a child arrives — §4.5's day-two payoff. */
+export type Arrival = components['schemas']['Arrival'];
 export type AdventureStart = components['schemas']['AdventureStart'];
 export type ChoiceRequest = components['schemas']['ChoiceRequestRequest'];
 export type ChoiceAccepted = components['schemas']['ChoiceAccepted'];
@@ -322,6 +324,21 @@ export const api = {
       method: 'POST',
       body: payload,
     }),
+
+  /**
+   * What the companion says when this child arrives (§4.5).
+   *
+   * `kind` is `returning` when the companion has something specific to remember
+   * and `first_meeting` when it does not — a brand-new child, or any failure on
+   * the generated path. The client renders those as different scenes and must
+   * never infer which it is holding from the text.
+   *
+   * It costs a language call and a voice call, so it is asked **once per arrival**
+   * and never polled. `audio_url` may be null; the scene is built to work in
+   * silence (§13).
+   */
+  greeting: (childId: string, signal?: AbortSignal) =>
+    request<Arrival>(`${V1}/children/${childId}/greeting`, { signal }),
 
   /**
    * The adventure this child is in the middle of, or `null` (a 204) if there is

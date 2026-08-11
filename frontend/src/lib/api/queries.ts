@@ -16,6 +16,7 @@ export const queryKeys = {
   children: ['children'] as const,
   companionCatalog: ['companion-catalog'] as const,
   companion: (childId: string) => ['companion', childId] as const,
+  greeting: (childId: string) => ['greeting', childId] as const,
   adventure: (childId: string) => ['adventure', childId] as const,
 };
 
@@ -174,6 +175,34 @@ export function useCreateCompanion(childId: string) {
       // created rather than on a fresh request.
       queryClient.setQueryData(queryKeys.companion(childId), companion);
     },
+  });
+}
+
+/**
+ * What the companion says when this child arrives (§4.5) — the day-two payoff.
+ *
+ * **Asked once per arrival, and never polled.** Every other read on the child
+ * surface is cheap and repeatable; this one is a language call and a voice call,
+ * so the settings that would ordinarily be tuning are load-bearing here:
+ *
+ * - `staleTime: Infinity` — within one visit, the hello *is* the hello. Refetching
+ *   would generate a second greeting for a child already listening to the first.
+ * - `refetchOnWindowFocus: false` — a parent tabbing back must not buy a new one.
+ * - `retry: false` — the backend already falls back to the first-meeting hello for
+ *   every failure it can see, so a failure that reaches *here* is the request
+ *   itself, and retrying it spends the same money on the same outcome. The scene
+ *   renders the companion arriving in silence, which is a scene rather than an
+ *   error (§13).
+ */
+export function useGreeting(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.greeting(childId ?? ''),
+    queryFn: ({ signal }) => api.greeting(childId as string, signal),
+    enabled: Boolean(childId),
+    staleTime: Infinity,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    retry: false,
   });
 }
 

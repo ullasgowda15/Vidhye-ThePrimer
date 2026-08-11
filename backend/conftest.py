@@ -130,6 +130,7 @@ class ScriptedAIProvider:
         self.plan_calls = 0
         self.beat_calls = 0
         self.memory_calls = 0
+        self.greeting_calls = 0
 
     def queue_beat_response(self, *raw: str) -> None:
         """Answer the next beat call(s) with exactly these strings."""
@@ -155,6 +156,10 @@ class ScriptedAIProvider:
         if schema.get("title") == "SessionMemories":
             self.memory_calls += 1
             return json.dumps(self.memories(user))
+
+        if schema.get("title") == "ReturningGreetingText":
+            self.greeting_calls += 1
+            return json.dumps(self.greeting(system, user))
 
         self.beat_calls += 1
         if self.queued:
@@ -218,6 +223,42 @@ class ScriptedAIProvider:
                 }
             )
         return {"memories": proposals}
+
+    @staticmethod
+    def greeting(system: str, user: str) -> dict[str, Any]:
+        """The day-two hello, built out of the memory bundle it was handed (§4.5).
+
+        The point of this branch is that it **reads a real memory out of the
+        assembled prompt and says it back**. A scripted greeting that returned a
+        fixed friendly sentence would pass a test asserting "a greeting came back"
+        and would prove nothing about the thing Day 9 exists for — that the memory
+        bundle reached the model and that the greeting is about *this* child.
+
+        So it takes the last line of the `memory_bundle` layer that names something
+        that happened (skipping the companion-state and interest items, which every
+        child has from onboarding) and quotes it. A real model would paraphrase; the
+        test asserts on the memory's own distinctive words either way, which is what
+        makes the assertion meaningful against both.
+        """
+        name = match.group(1) if (match := re.search(r"^Audience: ([^,\n]+)", system, re.M)) else ""
+        companion = (
+            match.group(1) if (match := re.search(r"^Companion: ([^,\n]+)", system, re.M)) else ""
+        )
+
+        block = re.search(r'<memory_bundle kind="data">(.*?)</memory_bundle>', system, re.S)
+        events = [
+            line.strip()
+            for line in (block.group(1) if block else "").splitlines()
+            if line.strip().startswith("- (")
+            and not line.strip().startswith(("- (companion_state)", "- (interest)", "- (fear)"))
+        ]
+        remembered = events[-1].split(") ", 1)[-1] if events else ""
+
+        greeting = f"{name}! You came back."
+        if remembered:
+            greeting += f" I keep thinking about it: {remembered}"
+        greeting += f" Come on — {companion} has somewhere new to show you today."
+        return {"greeting": greeting, "remembered": remembered}
 
     #: The options a scripted decision beat offers. Two, with distinct keys and
     #: distinct icons, so a test can make genuinely *different* choices across two

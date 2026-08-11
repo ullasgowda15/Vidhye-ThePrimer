@@ -179,6 +179,59 @@ def test_the_layer_tag_forgery_is_closed_at_every_surface(surface: str, parent: 
     assert prompt.count("</memory_bundle>") == 1
 
 
+@pytest.mark.parametrize("attack", corpus.INJECTION)
+def test_an_injection_stored_as_a_memory_never_comes_back_as_an_instruction(
+    attack: str, target: Child
+) -> None:
+    """§13.5 through the surface Day 9 opened — **retrieval**, not a passed dict.
+
+    The `memory` entry in `INJECTION_SURFACES` has been checked since Day 7 by
+    handing `assemble` a bundle by hand. That proved the assembler labels and
+    scrubs what it is given; it could not prove anything about where the bundle
+    comes from, because until Day 9 it came from the child's own profile.
+
+    Now it comes out of the database, and that changes the threat model rather than
+    merely the plumbing: a memory is a sentence that reached us through a model, a
+    microphone and a consolidation prompt, has been sitting in our own store since
+    last week with our name on it, and is retrieved into a prompt on a day nobody
+    is watching. So the attack is planted where it would really live — in a
+    `Memory` row — and driven through `retrieval` and `guard_input` into the bytes
+    a beat is generated from.
+
+    The attack is the memory's **whole content**, exactly as the other surfaces
+    parametrize it, and that is the hostile case rather than a convenient one: a
+    consolidation proposal is one sentence, so a memory that carries an injection
+    carries it as the sentence. (Written as `Aarav said: <attack>` instead, two
+    entries stop firing — `forged_turn` is anchored to a line start on purpose, so
+    that "the assistant: a helpful person" in prose is not read as a forged turn.
+    That trade-off is `scrub.py`'s and predates this path; what holds for the
+    mid-sentence case is the data fence, which is what the last three assertions
+    here are about.)
+    """
+    from apps.media.adapters import embedding as embedding_adapter
+    from apps.memory import retrieval
+    from apps.memory.models import Memory, MemoryType
+
+    Memory.objects.create(
+        child=target,
+        type=MemoryType.EVENT,
+        content=attack,
+        salience=0.9,
+        embedding=embedding_adapter.embed(attack),
+    )
+
+    bundle = retrieval.retrieve(target, "what happened last time")
+    guarded = pipeline.guard_input({"memory": bundle.as_prompt()}, target)
+    prompt = render(assemble(target, memory=guarded["memory"]))
+
+    assert attack.lower() not in prompt.lower(), f"survived retrieval: {attack!r}"
+    assert REDACTION in prompt, f"nothing was removed from: {attack!r}"
+    # And the fence is intact: nothing forged a second identity or safety layer.
+    assert prompt.count("<system_identity>") == 1
+    assert prompt.count("</memory_bundle>") == 1
+    assert prompt.count("<safety_policy>") == 1
+
+
 @pytest.mark.parametrize("value", corpus.BENIGN_PROFILE)
 def test_ordinary_profile_answers_survive_intact(value: str) -> None:
     """The false-positive control for the input guard.

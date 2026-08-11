@@ -65,6 +65,29 @@ class GreetingSerializer(serializers.Serializer):
     audio_url = serializers.CharField(allow_null=True)
 
 
+class ArrivalSerializer(serializers.Serializer):
+    """The greeting a child gets *this visit* (§4.5). Read-only, never stored.
+
+    Distinct from `GreetingSerializer` above, which is §4.3's fixed imprint hello
+    carried on the companion row. This one is decided per arrival and can be either
+    kind, which is why `kind` is on the wire: the client renders "welcome back" and
+    "hello for the first time" as different scenes, and it must not have to infer
+    which it is holding by pattern-matching the text.
+
+    `remembered` is the memory the greeting refers to, verbatim. It is sent so the
+    scene can *show* what the companion is remembering alongside saying it, and
+    because a greeting that claims to remember something is a claim a parent is
+    entitled to check (§12.6). Empty on the first-meeting path, where there is
+    nothing yet to remember.
+    """
+
+    kind = serializers.CharField()
+    text = serializers.CharField(allow_blank=True)
+    audio_url = serializers.CharField(allow_null=True)
+    companion_name = serializers.CharField(allow_blank=True)
+    remembered = serializers.CharField(allow_blank=True)
+
+
 class ArchetypeOptionSerializer(serializers.Serializer):
     key = serializers.ChoiceField(choices=ARCHETYPE_KEYS)
     # `label` is also an attribute of DRF's `Field`, so the stubs read this as a

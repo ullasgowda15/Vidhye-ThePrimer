@@ -284,6 +284,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/children/{child_id}/greeting": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the companion says when this child arrives
+         * @description The day-two payoff (§4.5). For a child with memories this is generated fresh: the companion greets them by name and refers to one specific thing they did — something they named, chose, counted or loved — before opening today's adventure.
+         *
+         *     For a brand-new child, and for any failure on the generated path, it returns the fixed first-meeting hello (§4.3) with the audio already attached to the companion. `kind` says which one you are holding; a client must never have to infer that from the text.
+         *
+         *     It costs a language call and a voice call, so it is throttled like a write. `audio_url` may be null — the scene is designed to work in silence, and a child is never shown that anything is missing.
+         */
+        get: operations["companion_greeting"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/children/{id}": {
         parameters: {
             query?: never;
@@ -494,6 +518,28 @@ export interface components {
             blurb: string;
             default_palette: components["schemas"]["PaletteEnum"];
             default_personality_preset: components["schemas"]["PersonalityPresetEnum"];
+        };
+        /**
+         * @description The greeting a child gets *this visit* (§4.5). Read-only, never stored.
+         *
+         *     Distinct from `GreetingSerializer` above, which is §4.3's fixed imprint hello
+         *     carried on the companion row. This one is decided per arrival and can be either
+         *     kind, which is why `kind` is on the wire: the client renders "welcome back" and
+         *     "hello for the first time" as different scenes, and it must not have to infer
+         *     which it is holding by pattern-matching the text.
+         *
+         *     `remembered` is the memory the greeting refers to, verbatim. It is sent so the
+         *     scene can *show* what the companion is remembering alongside saying it, and
+         *     because a greeting that claims to remember something is a claim a parent is
+         *     entitled to check (§12.6). Empty on the first-meeting path, where there is
+         *     nothing yet to remember.
+         */
+        Arrival: {
+            kind: string;
+            text: string;
+            audio_url: string | null;
+            companion_name: string;
+            remembered: string;
         };
         /**
          * @description * `pending` - Not generated yet
@@ -1152,6 +1198,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Companion"];
+                };
+            };
+        };
+    };
+    companion_greeting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Arrival"];
                 };
             };
         };

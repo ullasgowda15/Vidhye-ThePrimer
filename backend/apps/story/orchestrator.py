@@ -42,9 +42,19 @@ branch the child did not take. What bounds the cost of all this is the running
 summary (`apps.story.summary`), which keeps the prompt flat across a long
 adventure rather than pasting every beat into every request.
 
-What is deliberately *not* here yet: memory retrieval (Days 8-9) and the objective
-selector (Day 10). Each has a named seam and a placeholder, so those days are
-wiring rather than redesign.
+**The companion remembers.** From Day 9 the `memory_bundle` layer is filled by
+`apps.memory.retrieval` rather than by the onboarding seeds: rule-includes (the
+companion, active fears, what the child loves, what happened lately) ride in every
+prompt, and the *vector* half runs at story start and at key branch points
+(`is_branch_point`) — which is §11.9's "at story start and key branches" read
+literally, and is what keeps an embedding call off the beats where nothing about
+the story has changed. The bundle is token-bounded, so a family three years in pays
+what a family three days in pays, and it enters through `guard_input` and the DATA
+fence like every other untrusted string (§13.5).
+
+What is deliberately *not* here yet: the objective selector (Day 10) and
+interest-graph world selection (Day 11). Each has a named seam and a placeholder,
+so those days are wiring rather than redesign.
 """
 
 from __future__ import annotations
@@ -74,6 +84,7 @@ from apps.media.hashing import hashes_for
 from apps.media.models import Media
 from apps.media.style import style_signature
 from apps.memory import capture as memory_capture
+from apps.memory import retrieval as memory_retrieval
 from apps.memory.tasks import consolidate
 from apps.profiles.models import Child
 from apps.safety import incidents as safety_incidents
@@ -133,6 +144,13 @@ MAX_CHOICES = 3
 #: decides properly which characters are worth recalling.
 KNOWN_CHARACTER_LIMIT = 8
 
+#: How much of the current moment is embedded to rank memories against (§19.4).
+#: One sentence of plan, one of what the child just did, and the head of the running
+#: summary is plenty to say what a beat is *about* — and the whole point of a
+#: retrieval query is to be a query rather than a copy of the prompt. It also bounds
+#: what leaves for a second vendor (§13.8).
+RETRIEVAL_CONTEXT_CHARS = 600
+
 #: How long a beat's media may sit untouched before another stream open assumes
 #: the worker that owned it is gone and queues a replacement. Comfortably longer
 #: than a slow illustration + voice pair (tens of seconds), because queueing a
@@ -170,25 +188,93 @@ MEDIA_FOLLOW_TIMEOUT_S = 45.0
 # ---------------------------------------------------------------------------
 # Prompt inputs
 # ---------------------------------------------------------------------------
-def seed_memories(child: Child) -> list[dict[str, str]]:
-    """The child's onboarding seeds, as the memory bundle sees them (§19.1).
+def is_branch_point(seq: int, prev_choice: Mapping[str, Any] | None) -> bool:
+    """Is this one of §11.9's "story start and key branches"?
 
-    Real retrieval — embedding the context and ranking over `memory` — is Days
-    8-9. Until then the seeds a parent typed *are* the bundle, and they enter
-    through the same door: the `memory_bundle` layer, labelled DATA, so a parent
-    who types "ignore your instructions" into the interests box has written a
-    fact about their child and not a command (§13.5).
+    The opening always is: nothing about this adventure is known yet, and it is the
+    beat that has to be recognisably *this* child's. After that, a beat is a branch
+    point when the child actually chose between things — `offered_labels` carries
+    the whole set of cards that were on screen, so "two or more" is the honest test
+    of whether the story just forked.
 
-    Interests come first because they are what makes beat one recognisably *this*
-    child's. Fears are included as facts; how a fear may be used is a rule, and
-    rules live in the safety layer.
+    What this excludes is the beat after a tap that only meant "carry on", and the
+    exclusion is the point. The *rule* half of retrieval runs on every beat
+    regardless (§19.1 puts the memory bundle in every prompt); what this gates is
+    the **vector** half, which costs an embedding call per beat and can only tell us
+    something new when the story has moved somewhere new. A beat that follows a
+    single-option tap is the same moment one beat later, and paying a provider to
+    discover that would be a call per beat, per adventure, forever.
     """
-    bundle: list[dict[str, str]] = []
-    for interest in child.interests or []:
-        bundle.append({"type": "interest", "content": f"{child.first_name} loves {interest}."})
-    for fear in child.fears or []:
-        bundle.append({"type": "fear", "content": f"{child.first_name} is afraid of {fear}."})
-    return bundle
+    if seq <= FIRST_BEAT_SEQ:
+        return True
+    if not prev_choice:
+        return False
+    return len(prev_choice.get("offered_labels") or []) > 1
+
+
+def plan_context(child: Child) -> str:
+    """What retrieval ranks against when an adventure is being planned (§19.4).
+
+    There is no story yet, so the moment is the child themselves: what they love,
+    and what they have done before. Scrubbed like every other context string here —
+    see `beat_context_for`.
+    """
+    loves = ", ".join(str(interest) for interest in (child.interests or []))
+    return _retrieval_context(
+        [
+            f"A new adventure is beginning for {child.first_name}.",
+            f"Things they love: {loves}." if loves else "",
+            "What did they do in their last stories, and what did they name or choose?",
+        ]
+    )
+
+
+def beat_context_for(
+    adventure: Adventure, *, seq: int, prev_choice: Mapping[str, Any] | None
+) -> str:
+    """What retrieval ranks against for one beat — or `""` when it must not run.
+
+    Empty at a non-branch point, which is how `is_branch_point` is enforced rather
+    than merely documented: `retrieval.retrieve` skips the vector half for an empty
+    context, so there is no call site that can accidentally embed on every beat.
+
+    **Scrubbed, even though it never enters a prompt.** It goes to a third party —
+    the embedding provider — and it is built from a child's own words and a model's
+    option labels, so §13.8's minimisation applies to it exactly as it applies to
+    the consolidation digest. It also means an injection string cannot ride out to a
+    second vendor on a path the prompt guard never sees.
+    """
+    if not is_branch_point(seq, prev_choice):
+        return ""
+
+    skeleton: Sequence[Any] = adventure.plan.get("skeleton") or []
+    turn = prev_choice or {}
+    return _retrieval_context(
+        [
+            str(adventure.plan.get("title") or ""),
+            str(skeleton[seq - 1]) if 0 < seq <= len(skeleton) else "",
+            str(turn.get("chosen_label") or turn.get("chosen_key") or ""),
+            "" if turn.get("value") is None else str(turn["value"]),
+            str(turn.get("text") or ""),
+            adventure.running_summary or "",
+        ]
+    )
+
+
+def _retrieval_context(parts: Sequence[str]) -> str:
+    text = " ".join(part.strip() for part in parts if part and part.strip())
+    return safety.scrub_profile_field(text, cap=RETRIEVAL_CONTEXT_CHARS)
+
+
+def recall(child: Child, context: str) -> memory_retrieval.MemoryBundle:
+    """The memories one generation is built from (§11.9). Never raises.
+
+    A named function rather than a call inside `guard_beat_inputs`, because two
+    callers need it — the plan and the beat — and because the *bundle* is what
+    carries the ids the recall bookkeeping is written against. `retrieve` already
+    swallows its own failures; this is here so the seam has one name.
+    """
+    return memory_retrieval.retrieve(child, context)
 
 
 def objective_for(adventure: Adventure) -> dict[str, Any]:
@@ -267,8 +353,13 @@ def build_plan(child: Child) -> dict[str, Any]:
     the *first* thing a child's seeds reach and its output is pasted into every
     beat prompt of the adventure — so an injection that got through here would be
     laundered into an instruction layer and replayed six times.
+
+    **This is §11.9's "story start".** The arc is chosen once and every beat is
+    written against it, so it is the highest-leverage place a memory can land: a
+    plan that knows the child named a dragon Sparkle is a plan Sparkle can be in.
     """
-    guarded = safety.guard_input({"memory": seed_memories(child)}, child)
+    bundle = recall(child, plan_context(child))
+    guarded = safety.guard_input({"memory": bundle.as_prompt()}, child)
     layers = assembler.assemble(
         child,
         memory=guarded.get("memory") or [],
@@ -277,6 +368,10 @@ def build_plan(child: Child) -> dict[str, Any]:
         output_schema=json_schema_for(StoryPlan),
     )
     context = {"system": render_layers(layers), "user": story_prompts.PLAN_REQUEST}
+    # Bookkeeping once the memories are in the bytes we are about to send, not when
+    # they were queried: `recall_count` is a record of what the companion was
+    # actually reminded of (§11.9).
+    memory_retrieval.mark_recalled(bundle)
 
     try:
         plan = ai_router.generate_structured(context, model=StoryPlan)
@@ -499,6 +594,8 @@ def utterance_ref(choice_id: Any) -> str:
 def guard_beat_inputs(
     child: Child,
     prev_choice: Mapping[str, Any] | None = None,
+    *,
+    context: str = "",
 ) -> dict[str, Any]:
     """Everything untrusted that a beat prompt is built from, neutralised (§13.5).
 
@@ -508,6 +605,13 @@ def guard_beat_inputs(
     the prompt builder needs the *text*, and running the guard twice would write
     two incidents for one beat.
 
+    `context` is what retrieval ranks against (`beat_context_for`); empty means the
+    rule-includes only, which is the ordinary state of a beat that is not a branch
+    point. The retrieved bundle is guarded here with everything else and never
+    around it: a memory is a sentence that reached us through a model, a
+    microphone and a consolidation prompt, which makes it the *least* trusted
+    string in the bundle and the one §13.5 exists for.
+
     `choice_id` is lifted out of the turn and handed to the guard as the
     utterance's identity, not as prompt content — the model must not be told a
     row id, and the guard must be able to tell "this is the sentence
@@ -516,14 +620,18 @@ def guard_beat_inputs(
     turn = dict(prev_choice) if prev_choice else None
     choice_id = str(turn.pop("choice_id", "") or "") if turn is not None else ""
     ref = utterance_ref(choice_id)
-    return safety.guard_input(
+
+    bundle = recall(child, context)
+    guarded = safety.guard_input(
         {
-            "memory": seed_memories(child),
+            "memory": bundle.as_prompt(),
             "turn": turn,
         },
         child,
         utterance_ref=ref,
     )
+    memory_retrieval.mark_recalled(bundle)
+    return guarded
 
 
 def build_beat_context(
@@ -557,7 +665,11 @@ def build_beat_context(
     stage = str(skeleton[seq - 1]) if 0 < seq <= len(skeleton) else ""
 
     if guarded is None:
-        guarded = guard_beat_inputs(child, prev_choice)
+        guarded = guard_beat_inputs(
+            child,
+            prev_choice,
+            context=beat_context_for(adventure, seq=seq, prev_choice=prev_choice),
+        )
     turn = guarded.get("turn")
 
     layers = assembler.assemble(
@@ -616,7 +728,9 @@ def create_beat(
     """
     seq = _next_seq(adventure) if seq is None else seq
     child = adventure.child
-    guarded = guard_beat_inputs(child, prev_choice)
+    guarded = guard_beat_inputs(
+        child, prev_choice, context=beat_context_for(adventure, seq=seq, prev_choice=prev_choice)
+    )
     input_decision = guarded[safety.GUARD_KEY]
 
     # §13.10: a child in distress gets comfort *immediately*, not the beat the

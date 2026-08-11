@@ -243,6 +243,13 @@ REST_FRAMEWORK = {
         # the product's own client never reaches it while a runaway one still
         # stops.
         "companion_read": env("THROTTLE_COMPANION_READ", default="480/hour"),
+        # The returning greeting (§4.5). One language call, one TTS call, and a
+        # vector query — paid once when the child arrives, and the audio is cached
+        # on `(voice, text)` so a reload re-synthesises nothing. Sized like the
+        # companion create rather than like a read, because a client that asked for
+        # it in a loop would be generating text for a child who is already looking
+        # at the previous one.
+        "greeting": env("THROTTLE_GREETING", default="30/hour"),
         # Beginning an adventure costs a plan call, a beat call, an illustration
         # and a TTS call before the child has done anything (§22.4). A family
         # starts a few a day; a loop that starts one a second is a bug.
@@ -468,6 +475,21 @@ MEMORY_SALIENCE_THRESHOLD = env.float("MEMORY_SALIENCE_THRESHOLD", default=0.5)
 # moment, this one says what a sitting *is*. Half an hour with a four-year-old
 # contains a handful of things worth remembering.
 MEMORY_MAX_PER_SESSION = env.int("MEMORY_MAX_PER_SESSION", default=6)
+
+# How many tokens of retrieved memory one generation may carry (§11.9, §19.4).
+# **The dial that keeps "remembers everything" affordable.** §19.4's instruction is
+# "few, high-value memories", and this is the number that makes it true whatever a
+# child's history grows to: the bundle is ranked and then cut here, so a family
+# three years in pays the same per beat as a family three days in. Roughly a dozen
+# one-sentence memories at 800; raising it makes every beat of every adventure more
+# expensive, forever, and gives the model more to be distracted by.
+MEMORY_RETRIEVAL_TOKEN_BUDGET = env.int("MEMORY_RETRIEVAL_TOKEN_BUDGET", default=800)
+
+# How many nearest neighbours the vector half fetches before ranking. Comfortably
+# more than survives the budget, because the ranking sees signals the ANN query
+# cannot — salience, recall recency, and what the rule half has already claimed.
+# This is a bound on one indexed query, not on the prompt.
+MEMORY_RETRIEVAL_CANDIDATES = env.int("MEMORY_RETRIEVAL_CANDIDATES", default=20)
 
 # ---------------------------------------------------------------------------
 # "No use of child data to train third-party models" (§13.8) — what that means here

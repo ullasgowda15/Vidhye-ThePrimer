@@ -11,6 +11,12 @@ import { useHealth, useMe } from '@/lib/api/queries';
  * log in — which is the only version of this that works, since a three-year-old
  * cannot pass a login form (§14.5).
  *
+ * From Day 9 the star goes to `/welcome/:childId` rather than straight to the
+ * story, and that one hop is §4.5: the companion says hello and says what it
+ * remembers before today's adventure starts. It is not a detour the child can land
+ * on wrongly — a child with no history is greeted with the first-meeting hello
+ * there, which is the scene they would otherwise have seen at `/meet`.
+ *
  * One child per account at MVP, so the first child on `/me` is *the* child. A
  * picker belongs here when siblings do.
  *
@@ -43,7 +49,7 @@ export default function ChildHome() {
         <button
           type="button"
           onClick={() => {
-            if (child) navigate(`/story/${child.id}`);
+            if (child) navigate(`/welcome/${child.id}`);
           }}
           className="mt-6 min-h-target min-w-target rounded-full bg-accent px-7 text-5 font-display text-surface shadow-card transition-transform duration-base hover:scale-[1.03] active:scale-95"
           aria-label="Begin the story"

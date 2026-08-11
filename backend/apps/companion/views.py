@@ -2,6 +2,7 @@
 
     POST /api/v1/children/{id}/companion   create the child's one companion
     GET  /api/v1/children/{id}/companion   fetch it
+    GET  /api/v1/children/{id}/greeting    what the companion says on arrival (§4.5)
     GET  /api/v1/companion-catalog         the picker's options
 
 Three rules are enforced here, all server-side:
@@ -28,15 +29,21 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.consent import require_consent
 from apps.accounts.models import User
 from apps.common.permissions import IsParentOwner
 from apps.common.throttling import CompanionCreateThrottle, CompanionReadThrottle
+from apps.companion import greeting
 from apps.companion.catalog import catalog
 from apps.companion.models import Companion
-from apps.companion.serializers import CompanionCatalogSerializer, CompanionSerializer
+from apps.companion.serializers import (
+    ArrivalSerializer,
+    CompanionCatalogSerializer,
+    CompanionSerializer,
+)
 from apps.companion.tasks import generate_companion_assets
 from apps.profiles.models import Child
 
@@ -124,6 +131,64 @@ class CompanionView(GenericAPIView):
         return Response(
             self.get_serializer(companion).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="companion_greeting",
+        summary="What the companion says when this child arrives",
+        description=(
+            "The day-two payoff (§4.5). For a child with memories this is generated "
+            "fresh: the companion greets them by name and refers to one specific "
+            "thing they did — something they named, chose, counted or loved — before "
+            "opening today's adventure.\n\n"
+            "For a brand-new child, and for any failure on the generated path, it "
+            "returns the fixed first-meeting hello (§4.3) with the audio already "
+            "attached to the companion. `kind` says which one you are holding; a "
+            "client must never have to infer that from the text.\n\n"
+            "It costs a language call and a voice call, so it is throttled like a "
+            "write. `audio_url` may be null — the scene is designed to work in "
+            "silence, and a child is never shown that anything is missing."
+        ),
+        responses={200: ArrivalSerializer},
+    )
+)
+class GreetingView(GenericAPIView):
+    """The arrival scene's one request.
+
+    A `GenericAPIView` rather than an action on `CompanionView`, because it is a
+    different thing with a different cost: reading a companion is an indexed row
+    lookup that the imprint scene polls, and this generates text and speech. They
+    would have had to share a throttle scope, which is the exact mistake
+    `companion_read` exists to undo.
+    """
+
+    serializer_class = ArrivalSerializer
+    permission_classes = [IsAuthenticated, IsParentOwner]
+    queryset = Companion.objects.all()
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "greeting"
+
+    def get(self, request: Request, child_id: str, *args: Any, **kwargs: Any) -> Response:
+        child = get_object_or_404(Child, pk=child_id)
+        # Against the *child*, before any memory is read: retrieval is the most
+        # sensitive read in the product, and a request from the wrong parent must
+        # not reach it at all (§11.10).
+        self.check_object_permissions(request, child)
+        require_consent(cast(User, request.user))
+
+        arrival = greeting.build(child)
+        return Response(
+            ArrivalSerializer(
+                {
+                    "kind": arrival.kind,
+                    "text": arrival.text,
+                    "audio_url": arrival.audio_url,
+                    "companion_name": arrival.companion_name,
+                    "remembered": arrival.remembered,
+                }
+            ).data
         )
 
 

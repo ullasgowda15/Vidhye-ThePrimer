@@ -2,6 +2,7 @@ import { createBrowserRouter } from 'react-router-dom';
 
 import ChildHome from './routes/child/ChildHome';
 import MeetCompanion from './routes/child/MeetCompanion';
+import ReturningGreeting from './routes/child/ReturningGreeting';
 import StoryPage from './routes/child/StoryPage';
 import AdultGateRoute from './routes/parent/AdultGateRoute';
 import Login from './routes/parent/Login';
@@ -34,6 +35,12 @@ export const router = createBrowserRouter(
     // unauthenticated request could obtain — without a session it stays a
     // sleeping companion.
     { path: '/meet/:childId', element: <MeetCompanion /> },
+    // Coming back (§4.5). A sibling of `/meet` rather than a mode of it: the two
+    // scenes answer different questions — "who is this?" and "do you remember
+    // me?" — and the second is the one the whole retention thesis rests on. Same
+    // place in the tree, outside the parent guards, for the same reason: the child
+    // is holding the tablet.
+    { path: '/welcome/:childId', element: <ReturningGreeting /> },
     // The story, in the child tree and outside the parent guards for the same
     // reason: the child is the one holding the tablet. It runs under the parent's
     // restored session; without one it stays a companion thinking, never a form.
