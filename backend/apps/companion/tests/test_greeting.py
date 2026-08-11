@@ -91,8 +91,12 @@ class TestTheCompanionRemembersThisChild:
 
         assert result.kind == arrival.RETURNING
         assert "Rina" in result.text
-        assert "stepping stones" in result.text or "Sparkle" in result.text
-        assert result.remembered, "the model did not say which memory it used"
+        # The memory itself, not the companion's name: `ScriptedAIProvider.greeting`
+        # appends "Sparkle has somewhere new to show you today" unconditionally, so
+        # an `or "Sparkle"` here would pass with no memory reaching the model at all
+        # — which is the one thing this test is named for.
+        assert "stepping stones" in result.text
+        assert "stepping stones" in result.remembered
         assert result.memory_ids
 
     def test_two_children_get_different_correct_greetings(
@@ -112,8 +116,10 @@ class TestTheCompanionRemembersThisChild:
         assert "Omar" in his.text and "Rina" not in his.text
 
         # Each greeting is about that child's own history, and about no part of the
-        # other's.
-        assert "stepping stones" in hers.text or "Sparkle" in hers.text
+        # other's. The positive half asserts on the memory alone — the companion's
+        # name arrives in every scripted greeting whether a memory reached the model
+        # or not, so it cannot stand as evidence that one did.
+        assert "stepping stones" in hers.text
         assert "tower" in his.text or "moth" in his.text
         assert "tower" not in hers.text and "moth" not in hers.text
         assert "stepping stones" not in his.text and "Sparkle" not in his.text
@@ -167,6 +173,92 @@ class TestANewChildIsNotGivenAnEmptyGreeting:
         child = _child("greet-seeds@example.com", "Ada", "Pip", interests=["trains", "the moon"])
 
         assert arrival.build(child, speak=False).kind == arrival.FIRST_MEETING
+
+
+# ---------------------------------------------------------------------------
+# "It references a real memory or it is not a returning greeting" — enforced
+# ---------------------------------------------------------------------------
+class TestAReturningGreetingMustNameAMemoryWeActuallyHold:
+    """The gate on `kind=RETURNING` is "this child has stored rows", which is a
+    fact about the *table*. It says nothing about the sentence the model wrote,
+    and the two ways that sentence can be untrue — naming nothing, and naming
+    something that never happened — both used to ship as "Welcome back!".
+
+    Both degrade to the first meeting rather than to a softer returning greeting.
+    There is no third scene here: a hello that cannot keep the promise it makes is
+    the hello that does not make it (`greeting._references_a_real_memory`).
+    """
+
+    def test_a_greeting_that_names_no_memory_becomes_the_first_meeting(
+        self, rina: Child, fake_ai: Any, monkeypatch: Any
+    ) -> None:
+        """The child *has* memories; the model just did not use one.
+
+        The prompt explicitly invites this ("return an empty `remembered`"), and
+        without the check it shipped as `kind=returning` — "Welcome back!" rendered
+        over nothing, which the module docstring calls worse than never having
+        claimed to remember. The child has a history, so the free hello is the
+        honest scene rather than a consolation prize.
+        """
+
+        def forgot(*_: Any, **__: Any) -> Any:
+            return arrival.ReturningGreetingText(
+                greeting="Rina! You came back. Come on, there is somewhere new to go today.",
+                remembered="",
+            )
+
+        monkeypatch.setattr(arrival.ai_router, "generate_structured", forgot)
+        result = arrival.build(rina, speak=False)
+
+        assert result.kind == arrival.FIRST_MEETING
+        assert result.source == arrival.SOURCE_FALLBACK
+        assert result.remembered == ""
+
+    def test_an_invented_memory_never_reaches_the_child(
+        self, rina: Child, fake_ai: Any, monkeypatch: Any
+    ) -> None:
+        """A fluent sentence about a day that never happened is the worst output
+        on this path: it is safe, warm, on-topic, and false — and it renders on the
+        child's screen as the thing the companion remembers about them.
+
+        Rina's table holds stepping stones and a dragon called Sparkle. It does not
+        hold a purple whale, and no amount of confidence from the model makes it.
+        """
+
+        def invents(*_: Any, **__: Any) -> Any:
+            return arrival.ReturningGreetingText(
+                greeting="Rina! You came back. I keep thinking about your ride to the moon.",
+                remembered="Rina rode a purple whale to the moon.",
+            )
+
+        monkeypatch.setattr(arrival.ai_router, "generate_structured", invents)
+        result = arrival.build(rina, speak=False)
+
+        assert result.kind == arrival.FIRST_MEETING
+        assert result.source == arrival.SOURCE_FALLBACK
+        assert "whale" not in result.text and "whale" not in result.remembered
+
+    def test_a_reworded_copy_of_a_real_memory_is_still_that_memory(
+        self, rina: Child, fake_ai: Any, monkeypatch: Any
+    ) -> None:
+        """The check is on the memory, not on the bytes.
+
+        A real model re-wraps and re-cases what it copies. Traceability that only
+        accepted a byte-identical string would fall back on every live greeting and
+        the day-two payoff would exist only against the scripted provider.
+        """
+
+        def paraphrases(*_: Any, **__: Any) -> Any:
+            return arrival.ReturningGreetingText(
+                greeting="Rina! You came back. Those stepping stones, though!",
+                remembered="  rina COUNTED three stepping   stones across the stream  ",
+            )
+
+        monkeypatch.setattr(arrival.ai_router, "generate_structured", paraphrases)
+        result = arrival.build(rina, speak=False)
+
+        assert result.kind == arrival.RETURNING
+        assert result.source == arrival.SOURCE_GENERATED
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +340,38 @@ class TestInjectionThroughAMemoryIsNeutralised:
         assert result.kind == arrival.FIRST_MEETING
         assert result.source == arrival.SOURCE_FALLBACK
         assert "terrified" not in result.text
+
+    def test_the_remembered_caption_is_graded_too(
+        self, rina: Child, fake_ai: Any, monkeypatch: Any
+    ) -> None:
+        """§13.3 is about text a child *sees*, and this is text a child sees.
+
+        `remembered` is serialised by `ArrivalSerializer` and rendered under the
+        greeting on `/welcome/:childId`, so a benign spoken line is not enough for
+        the scene to be safe. Grading only the narration let this sentence through
+        untouched onto a five-year-old's screen.
+
+        The unsafe caption is a **real row this child has**, quoted verbatim, so
+        traceability cannot be what catches it — the memory is genuinely theirs and
+        the only thing wrong with it is that it must not be replayed to them. That
+        is also the realistic shape of this failure: consolidation writes what
+        happened in the story, and not everything that happened is something to
+        greet a child with the next morning.
+        """
+        remember(rina, "Rina was terrified and alone in the dark and nobody came.", salience=0.95)
+
+        def unsafe_caption(*_: Any, **__: Any) -> Any:
+            return arrival.ReturningGreetingText(
+                greeting="Rina! You came back. Come on, the map is waiting for us.",
+                remembered="Rina was terrified and alone in the dark and nobody came.",
+            )
+
+        monkeypatch.setattr(arrival.ai_router, "generate_structured", unsafe_caption)
+        result = arrival.build(rina, speak=False)
+
+        assert result.kind == arrival.FIRST_MEETING
+        assert result.source == arrival.SOURCE_FALLBACK
+        assert "terrified" not in result.remembered and "terrified" not in result.text
 
 
 # ---------------------------------------------------------------------------

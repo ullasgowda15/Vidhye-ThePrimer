@@ -35,7 +35,17 @@ prompt.
 **It is graded on the way out like a beat.** The greeting is the first thing a
 returning child hears, generated from the least-trusted input in the system, and
 it is spoken aloud before any story has started. `pipeline.guard_output` reads it
-exactly as it reads a beat's narration; anything short of a pass falls back.
+exactly as it reads a beat's narration; anything short of a pass falls back. Both
+generated strings go through it, not only the spoken one: `remembered` is printed
+under the greeting on the child's own screen, and §13.3 is about text a child
+sees, not only text they hear.
+
+**And "a real memory" is checked rather than assumed.** The first paragraph is a
+claim about the model until something verifies it, so `_references_a_real_memory`
+holds the returning greeting to a `remembered` that is non-empty and traceable to
+an item in the bundle we sent. Empty or invented, the child gets the first meeting
+— the same one answer this file gives to every other way the day-two hello can
+fail to be true.
 """
 
 from __future__ import annotations
@@ -50,7 +60,7 @@ from apps.companion import service as companion_service
 from apps.companion.models import GREETING_AUDIO, Companion
 from apps.media import service as media_service
 from apps.media.exceptions import MediaError
-from apps.memory import retrieval
+from apps.memory import retrieval, salience
 from apps.profiles.models import Child
 from apps.safety import pipeline as safety
 from apps.safety.prompting import assembler
@@ -266,7 +276,13 @@ def _generate(
         logger.warning("companion.greeting_empty child=%s", child.pk)
         return None
 
-    decision = safety.guard_output(_as_gradeable(text), child)
+    remembered = str(answer.remembered or "").strip()[:MAX_GREETING_CHARS]
+
+    # Both fields, one guard (§13.3). `remembered` is rendered on the child's
+    # screen next to the greeting, so "text a child will see" covers it too — and
+    # grading them together means an unsafe caption takes the same free fallback
+    # an unsafe greeting takes, rather than needing a second classifier to refuse.
+    decision = safety.guard_output(_as_gradeable(text, remembered), child)
     if not decision.passed:
         # No rewrite loop, unlike a beat. A beat is the story and is worth one
         # constrained retry; a greeting has a pre-vetted alternative sitting right
@@ -280,7 +296,50 @@ def _generate(
         safety.report(decision, child=child)
         return None
 
-    return text, str(answer.remembered or "").strip()[:MAX_GREETING_CHARS]
+    if not _references_a_real_memory(remembered, bundle):
+        logger.warning(
+            "companion.greeting_untraceable child=%s remembered=%d",
+            child.pk,
+            len(remembered),
+        )
+        return None
+
+    return text, remembered
+
+
+def _references_a_real_memory(remembered: str, bundle: retrieval.MemoryBundle) -> bool:
+    """Is `remembered` actually one of the memories we handed the model?
+
+    `ReturningGreetingText.remembered` is documented as "a check that the greeting
+    is about something in the bundle rather than something invented" — this is the
+    code that performs it, and until it existed the check was the model's goodwill.
+    Two ways the returning greeting ships a promise it cannot keep, both closed
+    here by returning False so `build` falls back to the first meeting:
+
+    - **Empty.** The prompt itself invites it ("return an empty `remembered`"), and
+      the honest answer to a model that found nothing specific to say is the
+      first-meeting hello, not "Welcome back!" over a blank space (see the module
+      docstring on why that is the *worse* of the two).
+    - **Invented.** A fluent sentence about a day that never happened, rendered on
+      the child's screen as what the companion remembers.
+
+    Exact first because the model is asked to copy the memory verbatim and usually
+    does; the gist match is `salience`'s own near-duplicate test (§11.4), reused so
+    that "is this the same memory" has one definition in this codebase rather than
+    a second one written here. A paraphrase too loose for that bar is a memory we
+    cannot prove we hold, and the fallback is the right answer to it.
+    """
+    if not remembered:
+        return False
+    stored = [item.content for item in bundle.remembered]
+    if _flattened(remembered) in {_flattened(content) for content in stored}:
+        return True
+    return salience.is_the_same_memory(remembered, stored)
+
+
+def _flattened(text: str) -> str:
+    """Case and whitespace off, so a re-wrapped copy still counts as a copy."""
+    return " ".join(text.split()).casefold()
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,8 +355,16 @@ class _Gradeable:
     narration: str
 
 
-def _as_gradeable(text: str) -> _Gradeable:
-    return _Gradeable(narration=text)
+def _as_gradeable(*parts: str) -> _Gradeable:
+    """Every child-facing string of the greeting, as one thing to grade.
+
+    Variadic because §13.3 is about *all* the text a child sees, and the greeting
+    has two such strings: the spoken line and the `remembered` caption rendered
+    under it. One `narration` rather than one call each — a classifier reads the
+    scene the child gets, and two independent passes would each have to be told
+    what the other saw.
+    """
+    return _Gradeable(narration="\n".join(part for part in parts if part))
 
 
 # ---------------------------------------------------------------------------
