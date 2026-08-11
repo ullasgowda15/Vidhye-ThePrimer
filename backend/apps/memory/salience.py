@@ -291,6 +291,18 @@ def is_the_same_memory(content: str, existing: list[str]) -> bool:
     return any(_similarity(gist, _signature(other)) >= DUPLICATE_SIMILARITY for other in existing)
 
 
+def gist(content: str) -> str:
+    """What a memory is *about*, as text — the substance without the scenery.
+
+    Public because it is not only a dedupe detail: it is this module's answer to
+    "which part of this sentence is the memory", and `consolidation` embeds that
+    same answer so the vector and the duplicate check are looking at one thing.
+    See `_gist` for the partition itself and `_signature` for why the anchor has
+    to come off.
+    """
+    return _gist(content)
+
+
 def _signature(content: str) -> frozenset[str]:
     """What a memory is *about*, as tokens — the thing comparisons should use.
 

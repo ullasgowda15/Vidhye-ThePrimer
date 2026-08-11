@@ -43,7 +43,7 @@ from django.utils import timezone
 from apps.media.adapters import embedding as embedding_adapter
 from apps.media.exceptions import MediaError
 from apps.memory import candidates as rules
-from apps.memory import prompts, salience, stm
+from apps.memory import entities, prompts, salience, stm
 from apps.memory.models import Memory
 from apps.memory.salience import Candidate, Signals
 from apps.story.models import PlaySession
@@ -167,13 +167,19 @@ def _model_candidates(session: PlaySession, log: list[dict[str, Any]]) -> list[C
     built: list[Candidate] = []
     for proposal in proposed:
         content = str(proposal.content).strip()
-        entities = [str(entity)[:120] for entity in proposal.entities if str(entity).strip()]
+        # The second of the two write paths into §11.7's graph, and the one that
+        # forked it: a model asked for "namespaced keys" answers `companion:Ruby`
+        # when the companion is called Ruby. Same normaliser as the rules half, so
+        # there is one definition of what a key is rather than two.
+        entity_keys = entities.normalise(
+            [str(entity) for entity in proposal.entities], context=f"session={session.pk}"
+        )
         valence = max(-1.0, min(1.0, float(proposal.valence)))
         built.append(
             Candidate(
                 type=str(proposal.type).strip().lower(),
                 content=content,
-                entities=entities,
+                entities=entity_keys,
                 valence=valence,
                 signals=Signals(
                     child_initiated=(
@@ -185,7 +191,7 @@ def _model_candidates(session: PlaySession, log: list[dict[str, Any]]) -> list[C
                     # differently (§11.6), which is exactly what two fields buy.
                     emotional_intensity=abs(valence),
                     skill_milestone=(MODEL_MILESTONE if proposal.type == "skill_moment" else 0.0),
-                    repetition=rules.repetition_of(entities, counts, beats),
+                    repetition=rules.repetition_of(entity_keys, counts, beats),
                 ),
                 origin="model",
                 source_adventure_id=_first_adventure_id(session),
@@ -222,6 +228,29 @@ def _write(child: Any, kept: list[Candidate]) -> tuple[int, int]:
     through still lets every memory be written — with the vectors it managed and
     nulls for the rest (see `media.adapters.embedding` on why a memory without a
     vector is still worth having).
+
+    **We embed the gist, not the stored sentence, and the difference is deliberate.**
+    `content` is `<what the child did> — <the beat's first clause>`, and the anchor
+    after the dash is scenery we append so the sentence reads in context. Two of
+    this module's questions already agree that the anchor is not what the memory is
+    about: `salience._signature` strips it before asking "is this a duplicate", and
+    strips it again before asking "is this novel". The vector is the third question
+    — "what is this relevant to" (§19.4) — and it was the one still reading the
+    whole sentence.
+
+    That inconsistency is measurable rather than theoretical. In the founder's data
+    the nearest neighbour of *counted 3 all by themselves* was *chose "Follow more
+    tracks"* — a different act, retrieved as near-identical because both end with
+    "Ruby rolls up beside you in the warm sand" — while the genuinely related
+    counting memory sat three times further away. Day 9 ranks retrieval on this
+    vector, so a handle that encodes the set dressing would surface the wrong
+    memory and do it confidently.
+
+    The alternative considered was embedding both — the gist for relevance, the
+    whole sentence for colour — and rejected as two vectors, two columns and two
+    ranking weights to buy nothing anyone asked for yet. The anchor is still
+    *stored*, still shown to the parent, and still sent to the model at recall
+    time; it is only not part of what the memory is indexed by.
     """
     if not kept:
         return 0, 0
@@ -232,7 +261,7 @@ def _write(child: Any, kept: list[Candidate]) -> tuple[int, int]:
         try:
             if provider is None:
                 provider = embedding_adapter.select_embedding_provider()
-            vectors.append(embedding_adapter.embed(candidate.content, provider))
+            vectors.append(embedding_adapter.embed(salience.gist(candidate.content), provider))
         except MediaError as exc:
             # Once per candidate rather than once per run: the second failure is
             # usually the same cause, but "three of five memories have no vector"

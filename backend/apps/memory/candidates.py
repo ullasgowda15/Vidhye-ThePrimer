@@ -46,7 +46,7 @@ from collections import Counter
 from typing import Any
 
 from apps.companion.models import Character
-from apps.memory import stm
+from apps.memory import entities, stm
 from apps.memory.models import MemoryType
 from apps.memory.salience import Candidate, Signals
 from apps.story.models import Adventure, Beat, Choice, PlaySession
@@ -310,7 +310,7 @@ def _acts(
         pick = Candidate(
             type=MemoryType.EVENT,
             content=(
-                f'{child_name} chose "{label}" — {_anchor(beat)}'
+                _choice_sentence(child_name, label, _anchor(beat))
                 if label
                 else f"{child_name} carried on — {_anchor(beat)}"
             ),
@@ -374,6 +374,54 @@ def _skill_sentence(child_name: str, beat: Beat, choice: Choice, asks: str, answ
     if asks == "count" and answer:
         return f"{child_name} counted {answer}{helped} — {_anchor(beat)}"
     return f"{child_name} worked it out{helped} — {_anchor(beat)}"
+
+
+#: Label openings that are already a complete thing to have chosen, so "chose to"
+#: in front of them reads as broken English. "The blue ball" is a noun phrase, not
+#: an act; "to the slide" is a destination with its own preposition.
+_NOUN_PHRASE_OPENERS = frozenset({"the", "a", "an", "my", "your", "some", "another"})
+_DESTINATION_OPENERS = frozenset({"to", "toward", "towards", "into", "up", "down", "back"})
+
+
+def _choice_sentence(child_name: str, label: str, anchor: str) -> str:
+    """How a branch pick reads back — what the child *did*, not what the card said.
+
+    The button label is UI text, and quoting it made memories that read like a
+    route log: `Spidey chose "Count the spiders"`. §11.3 asks for how a friend
+    would recall the moment, and Day 12 puts this column in front of a parent, so
+    the register is the feature rather than a polish item.
+
+    The labels are imperative phrases by construction (§8.4 generates them as
+    things to do — "Count the spiders", "Follow more tracks"), which is what makes
+    a small grammar enough: lowercase the opening word, then join with the
+    preposition the phrase is missing. Two shapes need different joins, and a
+    label that is already a noun phrase or a destination gets no infinitive glued
+    to the front of it.
+
+    Deliberately not a model call. This runs once per adventure inside a job that
+    already spends a model call on the subtle memories, and paying a second one to
+    rephrase six words we generated ourselves would be paying for a worse version
+    of a rule we can write down.
+
+    Takes the `anchor` rather than the beat because that is all it needs, which is
+    what lets the grammar be tested as a table of labels and expected sentences
+    instead of through a played session.
+    """
+    cleaned = label.strip().rstrip(".!?").strip()
+    if not cleaned:
+        return f"{child_name} carried on — {anchor}"
+
+    head, _, tail = cleaned.partition(" ")
+    # Only the first word is lowered: a name inside the label ("Follow Ellie")
+    # keeps its capital, which is exactly the word a parent would look for.
+    opener = head.casefold()
+    lowered = f"{opener} {tail}".strip() if tail else opener
+
+    if opener in _NOUN_PHRASE_OPENERS:
+        return f"{child_name} chose {lowered} — {anchor}"
+    if opener in _DESTINATION_OPENERS:
+        return f"{child_name} chose to go {lowered} — {anchor}"
+    return f"{child_name} chose to {lowered} — {anchor}"
 
 
 def _milestone(beat: Beat, choice: Choice, asks: str) -> float:
@@ -516,18 +564,23 @@ def _cast(
             met, initiated = f"{child_name} went to find {character.name}{role}", SOUGHT_OUT
         else:
             met, initiated = f"{child_name} met {character.name}{role}", MET_SOMEONE
+        # Canonicalised like every other key, even though this one is built from a
+        # `Character.key` rather than model prose: the recurrence lookup below is
+        # against counts keyed canonically, so an uncanonicalised key here would
+        # score its own repetition as zero.
+        character_refs = entities.normalise(
+            [f"character:{character.key}"], context=f"adventure={adventure.pk}"
+        )
         proposals.append(
             Candidate(
                 type=MemoryType.ENTITY,
                 content=f"{met} — {_anchor(beat)}" if beat is not None else f"{met}.",
-                entities=[f"character:{character.key}"],
+                entities=character_refs,
                 valence=valence,
                 signals=Signals(
                     child_initiated=initiated,
                     emotional_intensity=intensity,
-                    repetition=_repetition(
-                        [f"character:{character.key}"], entity_counts, len(beats)
-                    ),
+                    repetition=_repetition(character_refs, entity_counts, len(beats)),
                 ),
                 source_adventure_id=adventure.pk,
             )
@@ -628,20 +681,27 @@ def _anchor(beat: Beat) -> str:
 
 
 def _entities_for(beat: Beat, *, extra: list[str] | None = None) -> list[str]:
-    """What a beat was about, as namespaced refs, deduplicated in order.
+    """What a beat was about, as canonical entity keys (§11.7).
 
     `continuity_refs` is already in this shape (`companion:pip`, `world:river`) and
     has been written on every beat since Day 5 for exactly this moment — the
     column's docstring says so. Reusing it rather than re-deriving entities from
     the narration means the memory graph and the continuity the beats were
     generated against agree with each other.
+
+    **Normalised on the way through, not trusted.** `continuity_refs` is model
+    output written against one example (`story/ai/schemas.py:186`), so its casing
+    and its vocabulary drift — which is how the founder's data came to hold
+    `companion:ruby` and `companion:Ruby` as two nodes. `entities.normalise` is the
+    choke point for the rules half, and because `_entity_recurrence` is built on
+    this function, the `repetition` factor counts the canonical key too. That
+    matters as much as the stored value: a forked key halves the recurrence of the
+    thing a child keeps coming back to, which is the one thing §11.5 most wants to
+    keep.
     """
     refs = [str(ref) for ref in (beat.continuity_refs or []) if str(ref).strip()]
     refs += extra or []
-    seen: dict[str, None] = {}
-    for ref in refs:
-        seen.setdefault(ref[:120], None)
-    return list(seen)
+    return entities.normalise(refs, context=f"beat={beat.pk}")
 
 
 def _objective_ref(beat: Beat) -> list[str]:

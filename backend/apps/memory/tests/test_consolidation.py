@@ -22,7 +22,8 @@ from typing import Any
 
 import pytest
 
-from apps.memory import consolidation, prompts, stm
+from apps.media.adapters import embedding as embedding_adapter
+from apps.memory import consolidation, prompts, salience, stm
 from apps.memory.models import Memory, MemoryType
 from apps.memory.tasks import consolidate
 from apps.profiles.models import Child
@@ -472,3 +473,47 @@ def test_the_digest_never_reaches_a_prompt_unscrubbed(closed) -> None:
 
     assert "<" not in digest
     assert ">" not in digest
+
+
+# ---------------------------------------------------------------------------
+# What the vector indexes, and what a memory sounds like (Day 8 fix)
+
+
+def test_what_gets_embedded_is_the_gist_not_the_scenery(closed, aarav, monkeypatch) -> None:
+    """The Day 8 review's P2-1: the vector and the dedupe read the same string.
+
+    `content` keeps the beat anchor so the sentence reads in context, but the
+    anchor is scene-setting that the salience pass already strips before asking
+    whether two memories are the same thing. Day 9 ranks retrieval on this vector,
+    so it must index the memory rather than the set dressing.
+    """
+    embedded: list[str] = []
+    real = embedding_adapter.embed
+
+    def recording(text: str, provider: Any = None) -> list[float]:
+        embedded.append(text)
+        return real(text, provider)
+
+    monkeypatch.setattr(embedding_adapter, "embed", recording)
+    consolidation.consolidate_session(closed)
+
+    assert embedded, "expected consolidation to embed something"
+    for text in embedded:
+        assert salience.GIST_SEPARATOR not in text
+
+    # The anchor is still *stored*: this is about the index, not the record.
+    stored = [memory.content for memory in Memory.objects.filter(child=aarav)]
+    assert any(salience.GIST_SEPARATOR in content for content in stored)
+
+
+def test_an_event_memory_does_not_quote_the_button(closed, aarav) -> None:
+    """P3-1: §11.3's voice — a friend's recollection, not a route log.
+
+    Day 12 puts this column in front of a parent, so the register is the feature.
+    The child's *own* words are still quoted elsewhere (`said "..."`), which is the
+    opposite case: those are theirs, and the quotation marks are the point.
+    """
+    consolidation.consolidate_session(closed)
+
+    for memory in Memory.objects.filter(child=aarav, type=MemoryType.EVENT):
+        assert 'chose "' not in memory.content, f"button label quoted in {memory.content!r}"
