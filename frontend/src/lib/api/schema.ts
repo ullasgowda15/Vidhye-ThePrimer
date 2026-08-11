@@ -484,13 +484,17 @@ export interface components {
             streamUrl: string;
             companion: components["schemas"]["AdventureCompanion"];
             estimatedBeats: number;
+            world: components["schemas"]["AdventureWorld"];
         };
         /**
          * @description The optional client hints on `POST /adventures` (§18.4).
          *
-         *     Validated but not yet used: mood- and time-of-day-aware planning is Day 11's
-         *     work. Declared now so a client can send it from the start, and so a malformed
-         *     `context` is rejected today rather than on the day we begin reading it.
+         *     Validated but still not read. Day 11 personalised the world and it did so from
+         *     the interest graph and the world map (§11.7, §8.3) rather than from anything the
+         *     client says — a device hint is the one input to personalisation that nobody
+         *     verified. What is left for this field is mood and time of day, which are real
+         *     and are not today's. Declared so a client can send it from the start, and so a
+         *     malformed `context` is rejected now rather than on the day we begin reading it.
          *
          *     The field is built in `get_fields` rather than declared as a class attribute
          *     because §18.4 names it `context`, and a class attribute by that name shadows
@@ -502,6 +506,22 @@ export interface components {
             context?: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * @description Where this adventure happens, as the child's screen needs it (§8.3, §15.1).
+         *
+         *     Three fields and each one has exactly one consumer. `key` is the palette: it is
+         *     put on `data-world` and the stylesheet does the rest, which is why it is a
+         *     registry key (`story.worlds`) rather than a display name — a world the CSS has
+         *     never heard of renders as the default theme and the child's screen and their
+         *     story quietly disagree about where they are. `name` and `place` are for the
+         *     grown-up in the room and for the accessibility layer; nothing on the child's
+         *     screen is read to them.
+         */
+        AdventureWorld: {
+            key: string;
+            name: string;
+            place: string;
         };
         /**
          * @description * `dragon` - dragon

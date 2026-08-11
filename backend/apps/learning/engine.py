@@ -545,14 +545,21 @@ def recency_penalty(progress: LearningProgress, *, now: datetime.datetime) -> fl
 def interest_fit(objective: Objective, interests: frozenset[str]) -> float:
     """Whether this objective is expressible in what the child currently loves.
 
-    Word overlap between the objective's description and the child's stated
-    interests, and it is weighted as the tie-break it is (`INTEREST_WEIGHT`).
+    Word overlap between the objective's description and the child's live interest
+    vocabulary (`_interest_tokens`), and it is weighted as the tie-break it is
+    (`INTEREST_WEIGHT`).
 
-    Deliberately weak, and worth saying why rather than dressing it up: at MVP
-    both domains are expressible in *any* world — you can count dinosaurs as
-    easily as you can count frogs — so a strong interest term would be a strong
-    signal about nothing. The real version of this reads the interest graph
-    (§11.7), which is Day 11, and when it lands this function is where it lands.
+    Deliberately weak, and worth saying why rather than dressing it up: at MVP both
+    domains are expressible in *any* world — you can count dinosaurs as easily as
+    you can count frogs — so a strong interest term would be a strong signal about
+    nothing.
+
+    Day 11 changed what is in the set and deliberately did not change that. The
+    tokens now come from the interest graph rather than from an onboarding text box,
+    so this term moves with the child; what §11.7's graph is actually load-bearing
+    for is which *world* the objective is dressed in (`story.worlds`), because that
+    is where personalisation belongs. Curriculum belongs at the child's edge (§10.3),
+    and a child who loves frogs still needs the number after four.
     """
     if not interests:
         return 0.0
@@ -594,10 +601,21 @@ def _last_domain(child: Child) -> str:
 
 
 def _interest_tokens(child: Child) -> frozenset[str]:
-    words: frozenset[str] = frozenset()
-    for item in child.interests or []:
-        words |= _tokens(str(item))
-    return words
+    """What this child loves, as words the `interest_fit` term can match (§11.7).
+
+    Day 11's landing site. This used to tokenise `Child.interests` — the onboarding
+    text box — so the term could only ever say what was true on the day a parent
+    filled it in. It now reads the live interest graph, which merges those seeds
+    with what the child has actually reached for and ages both (`memory.interest`),
+    so the same child scores differently a month later.
+
+    Imported inside the function, like `_last_domain`'s `Adventure`: this module is
+    the pure arithmetic of §10 and must not gain an import-time dependency on the
+    memory app to compute a tie-break.
+    """
+    from apps.memory import interest
+
+    return interest.selector_tokens(child)
 
 
 #: Words that identify nothing on their own, so an overlap on one of them is not

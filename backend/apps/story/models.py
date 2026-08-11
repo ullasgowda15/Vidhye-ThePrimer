@@ -99,6 +99,16 @@ class PlaySession(UUIDModel):
     #: completed update.
     learning_updated_at = models.DateTimeField(null=True, blank=True)
 
+    #: When the interest graph was updated from this sitting (§11.7), or null.
+    #:
+    #: The same gate again, and it is needed for the same reason the mastery one
+    #: is: `interest.apply_reinforcement` raises a weight *toward* its ceiling, so
+    #: a redelivered task would count one afternoon of choosing frogs as two. That
+    #: is not self-correcting — the graph has no record of which sitting a weight
+    #: came from — and it steers which world the next story is set in, so the
+    #: damage is a child who keeps being sent back to a place they only half liked.
+    interests_updated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-started_at"]
         indexes = [models.Index(fields=["child", "-started_at"])]

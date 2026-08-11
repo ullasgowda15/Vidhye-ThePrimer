@@ -119,6 +119,121 @@
   --border: #3a3f63;
 }
 
+/*
+ * --- Per-world palettes (§15.1, §8.3) ----------------------------------
+ *
+ * The theme layer §15.11 was built for. `data-world` goes on the document root
+ * (`design/worlds.ts`) and every one of these blocks does exactly one thing:
+ * re-point the *semantic* tokens. No component reads a world, no component owns a
+ * colour, and adding a fifth world is this file plus one string.
+ *
+ * Each is the mood of its place, and each is bounded by the same rule §15.1 sets
+ * for the whole child surface: warm, storybook, slightly magical, and **never
+ * harsh or overstimulating**. So the backgrounds stay pale and low-chroma, the
+ * accent is the only saturated colour on the screen, and text stays near-black on
+ * light and near-white on dark — a world is a shift in hue, not a drop in
+ * legibility.
+ */
+[data-world='whispering_woods'] {
+  --bg: #f1f6ea;
+  --surface: #fbfdf6;
+  --primary: #4a7c46;
+  --accent: #e0a13c;
+  --success: #3f8a52;
+  --text: #2f3b28;
+  --text-muted: #66755d;
+  --border: #dbe7cd;
+  --shadow-card: 0 8px 28px rgb(47 59 40 / 12%);
+}
+
+[data-world='star_harbor'] {
+  --bg: #eef1fb;
+  --surface: #fbfcff;
+  --primary: #4a58ad;
+  --accent: #e2bb4a;
+  --success: #3d7f77;
+  --text: #2b3150;
+  --text-muted: #6a7292;
+  --border: #dbe0f3;
+  --shadow-card: 0 8px 28px rgb(43 49 80 / 14%);
+}
+
+[data-world='coral_deep'] {
+  --bg: #e8f4f3;
+  --surface: #f8fdfd;
+  --primary: #1f7d86;
+  --accent: #e8825f;
+  --success: #2f8a76;
+  --text: #1f4449;
+  --text-muted: #5b7f85;
+  --border: #cee5e3;
+  --shadow-card: 0 8px 28px rgb(31 68 73 / 13%);
+}
+
+[data-world='sunlit_canyon'] {
+  --bg: #fbf0e2;
+  --surface: #fffaf2;
+  --primary: #a3572f;
+  --accent: #d9962c;
+  --success: #7e8a35;
+  --text: #46311f;
+  --text-muted: #84674f;
+  --border: #eedbc2;
+  --shadow-card: 0 8px 28px rgb(70 49 31 / 13%);
+}
+
+/*
+ * --- The same worlds, after bedtime (§15.1) -----------------------------
+ *
+ * Declared after the day palettes and one specificity step above them, so an
+ * evening session dims *this* world rather than falling back to the generic night
+ * theme above. A child in the Coral Deep at seven o'clock is still in the Coral
+ * Deep; the light has gone, which is what the room has done too.
+ */
+[data-theme='night'][data-world='whispering_woods'] {
+  --bg: #1a2a1f;
+  --surface: #24382b;
+  --primary: #8fc79a;
+  --accent: #dfb46b;
+  --success: #7fc08c;
+  --text: #e7f0e4;
+  --text-muted: #a6bda4;
+  --border: #34503b;
+}
+
+[data-theme='night'][data-world='star_harbor'] {
+  --bg: #171b33;
+  --surface: #232847;
+  --primary: #9aa6f2;
+  --accent: #ecd489;
+  --success: #74bdb2;
+  --text: #e6e8fa;
+  --text-muted: #a4abd0;
+  --border: #333a63;
+}
+
+[data-theme='night'][data-world='coral_deep'] {
+  --bg: #0f2a30;
+  --surface: #173a41;
+  --primary: #6fcfce;
+  --accent: #f0a385;
+  --success: #6cc4ae;
+  --text: #e0f2f1;
+  --text-muted: #9bbfc1;
+  --border: #245057;
+}
+
+[data-theme='night'][data-world='sunlit_canyon'] {
+  --bg: #2a1f18;
+  --surface: #3b2b21;
+  --primary: #e9a173;
+  --accent: #edc06a;
+  --success: #bcbb6e;
+  --text: #f6e9dc;
+  --text-muted: #c2a691;
+  --border: #55402f;
+}
+
 /* Motion is decoration, never information (§15.8, §14.6). */
 @media (prefers-reduced-motion: reduce) {
   :root {

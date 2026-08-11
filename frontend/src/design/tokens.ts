@@ -18,6 +18,11 @@ export const themeAttribute: Record<ThemeName, string | undefined> = {
   night: 'night',
 };
 
+// Per-world palettes are the layer *above* these (§15.1): same semantic tokens,
+// re-pointed by `data-world`. They live in `design/worlds.ts` because they are
+// keyed to the story engine's own world registry rather than to a UI surface.
+export { isWorld, worldKeys, worldNames, type WorldKey } from './worlds';
+
 export const color = {
   bg: 'var(--bg)',
   surface: 'var(--surface)',

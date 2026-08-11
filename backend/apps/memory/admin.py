@@ -32,7 +32,8 @@ from django.contrib import admin
 from django.http import HttpRequest
 from django.utils.html import format_html
 
-from apps.memory.models import Memory
+from apps.memory.interest import current_weight
+from apps.memory.models import InterestEdge, Memory, WorldPlace
 
 
 @admin.register(Memory)
@@ -126,4 +127,87 @@ class MemoryAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request: HttpRequest, obj: Any = None) -> bool:
         """An editable memory is a companion remembering something invented."""
+        return False
+
+
+@admin.register(InterestEdge)
+class InterestEdgeAdmin(admin.ModelAdmin):
+    """The interest graph, as an operator needs to read it (§11.7).
+
+    The parent's own version of this view — "this month: space, then dinosaurs, now
+    ocean animals" — is Day 12. This exists now for the same reason the memory admin
+    does: the founder has to be able to see whether a played session actually taught
+    the graph anything, and a weight nobody has ever looked at is a weight nobody
+    has ever tuned.
+
+    **`now` is the column to read, not `weight`.** The stored number is only
+    meaningful as of `last_reinforced_at`, so the list shows both: what play last
+    said, and what it is worth today. A page where the two are far apart is a child
+    whose favourites have moved on.
+    """
+
+    list_display = ["topic", "child_name", "stored", "now", "last_reinforced_at"]
+    list_filter = [("child", admin.RelatedOnlyFieldListFilter)]
+    search_fields = ["topic", "child__first_name"]
+    list_select_related = ["child"]
+    readonly_fields = ["child", "topic", "weight", "last_reinforced_at", "created_at", "updated_at"]
+
+    @admin.display(description="child", ordering="child__first_name")
+    def child_name(self, obj: InterestEdge) -> str:
+        return obj.child.first_name
+
+    @admin.display(description="stored", ordering="weight")
+    def stored(self, obj: InterestEdge) -> str:
+        return f"{obj.weight:.2f}"
+
+    @admin.display(description="today")
+    def now(self, obj: InterestEdge) -> Any:
+        weight = current_weight(obj)
+        colour = "#166534" if weight >= 0.6 else "#b45309" if weight >= 0.3 else "#6b7280"
+        return format_html('<b style="color:{}">{}</b>', colour, f"{weight:.2f}")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        """Interests are learned from play, never typed in."""
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
+
+
+@admin.register(WorldPlace)
+class WorldPlaceAdmin(admin.ModelAdmin):
+    """The child's world map (§8.3).
+
+    Read-only for the reason `Character` would be if it had a page: a place is a
+    promise that today's forest is yesterday's forest, and an edited description is
+    that promise broken quietly. Deletion is left available as the erasure path,
+    exactly as it is for memories (§13.8).
+    """
+
+    list_display = ["name", "child_name", "mood", "visit_count", "last_visited_at"]
+    list_filter = [("child", admin.RelatedOnlyFieldListFilter), "mood"]
+    search_fields = ["name", "child__first_name"]
+    list_select_related = ["child"]
+    readonly_fields = [
+        "child",
+        "name",
+        "mood",
+        "description",
+        "inhabitants",
+        "first_seen_adventure",
+        "last_visited_at",
+        "visit_count",
+        "created_at",
+        "updated_at",
+    ]
+
+    @admin.display(description="child", ordering="child__first_name")
+    def child_name(self, obj: WorldPlace) -> str:
+        return obj.child.first_name
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        """Places are discovered by playing, never typed in."""
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: Any = None) -> bool:
         return False

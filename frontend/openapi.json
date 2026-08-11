@@ -1009,18 +1009,22 @@
                     },
                     "estimatedBeats": {
                         "type": "integer"
+                    },
+                    "world": {
+                        "$ref": "#/components/schemas/AdventureWorld"
                     }
                 },
                 "required": [
                     "adventureId",
                     "companion",
                     "estimatedBeats",
-                    "streamUrl"
+                    "streamUrl",
+                    "world"
                 ]
             },
             "AdventureStartRequestRequest": {
                 "type": "object",
-                "description": "The optional client hints on `POST /adventures` (§18.4).\n\nValidated but not yet used: mood- and time-of-day-aware planning is Day 11's\nwork. Declared now so a client can send it from the start, and so a malformed\n`context` is rejected today rather than on the day we begin reading it.\n\nThe field is built in `get_fields` rather than declared as a class attribute\nbecause §18.4 names it `context`, and a class attribute by that name shadows\n`Serializer.context` — the request/view dictionary every serializer relies on.\nThe wire name is what the spec fixes; where the field object lives is ours.",
+                "description": "The optional client hints on `POST /adventures` (§18.4).\n\nValidated but still not read. Day 11 personalised the world and it did so from\nthe interest graph and the world map (§11.7, §8.3) rather than from anything the\nclient says — a device hint is the one input to personalisation that nobody\nverified. What is left for this field is mood and time of day, which are real\nand are not today's. Declared so a client can send it from the start, and so a\nmalformed `context` is rejected now rather than on the day we begin reading it.\n\nThe field is built in `get_fields` rather than declared as a class attribute\nbecause §18.4 names it `context`, and a class attribute by that name shadows\n`Serializer.context` — the request/view dictionary every serializer relies on.\nThe wire name is what the spec fixes; where the field object lives is ours.",
                 "properties": {
                     "context": {
                         "type": "object",
@@ -1028,6 +1032,26 @@
                         "description": "e.g. {timeOfDay, mood_hint}"
                     }
                 }
+            },
+            "AdventureWorld": {
+                "type": "object",
+                "description": "Where this adventure happens, as the child's screen needs it (§8.3, §15.1).\n\nThree fields and each one has exactly one consumer. `key` is the palette: it is\nput on `data-world` and the stylesheet does the rest, which is why it is a\nregistry key (`story.worlds`) rather than a display name — a world the CSS has\nnever heard of renders as the default theme and the child's screen and their\nstory quietly disagree about where they are. `name` and `place` are for the\ngrown-up in the room and for the accessibility layer; nothing on the child's\nscreen is read to them.",
+                "properties": {
+                    "key": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "place": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "key",
+                    "name",
+                    "place"
+                ]
             },
             "ArchetypeEnum": {
                 "enum": [

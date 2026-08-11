@@ -64,8 +64,20 @@ back as evidence (§10.5). Nothing about any of it reaches the child: there is n
 score, no verdict, no beat that can be failed, and the word "objective" appears
 nowhere a companion could say it.
 
-What is deliberately *not* here yet: interest-graph world selection (Day 11). It
-has a named seam and a placeholder, so that day is wiring rather than redesign.
+**And the world is the child's own.** From Day 11 the plan is not generated into
+an unnamed forest: `personalize` reads the interest graph (§11.7), the world map
+(§8.3) and the recurring cast (§8.2) before the plan call, `story.worlds` turns
+them into a *world* and a *place* — one the child is being taken back to, or one
+they are about to find — and the plan is generated inside it. Two children handed
+the same objective on the same afternoon therefore get structurally different
+adventures: different world, different place, different inhabitants, different
+palette on the screen (§15.1), and a different plan generated against all of it.
+The fear ceiling is part of that decision rather than a caveat on it — a place
+above the child's ceiling is never offered to the planner at all (§11.6).
+
+What is deliberately *not* here: anything that lets personalisation loosen a rule.
+The safety layer reads the same profile it always did, and nothing about a child
+loving something makes it safe to show them.
 """
 
 from __future__ import annotations
@@ -100,14 +112,17 @@ from apps.media.hashing import hashes_for
 from apps.media.models import Media
 from apps.media.style import style_signature
 from apps.memory import capture as memory_capture
+from apps.memory import interest as memory_interest
 from apps.memory import retrieval as memory_retrieval
-from apps.memory.tasks import consolidate
+from apps.memory.models import WorldPlace
+from apps.memory.tasks import consolidate, update_interests
 from apps.profiles.models import Child
 from apps.safety import incidents as safety_incidents
 from apps.safety import pipeline as safety
 from apps.safety.models import Action, Severity
 from apps.safety.prompting import assembler
 from apps.safety.prompting.layers import render as render_layers
+from apps.story import worlds
 from apps.story.ai import router as ai_router
 from apps.story.ai.prompts import story as story_prompts
 from apps.story.ai.schemas import Beat as BeatContract
@@ -219,17 +234,25 @@ def is_branch_point(seq: int, prev_choice: Mapping[str, Any] | None) -> bool:
     return len(prev_choice.get("offered_labels") or []) > 1
 
 
-def plan_context(child: Child) -> str:
+def plan_context(child: Child, setting: worlds.Setting | None = None) -> str:
     """What retrieval ranks against when an adventure is being planned (§19.4).
 
     There is no story yet, so the moment is the child themselves: what they love,
     and what they have done before. Scrubbed like every other context string here —
     see `beat_context_for`.
+
+    From Day 11 the *place* is in the query too, and it is the highest-value term in
+    it on a revisit: "the Hollow Oak" is exactly the handle that surfaces what
+    happened the last time the child was there, which is what a returning story has
+    to be able to say (§8.3). The interests come from the graph rather than from the
+    seed field, for the same reason everything else does now — the seeds are the
+    cold start, the graph is what is true (§11.7).
     """
-    loves = ", ".join(str(interest) for interest in (child.interests or []))
+    loves = ", ".join(topic.name for topic in memory_interest.top_interests(child))
     return _retrieval_context(
         [
             f"A new adventure is beginning for {child.first_name}.",
+            f"They are going to {setting.name} in {setting.world.name}." if setting else "",
             f"Things they love: {loves}." if loves else "",
             "What did they do in their last stories, and what did they name or choose?",
         ]
@@ -363,8 +386,11 @@ def _known_characters(child: Child) -> list[str]:
     model describing "a small frog" afresh in a story that already has Bramble in
     it. So this reads from the same rows `cast.refs_for` reads.
 
-    Places are still not in here: §8.3's world map is a later day, and the prompt
-    tells the model to describe anything it is not handed.
+    Places are deliberately still not in here. §8.3's world map landed on Day 11,
+    but it arrives at the *plan* (`plan_request`), not per beat: the place is one
+    fact that holds for the whole adventure and is already in the skeleton every
+    beat is written against, so repeating it in six beat prompts would be six copies
+    of something the story cannot change its mind about.
     """
     names: list[str] = []
     try:
@@ -384,8 +410,74 @@ def _known_characters(child: Child) -> list[str]:
 # ---------------------------------------------------------------------------
 # The plan
 # ---------------------------------------------------------------------------
-def build_plan(child: Child, selection: learning.Selection | None = None) -> dict[str, Any]:
-    """Generate the adventure skeleton (§8.1).
+@dataclass(frozen=True, slots=True)
+class Personalization:
+    """Everything about *this child* that shapes an adventure before it exists.
+
+    §8.3's inputs in one object: what they love (§11.7), where they have been
+    (§17.2's `world_place`), who they know (§8.2), and how much they may be asked to
+    feel (§11.6). Bundled rather than passed as five arguments because they are read
+    together, logged together, and — the reason that actually matters — because a
+    future caller must not be able to build a plan with the interests and without
+    the ceiling.
+    """
+
+    top_interests: tuple[memory_interest.Topic, ...]
+    known_places: tuple[WorldPlace, ...]
+    recurring_characters: tuple[Character, ...]
+    fear_ceiling: int
+    #: Where this adventure goes, decided from the four above by `story.worlds`.
+    setting: worlds.Setting
+
+    @property
+    def interest_names(self) -> tuple[str, ...]:
+        return tuple(topic.name for topic in self.top_interests)
+
+    @property
+    def character_names(self) -> tuple[str, ...]:
+        return tuple(character.name for character in self.recurring_characters)
+
+
+def personalize(child: Child) -> Personalization:
+    """Read this child's world out of the graph, once, before the plan is generated.
+
+    One function so that "what makes this child's story theirs" has a single
+    definition and a single log line, and so a test can assert on the *inputs* to
+    personalisation without a model in the loop. Four queries on the story-start
+    path, all of them small and all of them indexed.
+    """
+    interests = memory_interest.top_interests(child)
+    personalization = Personalization(
+        top_interests=interests,
+        known_places=tuple(memory_interest.places_for(child)),
+        recurring_characters=tuple(memory_interest.characters_for(child)),
+        # Read straight off the profile rather than derived. §11.6's ceiling is the
+        # parent's setting and nothing in this file may soften it — the only thing
+        # personalisation does with it is obey it.
+        fear_ceiling=child.intensity_ceiling,
+        setting=worlds.setting_for(child, interests),
+    )
+    logger.info(
+        "story.personalized child=%s world=%s place=%r returning=%d ceiling=%d "
+        "interests=%s known_places=%d cast=%d",
+        child.pk,
+        personalization.setting.world.key,
+        personalization.setting.name,
+        int(personalization.setting.returning),
+        personalization.fear_ceiling,
+        ",".join(personalization.interest_names[:3]) or "-",
+        len(personalization.known_places),
+        len(personalization.recurring_characters),
+    )
+    return personalization
+
+
+def build_plan(
+    child: Child,
+    selection: learning.Selection | None = None,
+    personalization: Personalization | None = None,
+) -> dict[str, Any]:
+    """Generate the adventure skeleton (§8.1, §8.3).
 
     Falls back to `FALLBACK_SKELETON` if the provider cannot produce a valid
     plan. Deliberately *not* a raise: this call sits between a child's tap and
@@ -409,14 +501,29 @@ def build_plan(child: Child, selection: learning.Selection | None = None) -> dic
     has to invent a reason for them mid-story. So the selector runs before this
     call and its choice travels into the planning prompt — which is the difference
     between an objective embedded in a plot and one bolted onto a beat.
+
+    **And from Day 11 it is where the child's own world arrives** (§8.3, §2.4).
+    `personalization` carries the four inputs the brief names — top interests,
+    known places, recurring characters and the fear ceiling — with the world and
+    place already chosen from them by `story.worlds`. They are one object rather
+    than four arguments beside `objective` and `difficulty` for the reason
+    `Personalization` documents; `selection` continues to carry the objective *with*
+    its difficulty, because splitting those two apart again is how a beat ends up
+    practising one thing at another thing's difficulty.
+
+    Computed here when the caller did not, so there is no path to the provider that
+    plans an unpersonalised story by omission — the same posture `build_beat_context`
+    takes with the input guard.
     """
+    personalization = personalize(child) if personalization is None else personalization
+    setting = personalization.setting
     objective = (
         objective_directive(selection.objective, selection.difficulty, selection.demand)
         if selection is not None
         else None
     )
 
-    bundle = recall(child, plan_context(child))
+    bundle = recall(child, plan_context(child, setting))
     guarded = safety.guard_input({"memory": bundle.as_prompt()}, child)
     layers = assembler.assemble(
         child,
@@ -425,7 +532,30 @@ def build_plan(child: Child, selection: learning.Selection | None = None) -> dic
         plan=None,
         output_schema=json_schema_for(StoryPlan),
     )
-    context = {"system": render_layers(layers), "user": story_prompts.PLAN_REQUEST}
+    user = story_prompts.plan_request(
+        world=setting.world.name,
+        place=setting.name,
+        description=setting.description,
+        mood=setting.mood,
+        # The registry's text is ours and the character names are a model's, so the
+        # names are scrubbed and the registry is not — the same split the assembler
+        # makes between the objective catalog and the companion's descriptor (§13.5).
+        inhabitants=[safety.scrub_profile_field(name, cap=80) for name in setting.inhabitants],
+        returning=setting.returning,
+        # The rest of the map, minus where we already are. Registry-authored names,
+        # so they are ours rather than a model's — but they arrive from a row, and a
+        # row is the thing a future feature will let somebody rename.
+        elsewhere=[
+            safety.scrub_profile_field(place.name, cap=80)
+            for place in personalization.known_places
+            if place.name != setting.name
+        ],
+        interests=personalization.interest_names,
+        characters=[
+            safety.scrub_profile_field(name, cap=80) for name in personalization.character_names
+        ],
+    )
+    context = {"system": render_layers(layers), "user": user}
     # Bookkeeping once the memories are in the bytes we are about to send, not when
     # they were queried: `recall_count` is a record of what the companion was
     # actually reminded of (§11.9).
@@ -435,17 +565,44 @@ def build_plan(child: Child, selection: learning.Selection | None = None) -> dic
         plan = ai_router.generate_structured(context, model=StoryPlan)
     except ai_router.AIError:
         logger.exception("story.plan_failed child=%s falling_back=1", child.id)
-        return _fallback_plan(child)
+        return {**_fallback_plan(child, setting), **setting.as_plan_fields()}
 
-    logger.info("story.plan child=%s stages=%d", child.id, len(plan.skeleton))
-    return plan.model_dump()
+    logger.info(
+        "story.plan child=%s stages=%d world=%s place=%r",
+        child.id,
+        len(plan.skeleton),
+        setting.world.key,
+        setting.name,
+    )
+    # The setting is recorded on the plan rather than left implicit, because three
+    # readers need it later and none of them may re-derive it: the beats are set
+    # there, `worlds.remember_inhabitants` writes back to it, and the child's screen
+    # wears its palette (§15.1). A re-derivation would let the graph move mid-story
+    # and put the child's picture in a different world from their words.
+    return {**plan.model_dump(), **setting.as_plan_fields()}
 
 
-def _fallback_plan(child: Child) -> dict[str, Any]:
-    interests = list(child.interests or [])
-    subject = interests[0] if interests else "a quiet corner of the woods"
+def _fallback_plan(child: Child, setting: worlds.Setting | None = None) -> dict[str, Any]:
+    """A shape to tell a story against when the provider could not produce one.
+
+    Still in the child's own place, and still about what they love: the beats are
+    generated against this skeleton and are still personalised, so landing here
+    costs a generic *arc* rather than a generic world (§13's "the child never sees a
+    failure").
+
+    The subject comes from the seed field rather than from the interest graph on
+    this path alone, and deliberately: graph topics are singularised for matching
+    ("frog"), and this string is the one place a topic is *read by a person* — the
+    adventure's title. A parent's own word is the better sentence.
+    """
+    interests = [str(item) for item in (child.interests or []) if str(item).strip()]
+    subject = interests[0] if interests else ""
+    where = f" at {setting.name}" if setting is not None else ""
+    if not subject and not where:
+        subject = "a quiet corner of the woods"
+    title = f"A day with {subject}{where}" if subject else f"A day{where}"
     return {
-        "title": f"A day with {subject}",
+        "title": title,
         "skeleton": list(FALLBACK_SKELETON),
         "branch_themes": list(FALLBACK_BRANCH_THEMES),
         # Recorded on the row itself so the parent dashboard's transparency log
@@ -475,9 +632,17 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
     `difficulty` are what the mastery update reads back afterwards to know what the
     child's answers were evidence *about* — a story whose objective could only be
     re-derived would be a story whose evidence drifted with the catalog.
+
+    **The place is chosen first too, and written down for the same reason** (§8.3).
+    `personalize` runs before the plan so the arc is built *in* somewhere rather
+    than having a setting attached to it afterwards, and the visit is recorded once
+    the adventure row exists — which is what lets `first_seen_adventure` point at
+    the story that found the place, and what makes "the child has been here three
+    times" a fact rather than a guess.
     """
     selection = learning.select_objective(child)
-    plan = build_plan(child, selection)
+    personalization = personalize(child)
+    plan = build_plan(child, selection, personalization)
     # A sitting begins when a story does, unless the caller already had one. It is
     # created here rather than left null because `end` has to be able to say how
     # long the child played and why they stopped (§13.6) — a wellbeing signal the
@@ -495,13 +660,24 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
         primary_objective_id=selection.code if selection else None,
         **({"difficulty": selection.difficulty} if selection else {}),
     )
+    # After the row exists, so the discovery can point at the story that made it.
+    # The plan is then re-stamped with the row's id, which is the handle
+    # `worlds.remember_inhabitants` writes back through when a beat introduces
+    # somebody who lives here.
+    place = worlds.record_visit(child, personalization.setting, adventure)
+    adventure.plan = {**adventure.plan, "place_id": str(place.pk)}
+    adventure.save(update_fields=["plan", "updated_at"])
+
     logger.info(
-        "story.adventure_started adventure=%s child=%s beats=%d objective=%s difficulty=%.2f",
+        "story.adventure_started adventure=%s child=%s beats=%d objective=%s difficulty=%.2f "
+        "world=%s place=%r",
         adventure.id,
         child.id,
         adventure.estimated_beats,
         adventure.primary_objective_id or "-",
         adventure.difficulty,
+        personalization.setting.world.key,
+        place.name,
     )
     return adventure
 
@@ -1598,7 +1774,13 @@ def _persist_beat(
     # the descriptor arrives with the beat and the beat is the only thing that has
     # it, so a media task that ran late — or never — would otherwise lose the one
     # record of what this character looks like.
-    cast.remember(adventure.child, scene.get("new_characters") or [], adventure_id=adventure.pk)
+    introduced = cast.remember(
+        adventure.child, scene.get("new_characters") or [], adventure_id=adventure.pk
+    )
+    # And they live *somewhere* (§8.3). Written in the same transaction as the beat
+    # that invented them, so a place can never claim an inhabitant from a beat that
+    # was rolled back — and so the next visit here can be told who is waiting.
+    worlds.remember_inhabitants(adventure, introduced)
     locked = Adventure.objects.select_for_update().get(pk=adventure.pk)
     locked.emotion_arc = [*locked.emotion_arc, contract.emotion]
     locked.save(update_fields=["emotion_arc", "updated_at"])
@@ -1967,23 +2149,24 @@ def _close_out_session(adventure: Adventure, reason: str) -> None:
     off contain the same beats and are two different things to remember about a
     session (§13.6).
 
-    Then the two jobs, and they are siblings rather than a pipeline: memory
+    Then the three jobs, and they are siblings rather than a pipeline: memory
     consolidation reads the sitting for what is worth *remembering* (§11.4), the
     learning update reads the same sitting for what it says the child can *do*
-    (§10.5). Neither depends on the other's output and neither may run inline —
-    both are enqueued off the request that a four-year-old's device makes just
-    before the screen says goodnight.
+    (§10.5), and the interest update reads it for what they want more of (§11.7).
+    None depends on another's output and none may run inline — all three are
+    enqueued off the request that a four-year-old's device makes just before the
+    screen says goodnight.
 
-    **A failure to enqueue one must not cost the other.** They are separate `.delay`
-    calls in separate `try` blocks for that reason: a broker that rejects the first
-    would otherwise silently drop the second, and a child's mastery would stop
-    moving because their memories failed to queue.
+    **A failure to enqueue one must not cost the others.** They are separate
+    `.delay` calls in separate `try` blocks for that reason: a broker that rejects
+    the first would otherwise silently drop the rest, and a child's mastery would
+    stop moving because their memories failed to queue.
 
-    A sitting with no session row gets neither: both tasks are keyed on the session
-    id. That is a documented gap rather than a silent one — `session` is nullable
-    because a retention job may prune it (§17.2) — and it is logged, because an
-    adventure ending without a sitting would mean two pipelines were quietly not
-    running.
+    A sitting with no session row gets none of them: every task is keyed on the
+    session id. That is a documented gap rather than a silent one — `session` is
+    nullable because a retention job may prune it (§17.2) — and it is logged,
+    because an adventure ending without a sitting would mean three pipelines were
+    quietly not running.
     """
     session = adventure.session
     if session is None:
@@ -2002,6 +2185,11 @@ def _close_out_session(adventure: Adventure, reason: str) -> None:
         update_from_session.delay(session_id)
     except Exception:
         logger.exception("story.learning_enqueue_failed session=%s", session_id)
+
+    try:
+        update_interests.delay(session_id)
+    except Exception:
+        logger.exception("story.interests_enqueue_failed session=%s", session_id)
 
 
 def _finalise_session(adventure: Adventure, reason: str) -> None:

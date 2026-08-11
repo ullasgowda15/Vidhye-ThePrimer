@@ -34,6 +34,86 @@ Build it around what the child loves. The learning objective belongs inside the 
 plot, never announced.\
 """
 
+#: Where this adventure happens, handed to the plan call as a *place that already
+#: exists* (§8.3).
+#:
+#: The place is chosen before this call by `story.worlds`, not by the model, and
+#: the paragraph below is written to make that read as a gift rather than as a
+#: cage: the world, its mood and its inhabitants are the setting, and everything
+#: that happens in it is the model's. Asking the model to invent the world instead
+#: was rejected for three reasons that are all in `worlds`' docstring, and the one
+#: that shows up here is continuity — a place the child can be *brought back to*
+#: has to be the same place, and nothing generated twice is.
+WORLD_RULE = """\
+This adventure happens in {world}, at {place} — {description} The mood of the \
+place is {mood}. Set the whole story here, and let the place do real work in the \
+plot rather than being scenery behind it.\
+"""
+
+#: Said when the child has been to this place before. The comfort half of §8.3:
+#: repetition-with-variation is the pleasure at this age, and a return that is not
+#: *recognised* as a return is just a story that happens to reuse a noun.
+RETURNING_RULE = """\
+The child has been here before and knows it well. Open by coming back to it — \
+something they will recognise is still exactly where it was — and then give them a \
+reason it is different today. Do not re-introduce the place as if it were new.\
+"""
+
+#: And the novelty half. Arriving somewhere for the first time is its own beat.
+DISCOVERY_RULE = """\
+The child has never been here. Arriving is part of the story: let them come upon \
+it, and let the first thing they notice be something they can go and look at.\
+"""
+
+#: Who already lives there. Kept separate from `PLAN_CAST_RULE` because these are
+#: *ours* — registry text and names the child met here before — while that rule is
+#: about characters the illustration pipeline holds a canonical appearance for.
+INHABITANTS_RULE = """\
+Already at this place: {inhabitants}. Use whoever fits; they belong here and the \
+child may already know them.\
+"""
+
+#: The rest of the child's map (§8.3), for a story that knows it is somewhere in a
+#: world rather than nowhere in particular.
+#:
+#: Named as places the child *knows*, and explicitly not as alternatives to today's
+#: setting — the risk of putting a list of places in a planning prompt is a plan
+#: that quietly relocates, and the fear ceiling was applied to the one that was
+#: chosen. What this buys is a story that can look toward somewhere real: a path
+#: that leads off to the Ribbon River, a friend who has gone there, the hook at the
+#: close naming a place the child has actually been.
+KNOWN_PLACES_RULE = """\
+Elsewhere in this child's world, already known to them: {places}. Today's story \
+stays where it is, but it may point toward one of these — something that came from \
+there, someone on their way to it, or a reason to go tomorrow.\
+"""
+
+#: What the child currently loves (§11.7, §2.4), strongest first.
+#:
+#: Phrased as material for the *quest* rather than as decoration, because the
+#: failure mode of an interests list in a prompt is a story about a lost star with
+#: a dinosaur standing in the corner of it. §2.4's claim is not that the child's
+#: favourite thing should appear — it is that the story should be *about* it.
+INTEREST_RULE = """\
+This child is currently in love with: {interests}. Build the quest out of the \
+first one or two of those — what the problem is, who needs help, what the child \
+ends up doing — rather than mentioning them in passing.\
+"""
+
+#: The recurring cast, at plan time (§8.2, §8.3's "continuity, comfort").
+#:
+#: The same list `beat_request` hands over per beat (`CAST_RULE`), given to the
+#: planner as well so a returning character can be *in the plot* instead of walking
+#: on in beat four because a beat prompt mentioned them. Reuse is the default and
+#: is said as one: a friend who was in the last story and is not in this one has to
+#: be a decision, not an oversight.
+PLAN_CAST_RULE = """\
+Characters this child already knows: {known}. Bringing one of them back is better \
+than inventing someone new — they are a friend the child has met, and we can draw \
+them exactly as they were. Do not describe what any of them look like; that is \
+handled for you.\
+"""
+
 #: How the plan's stage for this beat is handed over.
 #:
 #: Written as a *destination* because the alternative was measured: with the stage
@@ -418,6 +498,68 @@ def learning_rule(demand: Demand) -> str:
     if demand.stretch:
         return "\n\n".join([rule, STRETCH_DEMAND])
     return rule
+
+
+def plan_request(
+    *,
+    world: str = "",
+    place: str = "",
+    description: str = "",
+    mood: str = "",
+    inhabitants: Sequence[str] = (),
+    returning: bool = False,
+    elsewhere: Sequence[str] = (),
+    interests: Sequence[str] = (),
+    characters: Sequence[str] = (),
+) -> str:
+    """The user turn asking for one adventure plan (§8.1, §8.3, §11.7).
+
+    Everything here is *this child's*: the world their interest graph pointed at,
+    the place they are being taken back to or shown for the first time, who lives
+    there, where else their map goes, what they currently love, and who they already
+    know. Two children given the same objective on the same day get two different
+    requests from this function, which is §2.4's bet made concrete — and it is
+    concrete before a model is involved at all, which is what makes it testable.
+
+    **The fear ceiling is deliberately not restated here.** It reaches every
+    generation through the safety policy layer (`prompting.assembler`), which is
+    where the rules live and where this module's docstring says they must stay. What
+    Day 11 adds is not another sentence about it but a structural one: `worlds`
+    filters the places on offer by the child's ceiling before this function is ever
+    called, so a place above it is not somewhere the model was asked to avoid — it is
+    somewhere it was never given (§11.6).
+
+    Every argument is optional, and the whole thing degrades to `PLAN_REQUEST` —
+    which is exactly the pre-Day-11 prompt. A caller with no interest graph, no
+    world and no cast still gets a valid plan request rather than a paragraph with
+    holes in it.
+    """
+    lines = [PLAN_REQUEST]
+
+    if world and place:
+        lines.append(
+            WORLD_RULE.format(
+                world=world,
+                place=place,
+                description=description.rstrip(".") + "." if description else "",
+                mood=mood.replace("_", " ") or "warm",
+            )
+        )
+        lines.append(RETURNING_RULE if returning else DISCOVERY_RULE)
+
+    if living := ", ".join(name for name in inhabitants if name):
+        lines.append(INHABITANTS_RULE.format(inhabitants=living))
+
+    if map_ := ", ".join(name for name in elsewhere if name):
+        lines.append(KNOWN_PLACES_RULE.format(places=map_))
+
+    if loves := ", ".join(topic for topic in interests if topic):
+        lines.append(INTEREST_RULE.format(interests=loves))
+
+    if known := ", ".join(name for name in characters if name):
+        lines.append(PLAN_CAST_RULE.format(known=known))
+
+    return "\n\n".join(lines)
 
 
 def beat_request(

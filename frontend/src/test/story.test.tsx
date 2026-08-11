@@ -81,6 +81,10 @@ const ADVENTURE = {
   streamUrl: '/api/v1/adventures/adv-1/stream',
   companion: { name: 'Pip', voiceId: 'warm_low' },
   estimatedBeats: 6,
+  // Where the server planned this story (§8.3). The palette follows it, which is
+  // why it is on the adventure payload rather than derived on the client — see
+  // `design/worlds.ts` and `worlds.test.tsx`.
+  world: { key: 'whispering_woods', name: 'the Whispering Woods', place: 'the Hollow Oak' },
 };
 
 function jsonResponse(status: number, body: unknown) {

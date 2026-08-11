@@ -37,6 +37,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import SceneTransition from '@/components/SceneTransition';
+import { isNightTime, useWorldTheme, worldNames, isWorld } from '@/design/worlds';
 import { api } from '@/lib/api/client';
 import { useAdventure, useCompanion, useResetAdventure } from '@/lib/api/queries';
 import { waitingLine } from '@/lib/motion';
@@ -160,6 +161,22 @@ export default function StoryPage() {
   const streamUrl = adventure?.streamUrl;
   const adventureId = adventure?.adventureId;
   const companionName = companion?.name ?? adventure?.companion.name ?? 'Your friend';
+
+  /**
+   * The world this adventure is set in, worn as a palette (§15.1, §8.3).
+   *
+   * Read off the adventure rather than off the child, because the server decided
+   * where this story goes when it planned it and a screen that chose for itself
+   * could disagree with the words being narrated.
+   *
+   * Night is read from the clock rather than from a stored preference, because
+   * §15.1's low-stimulation mode is about the room the child is in and not about a
+   * setting anybody remembered to change. It is a plain boolean, so it only ever
+   * repaints when the hour actually crosses.
+   */
+  const worldKey = adventure?.world?.key;
+  const night = isNightTime();
+  useWorldTheme(worldKey, night);
 
   useEffect(() => {
     if (!streamUrl) return;
@@ -375,6 +392,11 @@ export default function StoryPage() {
   return (
     <main
       onClick={handleSceneTap}
+      // Where they are, for the grown-up in the room and for a screen reader. The
+      // child is *told* where they are by the companion (§14.6) — nothing on this
+      // surface is read, so this label is the only place the world is named in text.
+      aria-label={isWorld(worldKey) ? `A story in ${worldNames[worldKey]}` : undefined}
+      data-world={isWorld(worldKey) ? worldKey : undefined}
       className="min-h-full bg-bg text-text flex flex-col items-center justify-center p-6 text-center"
     >
       <div className="w-full max-w-[44rem]">
