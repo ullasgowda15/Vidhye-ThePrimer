@@ -19,6 +19,19 @@ work is idempotent by gate (`learning_updated_at`), so a retry either does nothi
 or re-does something that already succeeded. What is *not* safe is a redelivery
 that slips past the gate, which is why the stamp is written in the same
 transaction as the update.
+
+**The gate is per *session*, and that is a boundary with a date on it.** Today one
+sitting holds one adventure — `orchestrator.create_adventure` opens a session per
+adventure and no caller passes `session=` — so "this session has been folded in"
+and "this adventure has been folded in" are the same sentence. §17.2 permits
+several, and `engine.update_from_adventures` is already written for several: the
+day a sitting spans two stories, the first `end` stamps the session and the second
+adventure's evidence is dropped here in silence. The fix that day is to gate per
+adventure rather than per session (a stamp on `Adventure`, checked in the same
+locked transaction below); what must not happen is that this is discovered from a
+mastery number that quietly stopped moving. `apps.memory.consolidate` carries the
+same session cap and loses only attribution to it; this one would lose the
+evidence, so it is the more urgent of the two.
 """
 
 from __future__ import annotations
@@ -58,6 +71,8 @@ def update_from_session(session_id: str) -> str:
         return "missing"
 
     if session.learning_updated_at is not None:
+        # Per session, not per adventure — see the module docstring. Sound while a
+        # sitting holds one story; the line to move the day it holds two.
         logger.info("learning.update_skipped session=%s reason=already", session_id)
         return "already"
 

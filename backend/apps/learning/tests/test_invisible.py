@@ -204,6 +204,98 @@ def test_the_directive_layer_names_the_objective_and_forbids_saying_it(
 
 
 # ---------------------------------------------------------------------------
+# Invisibility, watched in production rather than only in fixtures (§8.10)
+# ---------------------------------------------------------------------------
+# The tests above prove the *pipeline* injects no lesson language, and they prove
+# it against a provider that was written to avoid it. They cannot prove a real
+# model — handed `Primary objective: count_to_5` and `Target difficulty: 0.6` in
+# its system layer — never says either out loud. `_log_lesson_leakage` is the
+# check that watches the real ones; these are the tests that it fires, and that it
+# does nothing else.
+def test_a_beat_that_names_the_lesson_is_reported(mid_level, fake_ai, enqueued, caplog) -> None:
+    """A leaky beat warns — and is still delivered exactly as written.
+
+    Both halves matter. A probe that did not fire would leave the day's headline
+    guarantee unobserved outside fixtures; a probe that blocked would turn a beat
+    that is merely clumsy into a child waiting at a dead screen (§13.2 keeps
+    blocking for safety and measurement for quality).
+    """
+    adventure = orchestrator.create_adventure(mid_level)
+    seq = orchestrator.learning_seqs(adventure)[0]
+    play_to(adventure, seq - 1)
+    previous = adventure.beats.get(seq=seq - 1)
+    orchestrator.record_choice(previous, chosen_key="follow_river")
+
+    demand = orchestrator.learning_ask_at(adventure, seq)
+    assert demand is not None
+
+    leaky = fake_ai.beat(
+        "", f"Write beat {seq} of this adventure.\n\n{story_prompts.learning_rule(demand)}"
+    )
+    narration = (
+        f"Time to practise counting, said Pip — this is a {demand.objective_code} lesson "
+        f"at difficulty {round(demand.difficulty, 2)}."
+    )
+    leaky["narration"] = narration
+    fake_ai.queue_beat_response(json.dumps(leaky))
+
+    with caplog.at_level("WARNING", logger="apps.story.orchestrator"):
+        beat = orchestrator.create_beat(
+            adventure, seq=seq, prev_choice=orchestrator.turn_from(previous)
+        )
+
+    leaks = [record for record in caplog.records if "story.lesson_language" in record.getMessage()]
+    assert leaks, "a beat that says 'practise' and names the objective must be reported"
+    reported = leaks[0].getMessage()
+    for expected in ("practice", "lesson", demand.objective_code, str(round(demand.difficulty, 2))):
+        assert expected in reported, expected
+
+    # Warn-only: the beat the child receives is the one the model wrote.
+    assert beat.narration == narration
+
+
+def test_a_clean_beat_is_reported_as_nothing(mid_level, fake_ai, enqueued, caplog) -> None:
+    """The other half of a probe worth having: it has to be quiet when it should be."""
+    adventure = orchestrator.create_adventure(mid_level)
+
+    with caplog.at_level("WARNING", logger="apps.story.orchestrator"):
+        beat = play_to(adventure, orchestrator.learning_seqs(adventure)[0])
+
+    assert beat.narration.strip()
+    assert not [
+        record for record in caplog.records if "story.lesson_language" in record.getMessage()
+    ]
+
+
+def test_the_leakage_probe_reads_the_words_and_not_the_scenery() -> None:
+    """A log line nobody trusts is a log line nobody reads.
+
+    "Contest" is not "test" and a story about a treasure chest is not a lesson —
+    the leading word boundary is what keeps the rate meaningful. The words it does
+    catch are caught in the forms a model writes them in.
+    """
+    assert orchestrator.lesson_language("Pip and the frogs entered a contest by the pond") == []
+    assert orchestrator.lesson_language("The chest under the reeds was shut tight") == []
+    assert orchestrator.lesson_language("They scored the softest moss for the nest") == ["score"]
+    assert orchestrator.lesson_language("Let us keep practising our counting") == ["practice"]
+    assert orchestrator.lesson_language("Was that the correct answer?") == ["correct answer"]
+
+    # The two strings the system layer actually hands the model (§8.10).
+    assert (
+        orchestrator.lesson_language(
+            "Five frogs sat on the log", objective_code="count_to_5", difficulty=0.6
+        )
+        == []
+    )
+    assert orchestrator.lesson_language(
+        "This is count_to_5 at 0.6", objective_code="count_to_5", difficulty=0.6
+    ) == ["0.6", "count_to_5"]
+    # `NO_OBJECTIVE` is the sentinel for a beat that practises nothing, not a code
+    # a narration could leak — matching on it would flag the word "none".
+    assert orchestrator.lesson_language("There were none left", objective_code=NO_OBJECTIVE) == []
+
+
+# ---------------------------------------------------------------------------
 # The objective is actually exercised (criterion 3's other half)
 # ---------------------------------------------------------------------------
 def test_the_learning_beat_asks_for_exactly_what_the_engine_chose(aarav, fake_ai, enqueued) -> None:

@@ -119,6 +119,17 @@ COUNT_CEILING: dict[str, int] = {
 #: property of the table.
 MIN_COUNT = 2
 
+#: How far below a ladder threshold "the top of that band" sits. The ladders are
+#: half-open — `_rung` takes the first rung the difficulty falls *below* — so the
+#: highest difficulty that still asks for a given quantity is a step under its
+#: threshold.
+#:
+#: A hundredth rather than a hair, because `story.orchestrator.learning_tag_for`
+#: rounds the stamped difficulty to two places before writing it to the beat, and
+#: a value that rounded back up over the threshold would describe the next rung
+#: again — which is the whole thing `_ceiling_difficulty` exists to prevent.
+BAND_STEP = 0.01
+
 
 @dataclass(frozen=True, slots=True)
 class Demand:
@@ -132,6 +143,10 @@ class Demand:
 
     objective_code: str
     domain: str
+    #: The difficulty of the ask that was actually made — never the one requested,
+    #: when the objective's ceiling made those two different things (`demand_for`).
+    #: This is the number the beat is stamped with and the number §10.5 reads back
+    #: as evidence, so it has to describe the fields below it.
     difficulty: float
     kind: str
     #: COUNT: how many things to put in the scene. COMPARE: the bigger group.
@@ -212,6 +227,21 @@ def _rung(ladder: Sequence[tuple[float, _Rung]], difficulty: float) -> _Rung:
     return ladder[-1][1]
 
 
+def _ceiling_difficulty(quantity: int) -> float:
+    """The highest difficulty that still asks for only `quantity` things.
+
+    The top of the `COUNT_LADDER` band the ceiling has dragged the ask back down
+    into — the first rung that would cover `quantity`, a `BAND_STEP` under its
+    threshold. `1.0` when the ladder has no such rung, which means "nothing to
+    clamp to": a ceiling the table cannot describe must not be allowed to move a
+    difficulty at all.
+    """
+    for threshold, rung in COUNT_LADDER:
+        if rung >= quantity:
+            return round(threshold - BAND_STEP, 2)
+    return 1.0
+
+
 def demand_for(
     code: str,
     domain: str,
@@ -240,15 +270,30 @@ def demand_for(
     """
     difficulty = min(max(float(difficulty), 0.0), 1.0)
     kind = kind_for(code, domain)
+    # Read off the difficulty *requested*, and deliberately before the ceiling
+    # clamp below: how many cards a decision point may show is not a fact about
+    # how far this objective counts. A child who finds three things easy has
+    # earned the third card whether or not `count_to_3` can ask them for more.
     choice_count = 3 if difficulty >= THREE_CHOICES_FROM and not scaffold else 2
 
     quantity, gap, novel = 0, 0, False
     if kind == COUNT:
-        quantity = _rung(COUNT_LADDER, difficulty)
+        asked = _rung(COUNT_LADDER, difficulty)
         # The objective's own ceiling wins over the ladder: `count_to_3` at a high
         # difficulty asks for three things, not seven. The objective names what is
         # being practised; difficulty only says how hard to make *that*.
-        quantity = max(MIN_COUNT, min(quantity, COUNT_CEILING.get(code, quantity)))
+        quantity = max(MIN_COUNT, min(asked, COUNT_CEILING.get(code, asked)))
+        if quantity < asked:
+            # ...and the difficulty comes down with the ask, because this number is
+            # what the beat is stamped with (`learning_tag_for`) and what the
+            # mastery update reads back as the difficulty the child faced (§10.5).
+            # Left at the requested value it would describe an ask that was never
+            # made: `count_to_5` asks for the same five frogs at 0.65, 0.75 and
+            # 0.85, and a clean win on the identical five frogs would then be worth
+            # steadily more, climbing an estimate a parent is shown (§10.2) and
+            # opening the next link of the chain (`PREREQUISITE_MASTERY`) on
+            # evidence that never changed. Only ever downwards.
+            difficulty = min(difficulty, _ceiling_difficulty(quantity))
     elif kind == COMPARE:
         quantity, gap = _rung(COMPARE_LADDER, difficulty)
         if scaffold:

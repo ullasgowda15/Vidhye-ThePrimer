@@ -18,7 +18,7 @@ import pytest
 from django.utils import timezone
 
 from apps.learning import engine
-from apps.learning.models import LearningProgress, Objective
+from apps.learning.models import LearningProgress
 from apps.learning.tasks import update_from_session
 from apps.learning.tests.conftest import set_progress
 from apps.story import orchestrator
@@ -425,5 +425,4 @@ def test_the_skill_model_moved_even_though_the_child_was_never_marked(
     # They needed a hand, so the estimate settled *below* what they were asked
     # for — which is the engine learning that it aimed slightly high, not a mark
     # against the child.
-    assert row.mastery < Objective.objects.count()  # sanity: a real 0-1 estimate
     assert 0.0 <= row.mastery <= 1.0

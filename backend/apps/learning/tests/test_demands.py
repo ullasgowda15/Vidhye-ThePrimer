@@ -42,6 +42,72 @@ def test_an_objective_never_asks_for_more_than_its_own_ceiling() -> None:
     assert demands.demand_for("count_to_5", "numeracy", 0.95).quantity == 5
 
 
+@pytest.mark.parametrize("code", sorted(demands.COUNT_CEILING))
+def test_the_stamped_difficulty_describes_the_ask_that_was_actually_made(code: str) -> None:
+    """The other half of the ceiling clamp, and the anchor of §10.5.
+
+    `Demand.difficulty` is what the beat is stamped with and what the mastery
+    update reads back as "the difficulty this child faced". So it has to be a
+    difficulty the ladder would have answered with *this* ask: reading the ladder
+    at the stamped number must give back the number of things the child was
+    actually shown.
+
+    Without the clamp `count_to_5` at 0.85 stamps 0.85 against five frogs — a
+    difficulty the ladder answers with ten — and a clean win on those five frogs
+    is credited as though ten had been counted.
+    """
+    for step in range(101):
+        demand = demands.demand_for(code, "numeracy", step / 100)
+        rung = demands._rung(demands.COUNT_LADDER, demand.difficulty)
+
+        assert rung == demand.quantity, (
+            f"{code} at {step / 100}: stamped {demand.difficulty} describes "
+            f"{rung} things, but the child was shown {demand.quantity}"
+        )
+
+
+#: The counting objectives whose own ceiling sits below the ladder's top rung —
+#: the only ones where the ask the ladder reached for and the ask the objective is
+#: allowed to make can differ, and so the only ones where the anchor can drift.
+CLAMPED_CODES = sorted(
+    code for code, ceiling in demands.COUNT_CEILING.items() if ceiling < demands.COUNT_LADDER[-1][1]
+)
+
+
+@pytest.mark.parametrize("code", CLAMPED_CODES)
+def test_the_same_ask_twice_is_the_same_difficulty_twice(code: str) -> None:
+    """The invariant the clamp buys: an unchanged ask cannot be worth more.
+
+    Once an objective's ceiling governs the ask, raising the difficulty changes
+    nothing the child can see — so it must change nothing the skill model reads
+    either. Every difficulty in the clamped region produces one quantity and one
+    difficulty, which is what stops a child counting the same five frogs four
+    times from climbing to mastery on the fourth.
+
+    Below the ceiling the ladder's own bands are coarse and difficulty still
+    varies inside them; that is the pre-existing granularity the bottom of the
+    ladder is built on, and it is untouched here.
+    """
+    ceiling = demands.COUNT_CEILING[code]
+    clamped = [
+        demands.demand_for(code, "numeracy", step / 100)
+        for step in range(101)
+        if demands._rung(demands.COUNT_LADDER, step / 100) > ceiling
+    ]
+
+    assert clamped, f"{code} is never clamped — this test would prove nothing"
+    assert {demand.quantity for demand in clamped} == {ceiling}
+    assert len({demand.difficulty for demand in clamped}) == 1
+
+
+def test_the_ceiling_only_ever_clamps_the_difficulty_downwards() -> None:
+    """A clamp that could raise the stamped number would be the same bug, mirrored."""
+    for code in demands.COUNT_CEILING:
+        for step in range(101):
+            requested = step / 100
+            assert demands.demand_for(code, "numeracy", requested).difficulty <= requested
+
+
 def test_the_smallest_ask_is_still_counting() -> None:
     assert demands.demand_for("count_to_10", "numeracy", 0.0).quantity == demands.MIN_COUNT
 
@@ -144,5 +210,9 @@ def test_an_unknown_objective_code_still_produces_a_playable_ask() -> None:
 
 
 def test_difficulty_is_clamped_rather_than_trusted() -> None:
-    assert demands.demand_for("count_to_5", "numeracy", 4.0).difficulty == 1.0
-    assert demands.demand_for("count_to_5", "numeracy", -2.0).difficulty == 0.0
+    """The input range. `count_to_10` because its ceiling is the top of the ladder,
+    so this asserts the 0-1 clamp and nothing else (the objective ceiling's own
+    effect on `difficulty` is `test_the_stamped_difficulty_describes_the_ask...`).
+    """
+    assert demands.demand_for("count_to_10", "numeracy", 4.0).difficulty == 1.0
+    assert demands.demand_for("count_to_10", "numeracy", -2.0).difficulty == 0.0

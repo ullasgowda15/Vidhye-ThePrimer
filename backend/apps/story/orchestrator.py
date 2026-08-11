@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -902,11 +903,12 @@ def create_beat(
     # whose `beat` is null and whose `detail.seq` is a number is one a reviewer
     # cannot click through to.
     safety.report(decision, child=child, adventure=adventure, beat=beat, seq=seq, model=model)
-    # Written, then read back against what the child actually did. Neither check
-    # changes the beat (see their section header); both make a defect that used to
-    # be found by a parent visible in the log instead.
+    # Written, then read back against what the child actually did. None of these
+    # checks changes the beat (see their section header); each makes a defect that
+    # used to be found by a parent visible in the log instead.
     _log_consequence_fidelity(beat, prev_choice)
     _log_choice_distinctness(beat)
+    _log_lesson_leakage(beat, demand)
     # Folded into the bounded summary immediately, so the *next* beat's prompt
     # already knows this one happened without carrying its text (§8.6).
     refresh_running_summary(adventure)
@@ -1242,14 +1244,15 @@ def normalise_choices(
 
 
 # ---------------------------------------------------------------------------
-# Consequence fidelity (§8.5) — measured, not blocked
+# Consequence fidelity (§8.5) and lesson leakage (§8.10) — measured, not blocked
 # ---------------------------------------------------------------------------
-# Both checks below **log and let the beat through**. Blocking would mean either a
-# child staring at a dead screen or a second paid generation on a beat that is
-# usually fine, and the defect they watch for is one the prompt is what actually
-# fixes (`story_prompts.CONSEQUENCE_RULE`, `CHOICE_RULE`). What they buy is a rate
-# an operator can see in the log and a test can assert on — the Day-5 review had to
-# read fourteen beats by hand to find that ~21% of them misreported the child.
+# Every check below **logs and lets the beat through**. Blocking would mean either
+# a child staring at a dead screen or a second paid generation on a beat that is
+# usually fine, and the defects they watch for are ones the prompt is what actually
+# fixes (`story_prompts.CONSEQUENCE_RULE`, `CHOICE_RULE`, and the assembler's
+# learning block). What they buy is a rate an operator can see in the log and a
+# test can assert on — the Day-5 review had to read fourteen beats by hand to find
+# that ~21% of them misreported the child.
 
 #: Words that identify nothing on their own. Deliberately short: a choice label is
 #: two or three words, so almost everything in it is doing work. Verbs stay in —
@@ -1394,6 +1397,103 @@ def _log_choice_distinctness(beat: Beat) -> None:
             beat.id,
             beat.seq,
             alike,
+        )
+
+
+#: The words a lesson uses about itself, each with the forms a writer would
+#: actually write it in, and each reported under the one name on the left. A story
+#: for a four-year-old has no honest reason to reach for any of them, and a beat
+#: that does is a beat in which the curriculum has surfaced — the one thing §8.10
+#: asks never to happen.
+#:
+#: Whole words on both sides, because the cost of crying wolf is a probe an
+#: operator stops reading: a *contest* by the pond is not a test, and the chest in
+#: the reeds is not a quiz. Kept short and literal for the same reason the checks
+#: above are — the output is a log line, and a list long enough to be clever would
+#: be a list nobody trusts.
+_LESSON_WORDS: dict[str, str] = {
+    "lesson": r"lessons?",
+    "practice": r"practi[sc]e(?:s|d)?|practi[sc]ing",
+    "quiz": r"quiz(?:zes|zed)?",
+    "test": r"test(?:s|ed|ing)?",
+    "score": r"score(?:s|d)?|scoring",
+    "correct answer": r"correct answers?",
+}
+
+_LESSON_PATTERNS: dict[str, re.Pattern[str]] = {
+    word: re.compile(rf"\b(?:{pattern})\b", re.IGNORECASE)
+    for word, pattern in _LESSON_WORDS.items()
+}
+
+
+def lesson_language(
+    text: str,
+    *,
+    objective_code: str = "",
+    difficulty: float | None = None,
+) -> list[str]:
+    """The lesson vocabulary this text leaks, if any (§8.10).
+
+    Three things it looks for, and the first two are the strings the system layer
+    actually hands the model: `Primary objective: count_to_5` and `Target
+    difficulty: 0.6` (`safety.prompting.assembler._learning_block`). Those are the
+    two most likely to be echoed straight back into narration by a model that read
+    its instructions as material, and the invisibility of the whole day rests on
+    them not being. The third is the vocabulary a model reaches for when it decides
+    to be a teacher rather than a storyteller.
+
+    The difficulty is matched as it was *rendered* into the prompt — rounded to two
+    places by `objective_directive`, which is the only form of it the model ever
+    saw. A stray "0.6" in narration is not otherwise a thing that happens in a
+    story about a riverbank, so the false-positive risk is small and the signal is
+    exact.
+
+    Pure, and returns rather than logs, so a test can hand it a sentence — the same
+    shape as `misattributed_options` and `alike_option_labels` above.
+    """
+    if not text.strip():
+        return []
+
+    found = {word for word, pattern in _LESSON_PATTERNS.items() if pattern.search(text)}
+
+    code = (objective_code or "").strip()
+    if code and code != demands.NO_OBJECTIVE and code.casefold() in text.casefold():
+        found.add(code)
+    if difficulty is not None and (rendered := str(round(float(difficulty), 2))) in text:
+        found.add(rendered)
+    return sorted(found)
+
+
+def _log_lesson_leakage(beat: Beat, demand: Demand | None) -> None:
+    """Report a beat that said the quiet part out loud (§8.10, §10.4).
+
+    The day's headline guarantee — the child never perceives the curriculum — is
+    enforced at the prompt layer and, until this, was asserted only against a
+    scripted provider written to avoid lesson words. That proves the pipeline
+    injects no lesson language; it cannot prove a real model emits none. This is
+    the check that watches the real ones, in production, on every beat.
+
+    **Warn-only, like its two siblings above, and for a stronger reason than
+    theirs.** The narration has already been graded by the output guard and
+    persisted; refusing it here would mean a second paid generation or a child
+    staring at a dead screen over a *tone* problem — and a beat that says "let's
+    practise counting" is clumsy, not unsafe. Safety blocks; quality is measured
+    (§13.2 draws that line, and this stays on the measured side of it).
+    """
+    prompt_audio = str((beat.interaction or {}).get("prompt_audio") or "")
+    leaked = lesson_language(
+        f"{beat.narration}\n{prompt_audio}",
+        objective_code=demand.objective_code if demand is not None else "",
+        difficulty=demand.difficulty if demand is not None else None,
+    )
+    if leaked:
+        logger.warning(
+            "story.lesson_language adventure=%s beat=%s seq=%d model=%s leaked=%r",
+            beat.adventure_id,
+            beat.id,
+            beat.seq,
+            beat.model,
+            leaked,
         )
 
 
