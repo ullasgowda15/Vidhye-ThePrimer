@@ -17,6 +17,7 @@ from typing import Any
 
 from apps.learning import demands as learning_demands
 from apps.learning.demands import Demand
+from apps.story.wellbeing import CLOSED_SESSION_CAP as CAP_CLOSE
 
 #: Asked of the *plan* call. Short on purpose — a plan detailed enough to be a
 #: script would make the child's choices cosmetic (§8.5).
@@ -343,6 +344,32 @@ Set interaction.type to "none" and interaction.choices to null: the child is not
 being asked for anything here, they are being said goodnight to.\
 """
 
+#: Added to `FINAL_BEAT_RULE` when the story is being landed because the sitting
+#: reached its cap rather than because the plan ran out (§13.6, `story.wellbeing`).
+#:
+#: Everything in it is about *tone*, because the structure is already handled: the
+#: close is a close either way. What this changes is that the companion is the one
+#: who says it is time to stop, they say it happily, and they say it as their own
+#: idea. That ordering is the ethical content of §13.6 — a child must never
+#: experience the limit as the app taking the story away, and must never be given
+#: a reason to argue with a grown-up about it.
+#:
+#: Note what it forbids. No "you have played for long enough", no minutes, no
+#: mention of a rule or a setting or a parent's decision, and above all no reason
+#: to hurry back. §13.6 forbids child-directed pull; a close that said "come back
+#: soon or you'll miss it" would be a dark pattern wearing a warm voice.
+CAP_CLOSE_RULE = """\
+This close happens because it is time to stop for today, so the companion is the \
+one who notices and says so — cheerfully, as their own idea, in one short line \
+somewhere in the narration. Something in the spirit of "that's a good place to \
+stop" or "I'm going to have a rest now". They are happy about it.
+
+Do not mention time, minutes, rules, limits, grown-ups, or anything the child \
+could argue with. Do not apologise, do not say the story was cut short, and do \
+not suggest hurrying back. Land the story properly first: it still resolves \
+completely and warmly, exactly as any other close does.\
+"""
+
 
 #: How the cast is handed over, and what to do about anyone new (§8.2).
 #:
@@ -568,6 +595,7 @@ def beat_request(
     beat_id: str,
     is_first: bool,
     is_final: bool = False,
+    close_reason: str = "",
     demand: Demand | None = None,
     ask_now: bool = False,
     stage: str = "",
@@ -588,6 +616,12 @@ def beat_request(
     beat of every sitting to be warm and safe, and a stateless call has no way to
     know it is writing the last one — a model told only "beat six of six" will
     happily leave the child mid-problem.
+
+    `close_reason` says *why* it is the last one, and today has exactly one value
+    that changes anything: the sitting hit its cap (§13.6). It is a separate
+    argument rather than folded into `is_final` because the two facts are decided
+    by different things — the plan's length, and the clock — and a close that is
+    both should read as one warm ending rather than two.
 
     `demand` is what the Learning Engine decided this adventure is asking for, and
     it is read on **every** beat rather than only on the learning ones: even a
@@ -616,6 +650,12 @@ def beat_request(
 
     if is_final:
         lines.append(FINAL_BEAT_RULE)
+        # After the general close rule, never instead of it: the sitting-cap close
+        # is an ordinary warm close *plus* a reason (§13.6). A beat that got the
+        # tone note without the landing instructions would say goodbye without
+        # resolving the story, which is the exact failure the cap exists to avoid.
+        if close_reason == CAP_CLOSE:
+            lines.append(CAP_CLOSE_RULE)
     elif ask_now and demand is not None:
         lines.append(learning_rule(demand))
     else:

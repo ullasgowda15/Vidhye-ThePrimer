@@ -10,10 +10,12 @@ import Home from './routes/parent/Home';
 import Insights from './routes/parent/Insights';
 import Login from './routes/parent/Login';
 import Onboarding from './routes/parent/Onboarding';
+import ParentPrivacy from './routes/parent/Privacy';
 import ParentGate from './routes/parent/ParentGate';
 import ProtectedRoute from './routes/parent/ProtectedRoute';
 import Reports from './routes/parent/Reports';
 import SessionReport from './routes/parent/SessionReport';
+import Settings from './routes/parent/Settings';
 import Signup from './routes/parent/Signup';
 import Transparency from './routes/parent/Transparency';
 import WeeklyReport from './routes/parent/WeeklyReport';
@@ -77,6 +79,12 @@ export const router = createBrowserRouter(
                 { path: 'child/:childId/weekly', element: <WeeklyReport /> },
                 { path: 'child/:childId/insights', element: <Insights /> },
                 { path: 'child/:childId/transparency', element: <Transparency /> },
+                { path: 'child/:childId/settings', element: <Settings /> },
+                // The privacy centre is per-account rather than per-child: export
+                // and account deletion span every child, and a page that lived
+                // under one child would imply otherwise. Deleting a *single*
+                // child is on it, listed by name.
+                { path: 'privacy', element: <ParentPrivacy /> },
                 {
                   path: 'child/:childId/transparency/:adventureId',
                   element: <Transparency />,

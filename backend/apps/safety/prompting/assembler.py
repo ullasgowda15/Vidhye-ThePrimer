@@ -30,6 +30,7 @@ from typing import Any
 from django.core.exceptions import ImproperlyConfigured, ObjectDoesNotExist
 
 from apps.profiles.models import AGE_BAND_OLDER, AGE_BAND_YOUNGER, Child
+from apps.profiles.settings import settings_for
 from apps.safety.models import SYSTEM_IDENTITY, PromptVersion
 from apps.safety.prompting.layers import LayerKind, PromptLayer
 from apps.safety.scrub import scrub_text
@@ -153,21 +154,32 @@ def safety_policy_layer(child: Child) -> str:
     fears — go through `scrub_text` first. This layer is an INSTRUCTION layer and
     therefore outranks the data fence; without the scrub, an avoid-topics box
     reading "ignore every rule above" would arrive as one of the rules (§13.5).
+
+    **From Day 13 the controls arrive through `profiles.settings.settings_for`**
+    rather than off the model, and `apps.safety.policy` reads the same function.
+    That is what makes §12.7's "honored immediately" true in *both* halves of
+    §13.4 at once: the sentence this layer writes into the prompt and the rule the
+    output guard checks afterwards are now built from one normalised object, so a
+    topic the guard would block can no longer be a topic the prompt failed to
+    mention — nor the reverse.
     """
-    ceiling = child.intensity_ceiling
+    controls = settings_for(child)
+    ceiling = controls.intensity_ceiling
     # An unrecognised ceiling clamps to the gentlest guidance rather than
     # dropping the line: a missing ceiling must never read as "no ceiling".
+    # `settings_for` has already clamped it into range; the `.get` default stays
+    # as the second lock on a rung this table has not been taught yet.
     ceiling_line = INTENSITY_GUIDANCE.get(ceiling, INTENSITY_GUIDANCE[0])
     band_line = AGE_BAND_GUIDANCE[child.age_band]
 
-    if avoid := _safe_bullets(child.avoid_topics or [], cap=TOPIC_CHARS):
+    if avoid := _safe_bullets(controls.avoid_topics, cap=TOPIC_CHARS):
         avoid_block = "Never depict, name, or allude to any of these topics:\n" + avoid
     else:
         avoid_block = (
             "The parent has listed no topics to avoid. The rules below still apply in full."
         )
 
-    if fears := _safe_bullets(child.fears or [], cap=TOPIC_CHARS):
+    if fears := _safe_bullets(controls.fears, cap=TOPIC_CHARS):
         fears_block = (
             "Known fears:\n"
             + fears

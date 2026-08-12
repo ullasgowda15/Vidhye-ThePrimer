@@ -46,6 +46,7 @@ from django.conf import settings
 from pydantic import BaseModel, Field
 
 from apps.profiles.models import Child
+from apps.profiles.settings import settings_for
 from apps.safety import policy
 from apps.safety.models import Severity
 from apps.safety.scrub import scrub_text
@@ -141,28 +142,30 @@ Grade the beat below and return the verdict object.
 def audience_block(child: Child) -> str:
     """Who this beat is for, as the grader needs it.
 
-    Built from the same stored fields as `assembler.safety_policy_layer` — the
-    age band, the ceiling, the avoid list, the fears — so the grader and the
-    generator are held to one standard. Rendered separately rather than shared,
-    because sharing the text would make the grader's context the generator's
-    context, which is the thing this module exists not to do.
+    Built from the same *settings object* as `assembler.safety_policy_layer` — the
+    ceiling, the avoid list, the fears, normalised once by
+    `profiles.settings.settings_for` — so the grader and the generator are held to
+    one standard. Rendered separately rather than shared, because sharing the text
+    would make the grader's context the generator's context, which is the thing
+    this module exists not to do. What is shared is the *decision*, not the prose.
 
     The avoid list and the fears are parent-typed, so they arrive scrubbed. They
     are the one piece of untrusted text in an instruction position here, and the
     scrub is what keeps that safe (§13.5).
     """
+    controls = settings_for(child)
     lines = [
         f"Age {child.age} (band {child.age_band}).",
-        f"Intensity ceiling: {child.intensity_ceiling} of 3, where 0 is "
+        f"Intensity ceiling: {controls.intensity_ceiling} of 3, where 0 is "
         "gentlest-possible and 3 permits real suspense that always ends safely.",
     ]
-    if child.avoid_topics:
-        avoid = ", ".join(scrub_text(str(topic), cap=80) for topic in child.avoid_topics)
+    if controls.avoid_topics:
+        avoid = ", ".join(scrub_text(str(topic), cap=80) for topic in controls.avoid_topics)
         lines.append(f"Avoid list — must never appear at all: {avoid}.")
     else:
         lines.append("Avoid list: empty.")
-    if child.fears:
-        fears = ", ".join(scrub_text(str(fear), cap=80) for fear in child.fears)
+    if controls.fears:
+        fears = ", ".join(scrub_text(str(fear), cap=80) for fear in controls.fears)
         lines.append(
             f"Known fears: {fears}. These may appear only with the companion "
             "present, with the child in control, resolved warmly before the beat ends."

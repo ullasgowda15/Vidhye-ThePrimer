@@ -44,6 +44,29 @@ class Child(UUIDModel):
     session_cap_min = models.SmallIntegerField(default=15)
     pre_reader = models.BooleanField(default=True)
 
+    #: The daily window this child may play in (§13.6, §7.13), as local wall-clock
+    #: times. Null/null means "any time", which is the default because a window
+    #: nobody set must not lock a family out of their own product.
+    #:
+    #: Two nullable columns rather than one JSON blob, because the pair is read on
+    #: the story-start path on every request and is the one setting whose *absence*
+    #: has to be unambiguous. A window that wraps past midnight (21:00 to 07:00) is
+    #: legitimate and is handled in `profiles.settings.TimeWindow`.
+    time_window_start = models.TimeField(null=True, blank=True)
+    time_window_end = models.TimeField(null=True, blank=True)
+
+    #: Presentation controls (§7.13). They never touch generation or the safety
+    #: guard — they decide how the beat that was already generated is *delivered*.
+    voice_on = models.BooleanField(default=True)
+    text_on = models.BooleanField(default=True)
+
+    #: §14.6's accessibility flags: `captions`, `reduced_motion`, `dyslexia_font`,
+    #: `high_contrast`, `audio_volume`. JSON rather than five columns because they
+    #: are only ever read as one set, by one surface, and the list will grow —
+    #: `profiles.settings.Accessibility` is what gives the blob a shape, defaults
+    #: and validation, so nothing downstream reads a raw key.
+    accessibility = models.JSONField(default=dict, blank=True)
+
     class Meta:
         verbose_name_plural = "children"
         ordering = ["-created_at"]

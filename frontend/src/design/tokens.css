@@ -259,3 +259,78 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * --- Parent-set accessibility (§14.6, §12.7) ----------------------------
+ *
+ * `data-a11y-*` goes on the document root (`design/accessibility.ts`) and, like
+ * the world palettes above, every block here does exactly one thing: re-point
+ * semantic tokens, or switch off decoration. No component reads a flag.
+ *
+ * Declared last so they win over a world palette. That ordering is the whole
+ * point of high contrast: a parent who turned it on for a child who needs it must
+ * get it in the Coral Deep as well as on the base theme, and a per-world colour
+ * quietly overriding it would be the one case where the setting silently does
+ * nothing.
+ */
+
+/* Reduced motion, set by the parent rather than by the OS.
+   Identical rules to the `prefers-reduced-motion` block above, deliberately:
+   either switch alone must be enough, and neither can re-enable what the other
+   turned off. */
+:root[data-a11y-motion='on'] {
+  --motion-fast: 0ms;
+  --motion-base: 0ms;
+  --motion-slow: 0ms;
+}
+
+:root[data-a11y-motion='on'] *,
+:root[data-a11y-motion='on'] *::before,
+:root[data-a11y-motion='on'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* A dyslexia-friendly face for the child's story text.
+   Falls through a list rather than naming one font: the named faces are the ones
+   families install themselves, and the last three are the readable-by-default
+   system stacks. A setting that depended on a webfont we do not ship would be a
+   toggle that works on the developer's machine (§14.6). */
+:root[data-a11y-font='on'] {
+  --font-display:
+    'OpenDyslexic', 'Lexend', 'Atkinson Hyperlegible', 'Verdana', 'Tahoma', system-ui, sans-serif;
+  --font-text: var(--font-display);
+  /* Dyslexia-friendly typesetting is as much spacing as it is letterforms. */
+  --line-height-base: 1.8;
+  letter-spacing: 0.02em;
+  word-spacing: 0.08em;
+}
+
+/* High contrast (§14.6). Near-black on white, one saturated accent, hard borders.
+   Written as a token override rather than a filter so text stays crisp and the
+   illustrations keep their own colour — a child's picture is content, and
+   inverting it would be a worse outcome than the contrast it bought. */
+:root[data-a11y-contrast='on'] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --primary: #10104a;
+  --accent: #7a2500;
+  --success: #12551f;
+  --text: #000000;
+  --text-muted: #26262b;
+  --border: #000000;
+  --shadow-card: 0 0 0 2px #000000;
+}
+
+:root[data-a11y-contrast='on'][data-theme='night'] {
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --primary: #b9c4ff;
+  --accent: #ffce6b;
+  --success: #8fe6a2;
+  --text: #ffffff;
+  --text-muted: #e2e2e8;
+  --border: #ffffff;
+  --shadow-card: 0 0 0 2px #ffffff;
+}

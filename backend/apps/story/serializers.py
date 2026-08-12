@@ -154,6 +154,29 @@ class AdventureEndRequestSerializer(serializers.Serializer):
     )
 
 
+class WellbeingSerializer(serializers.Serializer):
+    """Whether a story may begin right now (§13.6).
+
+    Three fields, and what is *not* here is the design. There is no "minutes left",
+    no "you have played N times today", no next-open time and no streak: a
+    countdown on a four-year-old's screen is pressure, and pressure is the thing
+    §13.6 forbids. The parent sees the numbers, on the parent surface. The child
+    sees their companion having a rest.
+    """
+
+    open = serializers.BooleanField(
+        help_text="True when a new story may start. True whenever no window is set.",
+    )
+    reason = serializers.CharField(
+        allow_blank=True,
+        help_text="`time_window` when the daily window is shut, else empty.",
+    )
+    message = serializers.CharField(
+        allow_blank=True,
+        help_text="The companion's own line for the child, or empty when open.",
+    )
+
+
 class AdventureEndSerializer(serializers.Serializer):
     """The state the adventure was left in."""
 

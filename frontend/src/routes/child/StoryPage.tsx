@@ -37,9 +37,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import SceneTransition from '@/components/SceneTransition';
+import { safeVolume, useAccessibility, withDefaults, wordsOnScreen } from '@/design/accessibility';
 import { isNightTime, useWorldTheme, worldNames, isWorld } from '@/design/worlds';
 import { api } from '@/lib/api/client';
-import { useAdventure, useCompanion, useResetAdventure } from '@/lib/api/queries';
+import {
+  useAdventure,
+  useChildSettings,
+  useCompanion,
+  useResetAdventure,
+  useWellbeing,
+} from '@/lib/api/queries';
 import { waitingLine } from '@/lib/motion';
 import { consumeBeatStream, type BeatEvent, type ChoiceOption } from '@/lib/sse';
 
@@ -108,9 +115,31 @@ export default function StoryPage() {
   const { childId } = useParams();
   const navigate = useNavigate();
   const { data: companion } = useCompanion(childId);
+  /**
+   * The parent's controls (§12.7), read here for the accessibility half of them.
+   *
+   * The safety half is enforced server-side and this screen never sees it — which
+   * is the correct split: a client that had to be trusted to apply an avoid-topic
+   * would be a client that could be made not to.
+   */
+  const { data: settings } = useChildSettings(childId);
+  const access = withDefaults(settings?.accessibility);
+  useAccessibility(settings?.accessibility);
+
+  /**
+   * §13.6's daily window, asked *before* a story is requested.
+   *
+   * `isPending` matters as much as `open` does: until the answer is back we hold
+   * the adventure request, so a child arriving after bedtime never briefly starts
+   * a story that is then taken away. The wait is covered by the same thinking
+   * companion that covers everything else on this screen.
+   */
+  const { data: gate, isPending: gatePending } = useWellbeing(childId);
+  const resting = gate?.open === false;
+
   // Resumes the story in progress before it would ever start a new one, so a
   // reload lands the child back in the same forest (§14.5).
-  const { data: adventure } = useAdventure(childId);
+  const { data: adventure } = useAdventure(childId, !gatePending && !resting);
   const resetAdventure = useResetAdventure(childId);
 
   const [beat, setBeat] = useState<BeatEvent | null>(null);
@@ -370,6 +399,12 @@ export default function StoryPage() {
     void navigate('/');
   }
 
+  // §14.6, §7.13. The three-way rule lives in `design/accessibility` because the
+  // server states the same rule in `ChildSettings.words_on_screen`, and a rule
+  // written in two places has to be testable in both.
+  const voiceOn = settings?.voice_on ?? true;
+  const showWords = wordsOnScreen(settings);
+
   const question = askedSeparately(beat);
   const options: ChoiceOption[] = (beat?.choices ?? []).map((option) => ({
     ...option,
@@ -388,6 +423,34 @@ export default function StoryPage() {
    * what stops a second one being sent.
    */
   const answerable = status === 'awaiting_choice';
+
+  // §13.6. A scene, not a refusal: the companion is resting and says so in their
+  // own voice, and there is nothing on this screen to argue with, nothing
+  // counting down, and nothing inviting the child to come back at a time. The
+  // line comes from the server so "the window is shut" and "how a companion says
+  // it" cannot drift apart (`story.wellbeing.Gate`).
+  if (resting) {
+    return (
+      <main
+        data-testid="wellbeing-resting"
+        className="min-h-full bg-bg text-text flex flex-col items-center justify-center p-6 text-center"
+      >
+        <div className="w-full max-w-[36rem]">
+          <ThinkingCompanion
+            portraitUrl={companion?.portrait_url ?? null}
+            name={companionName}
+            resting
+          />
+          <p className="font-display text-4 mt-6 leading-[1.45] text-text">{gate?.message}</p>
+        </div>
+        <footer className="mt-8 text-1 text-text-muted">
+          <Link to="/" className="underline underline-offset-4">
+            Back
+          </Link>
+        </footer>
+      </main>
+    );
+  }
 
   return (
     <main
@@ -434,14 +497,18 @@ export default function StoryPage() {
           <>
             {/* The caption, not the message: the line the child *hears* is the
                 audio. It is on screen for the adult in the room and for
-                accessibility (§14.6). */}
-            <p
-              data-testid="beat-narration"
-              className="font-display text-4 mt-6 leading-[1.45] text-text"
-            >
-              {beat.narration}
-            </p>
-            {question ? (
+                accessibility (§14.6), and `wordsOnScreen` is the parent's control
+                over that — with the rule that the accessibility flag and a silent
+                voice both outrank the preference. */}
+            {showWords ? (
+              <p
+                data-testid="beat-narration"
+                className="font-display text-4 mt-6 leading-[1.45] text-text"
+              >
+                {beat.narration}
+              </p>
+            ) : null}
+            {showWords && question ? (
               <p data-testid="beat-question" className="font-display text-5 mt-4 text-primary">
                 {question}
               </p>
@@ -455,7 +522,7 @@ export default function StoryPage() {
               </p>
             ) : null}
 
-            {audioUrl ? (
+            {audioUrl && voiceOn ? (
               <button
                 type="button"
                 // The whole scene is a tap target too, so the click is stopped
@@ -518,12 +585,23 @@ export default function StoryPage() {
         )}
       </div>
 
-      {audioUrl ? (
+      {/* `voice_on` off means the element is not rendered at all, rather than
+          rendered muted: a muted element still downloads the clip, and a parent who
+          switched the voice off has asked us not to fetch it. `wordsOnScreen` is
+          forced true in that case, so the beat is still fully delivered (§14.6). */}
+      {audioUrl && voiceOn ? (
         <audio
-          ref={audioRef}
           src={audioUrl}
           data-testid="beat-audio"
           preload="auto"
+          // §7.13's adjustable audio. Set through a ref callback because `volume`
+          // is a DOM *property*, not an attribute — React will not apply it from
+          // JSX, so writing `volume={…}` here would be a control that silently did
+          // nothing, which is the exact failure §12.7 forbids.
+          ref={(element) => {
+            audioRef.current = element;
+            if (element) element.volume = safeVolume(access.audio_volume);
+          }}
           // `onPlay` rather than the `play()` promise: the element is the thing
           // that knows, and it covers a play started some other way too.
           onPlay={() => setHeard(true)}
@@ -644,40 +722,65 @@ function WarmClose({
  * three dots are the only thing that indicates activity, and they read as
  * thinking rather than as loading.
  */
-function ThinkingCompanion({ portraitUrl, name }: { portraitUrl: string | null; name: string }) {
+function ThinkingCompanion({
+  portraitUrl,
+  name,
+  resting = false,
+}: {
+  portraitUrl: string | null;
+  name: string;
+  /**
+   * The same character, having a rest rather than thinking (§13.6).
+   *
+   * Deliberately this component and not a new one: the child must see *their
+   * friend* when the day's window has closed, exactly as they do while a beat
+   * generates. What changes is the label a screen reader reads and the three
+   * dots, which mean "something is coming" and would be a small untruth here.
+   */
+  resting?: boolean;
+}) {
+  const label = resting ? `${name} is having a rest` : `${name} is thinking`;
+
   return (
     <div className="flex flex-col items-center" data-testid="companion-thinking">
       {portraitUrl ? (
         <img
           src={portraitUrl}
-          alt={`${name} is thinking`}
+          alt={label}
           className="w-[min(46vw,15rem)] rounded-lg motion-safe:animate-[breathe_4s_ease-in-out_infinite]"
         />
       ) : (
-        <svg
-          viewBox="0 0 200 160"
-          className="w-[min(46vw,15rem)]"
-          role="img"
-          aria-label={`${name} is thinking`}
-        >
+        <svg viewBox="0 0 200 160" className="w-[min(46vw,15rem)]" role="img" aria-label={label}>
           <ellipse cx="100" cy="142" rx="66" ry="11" fill="var(--border)" opacity="0.6" />
           <g className="motion-safe:animate-[breathe_4s_ease-in-out_infinite]">
             <ellipse cx="100" cy="98" rx="60" ry="44" fill="var(--primary)" opacity="0.85" />
-            <circle cx="82" cy="90" r="5" fill="var(--surface)" />
-            <circle cx="118" cy="90" r="5" fill="var(--surface)" />
+            {/* Closed eyes when resting — two lines rather than two dots. */}
+            {resting ? (
+              <>
+                <path d="M76 90 q6 5 12 0" stroke="var(--surface)" strokeWidth="3" fill="none" />
+                <path d="M112 90 q6 5 12 0" stroke="var(--surface)" strokeWidth="3" fill="none" />
+              </>
+            ) : (
+              <>
+                <circle cx="82" cy="90" r="5" fill="var(--surface)" />
+                <circle cx="118" cy="90" r="5" fill="var(--surface)" />
+              </>
+            )}
           </g>
         </svg>
       )}
 
-      <div aria-hidden="true" className="mt-4 flex gap-2">
-        {[0, 1, 2].map((index) => (
-          <span
-            key={index}
-            className="inline-block h-3 w-3 rounded-full bg-accent motion-safe:animate-[think_1.4s_ease-in-out_infinite]"
-            style={{ animationDelay: `${index * 0.18}s` }}
-          />
-        ))}
-      </div>
+      {resting ? null : (
+        <div aria-hidden="true" className="mt-4 flex gap-2">
+          {[0, 1, 2].map((index) => (
+            <span
+              key={index}
+              className="inline-block h-3 w-3 rounded-full bg-accent motion-safe:animate-[think_1.4s_ease-in-out_infinite]"
+              style={{ animationDelay: `${index * 0.18}s` }}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

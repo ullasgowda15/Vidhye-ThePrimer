@@ -14,16 +14,22 @@ import { QuietButton } from './ui';
  * storybook on the child route. No component branches on which surface it is in.
  *
  * §12.10's map is Home → Reports / Weekly-Growth / Insights / Transparency /
- * Settings / Privacy / Billing / Children. Five of those are built; Settings,
- * Privacy and Billing arrive on Days 13-14. They are named in a plain line at the
- * foot rather than rendered as nav items that go nowhere — a dead link in a
- * product whose headline feature is honesty is a small lie in the wrong place.
+ * Settings / Privacy / Billing / Children. All but Billing are built; it arrives
+ * on Day 14 and is named in a plain line at the foot rather than rendered as a nav
+ * item that goes nowhere — a dead link in a product whose headline feature is
+ * honesty is a small lie in the wrong place.
+ *
+ * Privacy is in the header rather than in `SECTIONS`, because `SECTIONS` is the
+ * per-child nav and the privacy centre is per-account: export and account deletion
+ * span every child, and a link that sat under one child's name would say something
+ * untrue about what the page does.
  */
 const SECTIONS = [
   { to: 'reports', label: 'Reports' },
   { to: 'weekly', label: 'Weekly & growth' },
   { to: 'insights', label: 'Insights' },
   { to: 'transparency', label: 'Transparency' },
+  { to: 'settings', label: 'Settings' },
 ] as const;
 
 export function DashboardShell({
@@ -67,6 +73,9 @@ export function DashboardShell({
             >
               Children
             </Link>
+            <Link to="/parent/privacy" className="text-2 text-primary underline underline-offset-4">
+              Privacy
+            </Link>
             <QuietButton type="button" onClick={signOut}>
               Sign out
             </QuietButton>
@@ -99,11 +108,11 @@ export function DashboardShell({
         {children}
 
         <footer className="mt-8 border-t border-border pt-4 text-1 text-text-muted">
-          Settings and controls, the privacy centre and billing are on their way. Until then, a
-          child&rsquo;s limits and topics to avoid are set when you add them, and you can delete a
-          profile and everything attached to it from{' '}
-          <Link to="/parent/children" className="text-primary underline underline-offset-4">
-            Children
+          Billing is on its way. Everything else is here: limits, topics and accessibility are under
+          a child&rsquo;s <strong>Settings</strong>, and your data — a full copy, or deleting it —
+          is in{' '}
+          <Link to="/parent/privacy" className="text-primary underline underline-offset-4">
+            Privacy
           </Link>
           .
         </footer>

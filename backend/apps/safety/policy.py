@@ -32,6 +32,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from apps.profiles.models import Child
+from apps.profiles.settings import settings_for
 from apps.safety.models import Severity
 
 # ---------------------------------------------------------------------------
@@ -278,6 +279,14 @@ def _word_pattern(term: str) -> re.Pattern[str] | None:
     said "a friendly spider waved hello" got through the first version of this
     function. Topics are typed in whichever number comes to mind and the rule has
     to mean the same thing either way.
+
+    **And the plural strip is case-insensitive**, which is the Day-13 fix and is
+    the same bug one level down. `str.removesuffix` compares exactly, so a parent
+    typing `HOSPITALS` — caps lock, or a word they wanted to be emphatic about —
+    left the stem as `HOSPITALS` and produced a rule that matched the plural and
+    not the singular. The match itself has always been `IGNORECASE`, so the
+    asymmetry was invisible: the rule worked, just not for half the sentences it
+    was written to catch.
     """
     cleaned = " ".join(term.split())
     if len(cleaned) < 3:
@@ -285,9 +294,16 @@ def _word_pattern(term: str) -> re.Pattern[str] | None:
         return None
 
     head, _, tail = cleaned.rpartition(" ")
-    stem = (
-        tail.removesuffix("es") if tail.endswith(("ses", "xes", "hes")) else tail.removesuffix("s")
-    )
+    lowered = tail.casefold()
+    # Sliced by length rather than `removesuffix`, so the comparison can be
+    # case-folded while the stem keeps the parent's own capitalisation — which is
+    # what `Finding.marker` shows a reviewer.
+    if lowered.endswith(("ses", "xes", "hes")):
+        stem = tail[:-2]
+    elif lowered.endswith("s"):
+        stem = tail[:-1]
+    else:
+        stem = tail
     if len(stem) < 3:
         stem = tail
     prefix = f"{re.escape(head)} " if head else ""
@@ -359,7 +375,16 @@ def check_text(text: str, child: Child) -> list[Finding]:
     rather than checked field by field because a rule split across two fields is
     still a rule broken, and because the option labels are read aloud in the same
     breath as the narration (`orchestrator.spoken_line`).
+
+    **The controls come from `profiles.settings.settings_for`, which is also what
+    `assembler.safety_policy_layer` writes the prompt from** (§12.7, §13.4). The
+    two halves of §13.4 — the rule stated to the model and the rule enforced on
+    its output — are therefore built from one normalised object rather than from
+    the same three columns read twice. Before Day 13 they were read separately,
+    and that is the shape of bug where a ceiling of `9` is a licence on one side
+    and a clamp on the other.
     """
+    controls = settings_for(child)
     findings: list[Finding] = []
 
     for category, action, severity, name, pattern in _ABSOLUTE_RULES:
@@ -368,7 +393,7 @@ def check_text(text: str, child: Child) -> list[Finding]:
                 Finding(category=category, action=action, severity=severity, marker=name)
             )
 
-    ceiling = child.intensity_ceiling
+    ceiling = controls.intensity_ceiling
     for licensed_above, name, pattern in _INTENSITY_RULES:
         if ceiling <= licensed_above and pattern.search(text):
             findings.append(
@@ -380,8 +405,8 @@ def check_text(text: str, child: Child) -> list[Finding]:
                 )
             )
 
-    findings.extend(avoid_topic_findings(text, child.avoid_topics or []))
-    findings.extend(fear_findings(text, child.fears or []))
+    findings.extend(avoid_topic_findings(text, controls.avoid_topics))
+    findings.extend(fear_findings(text, controls.fears))
     return findings
 
 

@@ -132,3 +132,53 @@ class ConsentRecordSerializer(serializers.ModelSerializer):
                 f"The current consent version is '{settings.REQUIRED_CONSENT_TYPE}'."
             )
         return value
+
+
+class PrivacySectionSerializer(serializers.Serializer):
+    """One section of the disclosure (§12.8)."""
+
+    id = serializers.CharField()
+    title = serializers.CharField()
+    body = serializers.CharField()
+
+
+class PrivacyDisclosureSerializer(serializers.Serializer):
+    """The plain-language privacy statement (§12.8, §13.8).
+
+    Served from `apps.accounts.privacy` rather than written into the React page,
+    because every sentence in it is a claim about what this server does and the
+    two have to change together. See that module.
+    """
+
+    version = serializers.CharField(
+        help_text="Bumped whenever a claim changes, so a parent can tell what they read.",
+    )
+    headline = serializers.CharField()
+    sections = PrivacySectionSerializer(many=True)
+
+
+class AccountDeleteSerializer(serializers.Serializer):
+    """The password, re-checked before a family's data is erased (§12.8).
+
+    Deletion is the only irreversible action in the product. A valid access token
+    is what a tablet left on a kitchen table has; it must not also be enough to
+    delete two years of a child's stories. Checking the password makes the person
+    at the keyboard prove they are the account holder rather than merely holding
+    the account holder's device.
+    """
+
+    password = serializers.CharField(
+        write_only=True,
+        style={"input_type": "password"},
+        help_text="Your account password. Required — deletion cannot be undone.",
+    )
+
+    def validate_password(self, value: str) -> str:
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is None or not user.check_password(value):
+            # A ValidationError, not a PermissionDenied: the caller *is*
+            # authenticated, and what is wrong is the field they sent. It also
+            # keeps the 403 in this API meaning exactly one thing — "not yours".
+            raise serializers.ValidationError("That password does not match this account.")
+        return value

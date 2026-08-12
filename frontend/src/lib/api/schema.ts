@@ -24,6 +24,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete the account and every child's data (§12.8)
+         * @description Irreversible and immediate. Requires the account password in the body. Export first if you want a copy — afterwards there is nothing left to export.
+         */
+        delete: operations["account_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Download everything we hold about your family (§12.8)
+         * @description A zip of JSON: the account, and for each child their profile and settings, their companion, every story **verbatim** with what they chose, every memory, their learning progress, their world map, every session report, and every safety incident we recorded about them.
+         *
+         *     Memory embeddings are omitted — they are machine representations of the sentences already in the bundle.
+         */
+        post: operations["account_export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/adventures/{adventure_id}/choice": {
         parameters: {
             query?: never;
@@ -466,6 +508,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/children/{child_id}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * This child's settings and controls (§12.7)
+         * @description The session cap, daily time window, intensity ceiling, avoid-topics, fears, voice/text switches and accessibility flags.
+         *
+         *     Returned **normalised**: what comes back is what the safety layer will actually enforce, not the raw stored column.
+         */
+        get: operations["child_settings_read"];
+        /**
+         * Replace this child's settings
+         * @description `GET`/`PATCH /children/{id}/settings` — the parent's controls.
+         *
+         *     Deliberately **not** consent-gated, and deliberately still owner-gated. See the
+         *     module docstring; `IsParentOwner` runs against the child before the row is
+         *     serialised, so a request from the wrong family cannot learn that this child
+         *     exists, let alone what their parent has forbidden.
+         */
+        put: operations["child_settings_replace"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change this child's settings
+         * @description Takes effect on the **next generation** — there is no cache to wait for. The prompt assembler, the independent classifier and the deterministic policy all read these values at the moment a beat is written or graded (§12.7, §13.4), and the wellbeing rules are read on every stream open (§13.6).
+         *
+         *     `accessibility` is merged rather than replaced, so sending one flag changes one flag.
+         */
+        patch: operations["child_settings_update"];
+        trace?: never;
+    };
     "/api/v1/children/{child_id}/transcripts": {
         parameters: {
             query?: never;
@@ -482,6 +561,30 @@ export interface paths {
          *     it is always in the same place in the request: before anything is read.
          */
         get: operations["child_transcripts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/wellbeing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * May a story start right now? (§13.6)
+         * @description `open: true` when the child is inside the daily time window their parent set, or when no window is set — which is the default.
+         *
+         *     `message` is the companion's own line for the closed case, so the child surface renders a warm scene rather than composing its own wording (§13). The child is **never** shown an error, a countdown, or a time; nothing in this response counts anything down.
+         *
+         *     Advisory to the client and enforced on the server: `POST /children/{id}/adventures` refuses a *new* story outside the window regardless of whether this was asked. A story already in progress is always allowed to reach its ending.
+         */
+        get: operations["child_wellbeing"];
         put?: never;
         post?: never;
         delete?: never;
@@ -615,6 +718,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/privacy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What we collect, why, and what we never do (§12.8)
+         * @description The plain-language disclosure (§12.8, §13.8).
+         *
+         *     Unauthenticated on purpose. A parent deciding whether to sign up has to be
+         *     able to read what we do with their child's data *before* they have an account,
+         *     and a privacy statement behind a login is a privacy statement written for
+         *     people who have already agreed.
+         */
+        get: operations["privacy_disclosure"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -627,6 +755,50 @@ export interface components {
          */
         AccessToken: {
             access: string;
+        };
+        /**
+         * @description §14.6's flags, as a declared shape rather than a free JSON blob.
+         *
+         *     Declared so the parent screen is generated from the schema and so an unknown
+         *     key is a 400 rather than a setting that silently does nothing — a toggle a
+         *     parent flips that has no effect is the exact failure §12.7 forbids.
+         */
+        Accessibility: {
+            /** @description Show everything spoken as text on the child's screen. */
+            captions?: boolean;
+            /** @description Still scenes: transitions, breathing and flourishes are disabled. */
+            reduced_motion?: boolean;
+            /** @description Render the child's story text in a dyslexia-friendly face. */
+            dyslexia_font?: boolean;
+            /** @description Raise contrast on the child surface. */
+            high_contrast?: boolean;
+            /**
+             * Format: double
+             * @description Narration volume, 0.0 to 1.0.
+             */
+            audio_volume?: number;
+        };
+        /**
+         * @description §14.6's flags, as a declared shape rather than a free JSON blob.
+         *
+         *     Declared so the parent screen is generated from the schema and so an unknown
+         *     key is a 400 rather than a setting that silently does nothing — a toggle a
+         *     parent flips that has no effect is the exact failure §12.7 forbids.
+         */
+        AccessibilityRequest: {
+            /** @description Show everything spoken as text on the child's screen. */
+            captions?: boolean;
+            /** @description Still scenes: transitions, breathing and flourishes are disabled. */
+            reduced_motion?: boolean;
+            /** @description Render the child's story text in a dyslexia-friendly face. */
+            dyslexia_font?: boolean;
+            /** @description Raise contrast on the child surface. */
+            high_contrast?: boolean;
+            /**
+             * Format: double
+             * @description Narration volume, 0.0 to 1.0.
+             */
+            audio_volume?: number;
         };
         /**
          * @description The companion, reduced to what the story client needs up front (§18.4).
@@ -793,6 +965,93 @@ export interface components {
             intensity_ceiling?: number;
             /** @description Minutes per sitting before the story starts winding down (§13.6). */
             session_cap_min?: number;
+        };
+        /**
+         * @description The parent's controls for one child (§7.13, §12.7).
+         *
+         *     A serializer of its own rather than a subset of `ChildSerializer`, for two
+         *     reasons that are really one. First, this is the write surface for the *safety*
+         *     controls, and a PATCH that could also move `birthdate` would let the settings
+         *     page silently change the age band every safety decision is keyed on. Second,
+         *     the settings screen is its own page with its own schema, and generating a form
+         *     from a serializer that also carries `created_at` and `age_out_of_range` means
+         *     hand-maintaining the list of what to render.
+         *
+         *     **Everything here is honored on the very next generation.** There is no cache
+         *     to invalidate and no denormalised copy to update: the assembler, the classifier
+         *     and the deterministic policy all read `profiles.settings.settings_for(child)`
+         *     at the moment a beat is generated or graded, and the orchestrator asks the same
+         *     function on every stream open. That is what makes "honored immediately" a
+         *     property of the architecture rather than a promise about cache TTLs.
+         */
+        ChildSettings: {
+            /** Format: uuid */
+            readonly id: string;
+            readonly first_name: string;
+            /** @description Things they are a little scared of. Handled gently, never used as a threat. */
+            fears?: string[];
+            /** @description Topics never to include. Copied verbatim into the safety layer. */
+            avoid_topics?: string[];
+            /** @description 0 = gentlest, 3 = most adventurous. Enforced in generation and in the guard. */
+            intensity_ceiling?: number;
+            /** @description Minutes per sitting, after which the story winds down to a warm close. */
+            session_cap_min?: number;
+            /**
+             * Format: time
+             * @description Local start of the daily window, or null.
+             */
+            time_window_start?: string | null;
+            /**
+             * Format: time
+             * @description Local end of the daily window, or null.
+             */
+            time_window_end?: string | null;
+            voice_on?: boolean;
+            text_on?: boolean;
+            accessibility?: components["schemas"]["Accessibility"];
+            /** Format: date-time */
+            readonly updated_at: string;
+        };
+        /**
+         * @description The parent's controls for one child (§7.13, §12.7).
+         *
+         *     A serializer of its own rather than a subset of `ChildSerializer`, for two
+         *     reasons that are really one. First, this is the write surface for the *safety*
+         *     controls, and a PATCH that could also move `birthdate` would let the settings
+         *     page silently change the age band every safety decision is keyed on. Second,
+         *     the settings screen is its own page with its own schema, and generating a form
+         *     from a serializer that also carries `created_at` and `age_out_of_range` means
+         *     hand-maintaining the list of what to render.
+         *
+         *     **Everything here is honored on the very next generation.** There is no cache
+         *     to invalidate and no denormalised copy to update: the assembler, the classifier
+         *     and the deterministic policy all read `profiles.settings.settings_for(child)`
+         *     at the moment a beat is generated or graded, and the orchestrator asks the same
+         *     function on every stream open. That is what makes "honored immediately" a
+         *     property of the architecture rather than a promise about cache TTLs.
+         */
+        ChildSettingsRequest: {
+            /** @description Things they are a little scared of. Handled gently, never used as a threat. */
+            fears?: string[];
+            /** @description Topics never to include. Copied verbatim into the safety layer. */
+            avoid_topics?: string[];
+            /** @description 0 = gentlest, 3 = most adventurous. Enforced in generation and in the guard. */
+            intensity_ceiling?: number;
+            /** @description Minutes per sitting, after which the story winds down to a warm close. */
+            session_cap_min?: number;
+            /**
+             * Format: time
+             * @description Local start of the daily window, or null.
+             */
+            time_window_start?: string | null;
+            /**
+             * Format: time
+             * @description Local end of the daily window, or null.
+             */
+            time_window_end?: string | null;
+            voice_on?: boolean;
+            text_on?: boolean;
+            accessibility?: components["schemas"]["AccessibilityRequest"];
         };
         /** @description The `202` body (§18.6). The consequence arrives on the stream, not here. */
         ChoiceAccepted: {
@@ -1066,6 +1325,47 @@ export interface components {
             session_cap_min?: number;
         };
         /**
+         * @description The parent's controls for one child (§7.13, §12.7).
+         *
+         *     A serializer of its own rather than a subset of `ChildSerializer`, for two
+         *     reasons that are really one. First, this is the write surface for the *safety*
+         *     controls, and a PATCH that could also move `birthdate` would let the settings
+         *     page silently change the age band every safety decision is keyed on. Second,
+         *     the settings screen is its own page with its own schema, and generating a form
+         *     from a serializer that also carries `created_at` and `age_out_of_range` means
+         *     hand-maintaining the list of what to render.
+         *
+         *     **Everything here is honored on the very next generation.** There is no cache
+         *     to invalidate and no denormalised copy to update: the assembler, the classifier
+         *     and the deterministic policy all read `profiles.settings.settings_for(child)`
+         *     at the moment a beat is generated or graded, and the orchestrator asks the same
+         *     function on every stream open. That is what makes "honored immediately" a
+         *     property of the architecture rather than a promise about cache TTLs.
+         */
+        PatchedChildSettingsRequest: {
+            /** @description Things they are a little scared of. Handled gently, never used as a threat. */
+            fears?: string[];
+            /** @description Topics never to include. Copied verbatim into the safety layer. */
+            avoid_topics?: string[];
+            /** @description 0 = gentlest, 3 = most adventurous. Enforced in generation and in the guard. */
+            intensity_ceiling?: number;
+            /** @description Minutes per sitting, after which the story winds down to a warm close. */
+            session_cap_min?: number;
+            /**
+             * Format: time
+             * @description Local start of the daily window, or null.
+             */
+            time_window_start?: string | null;
+            /**
+             * Format: time
+             * @description Local end of the daily window, or null.
+             */
+            time_window_end?: string | null;
+            voice_on?: boolean;
+            text_on?: boolean;
+            accessibility?: components["schemas"]["AccessibilityRequest"];
+        };
+        /**
          * @description * `warm_guide` - warm_guide
          *     * `brave_spark` - brave_spark
          *     * `calm_anchor` - calm_anchor
@@ -1077,6 +1377,25 @@ export interface components {
             key: components["schemas"]["PersonalityPresetEnum"];
             label: string;
             traits: string[];
+        };
+        /**
+         * @description The plain-language privacy statement (§12.8, §13.8).
+         *
+         *     Served from `apps.accounts.privacy` rather than written into the React page,
+         *     because every sentence in it is a claim about what this server does and the
+         *     two have to change together. See that module.
+         */
+        PrivacyDisclosure: {
+            /** @description Bumped whenever a claim changes, so a parent can tell what they read. */
+            version: string;
+            headline: string;
+            sections: components["schemas"]["PrivacySection"][];
+        };
+        /** @description One section of the disclosure (§12.8). */
+        PrivacySection: {
+            id: string;
+            title: string;
+            body: string;
         };
         /**
          * @description One objective on the insights page (§12.3).
@@ -1262,6 +1581,23 @@ export interface components {
             movement: string;
             status: string;
         };
+        /**
+         * @description Whether a story may begin right now (§13.6).
+         *
+         *     Three fields, and what is *not* here is the design. There is no "minutes left",
+         *     no "you have played N times today", no next-open time and no streak: a
+         *     countdown on a four-year-old's screen is pressure, and pressure is the thing
+         *     §13.6 forbids. The parent sees the numbers, on the parent surface. The child
+         *     sees their companion having a rest.
+         */
+        Wellbeing: {
+            /** @description True when a new story may start. True whenever no window is set. */
+            open: boolean;
+            /** @description `time_window` when the daily window is shut, else empty. */
+            reason: string;
+            /** @description The companion's own line for the child, or empty when open. */
+            message: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -1286,6 +1622,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
+                };
+            };
+        };
+    };
+    account_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. The session is over. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    account_export: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
                 };
             };
         };
@@ -1765,6 +2138,81 @@ export interface operations {
             };
         };
     };
+    child_settings_read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChildSettings"];
+                };
+            };
+        };
+    };
+    child_settings_replace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ChildSettingsRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["ChildSettingsRequest"];
+                "multipart/form-data": components["schemas"]["ChildSettingsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChildSettings"];
+                };
+            };
+        };
+    };
+    child_settings_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PatchedChildSettingsRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["PatchedChildSettingsRequest"];
+                "multipart/form-data": components["schemas"]["PatchedChildSettingsRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChildSettings"];
+                };
+            };
+        };
+    };
     child_transcripts: {
         parameters: {
             query?: never;
@@ -1782,6 +2230,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TranscriptSummary"][];
+                };
+            };
+        };
+    };
+    child_wellbeing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Wellbeing"];
                 };
             };
         };
@@ -1944,6 +2413,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Me"];
+                };
+            };
+        };
+    };
+    privacy_disclosure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrivacyDisclosure"];
                 };
             };
         };

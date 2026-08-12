@@ -8,6 +8,7 @@ import {
   type ChildRequest,
   type CompanionRequest,
   type ConsentRecordRequest,
+  type PatchedChildSettingsRequest,
 } from './client';
 
 export const queryKeys = {
@@ -28,6 +29,9 @@ export const queryKeys = {
   memories: (childId: string) => ['memories', childId] as const,
   transcripts: (childId: string) => ['transcripts', childId] as const,
   transcript: (adventureId: string) => ['transcript', adventureId] as const,
+  childSettings: (childId: string) => ['child-settings', childId] as const,
+  wellbeing: (childId: string) => ['wellbeing', childId] as const,
+  privacy: ['privacy'] as const,
 };
 
 /**
@@ -242,15 +246,20 @@ export function useGreeting(childId: string | undefined) {
  *
  * `staleTime: Infinity`: within one mount, the adventure being told *is* the
  * adventure. Getting a different one means the current one finished.
+ *
+ * `ready` is the third belt, added on Day 13 for §13.6's time window: the caller
+ * holds this off until it knows a story may start, so a child arriving after
+ * bedtime never sends a request the server would refuse. The server refuses it
+ * anyway (`story.views.RestingHours`) — this only decides whether we knock.
  */
-export function useAdventure(childId: string | undefined) {
+export function useAdventure(childId: string | undefined, ready = true) {
   return useQuery({
     queryKey: queryKeys.adventure(childId ?? ''),
     queryFn: async ({ signal }) => {
       const resumed = await api.currentAdventure(childId as string, signal);
       return resumed ?? (await api.beginAdventure(childId as string));
     },
-    enabled: Boolean(childId),
+    enabled: Boolean(childId) && ready,
     staleTime: Infinity,
     // One retry. A story that silently starts three times over a flaky connection
     // costs three plans; the child sees the idle companion either way.
@@ -381,6 +390,125 @@ export function useDeleteChild() {
         queryClient.invalidateQueries({ queryKey: queryKeys.children }),
         queryClient.invalidateQueries({ queryKey: queryKeys.me }),
       ]);
+    },
+  });
+}
+
+/**
+ * Settings & controls (§12.7), and the wellbeing gate (§13.6).
+ */
+
+/**
+ * This child's controls, as the safety layer will actually enforce them.
+ *
+ * Read by two very different screens: the parent's settings form, and the child's
+ * story page (for the accessibility flags). That is why it is one hook rather than
+ * two endpoints — the settings a parent set and the settings the child experiences
+ * must be the same object, or a toggle that appears to work is a toggle that does
+ * not.
+ *
+ * `staleTime: 0` and a refetch on focus, deliberately against the pattern the
+ * dashboard reads use: a parent may have changed a control on another device or in
+ * another tab, and this is the one document in the product where showing a stale
+ * value is showing a *wrong safety setting*.
+ */
+export function useChildSettings(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.childSettings(childId ?? ''),
+    queryFn: ({ signal }) => api.childSettings(childId as string, signal),
+    enabled: enabled(childId),
+  });
+}
+
+export function useUpdateChildSettings(childId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (payload: PatchedChildSettingsRequest) =>
+      api.updateChildSettings(childId as string, payload),
+    // Seeded from the response rather than refetched: the server answers with the
+    // full normalised object, so the form immediately shows what will actually be
+    // enforced — including a value it clamped.
+    onSuccess: (settings) => {
+      queryClient.setQueryData(queryKeys.childSettings(childId ?? ''), settings);
+      // The child's profile carries the same three safety fields on `/children`,
+      // so a settings change makes that cache wrong too.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.children });
+    },
+  });
+}
+
+/**
+ * May a story start right now (§13.6)?
+ *
+ * Asked on the child surface before an adventure is requested, so a closed daily
+ * window becomes a warm scene rather than a failed request. **Not polled** — a
+ * countdown is precisely the pressure §13.6 forbids, and a child sitting in front
+ * of a resting companion must not have the screen change under them because a
+ * clock ticked over. It refetches when the page is revisited, which is when the
+ * question is actually being asked again.
+ */
+export function useWellbeing(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.wellbeing(childId ?? ''),
+    queryFn: ({ signal }) => api.wellbeing(childId as string, signal),
+    enabled: enabled(childId),
+    retry: 1,
+  });
+}
+
+/**
+ * The privacy disclosure (§12.8).
+ *
+ * Unauthenticated, and cached hard: it is a document that changes on deploys, not
+ * during a session.
+ */
+export function usePrivacyDisclosure() {
+  return useQuery({
+    queryKey: queryKeys.privacy,
+    queryFn: ({ signal }) => api.privacy(signal),
+    ...RECORD,
+  });
+}
+
+/**
+ * Export everything (§12.8), then hand the browser the file.
+ *
+ * The save happens here rather than in the page because it is the same three
+ * lines every caller would otherwise write, and because forgetting
+ * `revokeObjectURL` leaks a whole archive of a family's data into the tab's memory
+ * for as long as it stays open.
+ */
+export function useExportAccount() {
+  return useMutation({
+    mutationFn: async () => {
+      const { blob, filename } = await api.exportAccount();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      return filename;
+    },
+  });
+}
+
+/**
+ * Delete the account and everything in it (§12.8).
+ *
+ * `clear()` rather than invalidate: every cached query is about data that no
+ * longer exists, and refetching them would be a burst of 401s on the way out.
+ */
+export function useDeleteAccount() {
+  const queryClient = useQueryClient();
+  const logout = useAuthStore((state) => state.logout);
+
+  return useMutation({
+    mutationFn: (password: string) => api.deleteAccount(password),
+    onSuccess: async () => {
+      queryClient.clear();
+      await logout();
     },
   });
 }

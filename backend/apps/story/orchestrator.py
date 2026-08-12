@@ -117,13 +117,14 @@ from apps.memory import interest as memory_interest
 from apps.memory import retrieval as memory_retrieval
 from apps.memory.models import WorldPlace
 from apps.memory.tasks import consolidate, update_interests
+from apps.profiles import settings as child_settings
 from apps.profiles.models import Child
 from apps.safety import incidents as safety_incidents
 from apps.safety import pipeline as safety
 from apps.safety.models import Action, Severity
 from apps.safety.prompting import assembler
 from apps.safety.prompting.layers import render as render_layers
-from apps.story import worlds
+from apps.story import wellbeing, worlds
 from apps.story.ai import router as ai_router
 from apps.story.ai.prompts import story as story_prompts
 from apps.story.ai.schemas import Beat as BeatContract
@@ -452,10 +453,12 @@ def personalize(child: Child) -> Personalization:
         top_interests=interests,
         known_places=tuple(memory_interest.places_for(child)),
         recurring_characters=tuple(memory_interest.characters_for(child)),
-        # Read straight off the profile rather than derived. §11.6's ceiling is the
-        # parent's setting and nothing in this file may soften it — the only thing
-        # personalisation does with it is obey it.
-        fear_ceiling=child.intensity_ceiling,
+        # Read straight off the parent's settings rather than derived. §11.6's
+        # ceiling is the parent's setting and nothing in this file may soften it —
+        # the only thing personalisation does with it is obey it. It comes through
+        # `settings_for` from Day 13 so that this number, the number in the prompt
+        # and the number the output guard checks are one number (§12.7).
+        fear_ceiling=child_settings.settings_for(child).intensity_ceiling,
         setting=worlds.setting_for(child, interests),
     )
     logger.info(
@@ -762,8 +765,24 @@ def total_beats(adventure: Adventure) -> int:
 
 
 def is_final_seq(adventure: Adventure, seq: int) -> bool:
-    """Is the beat at this position the warm close (§8.8)?"""
-    return seq >= total_beats(adventure)
+    """Is the beat at this position the warm close (§8.8, §13.6)?
+
+    Two reasons a beat is the last one, and this is the single place both are
+    decided — because `build_beat_context`, `beat_payload`'s `isFinal`,
+    `normalise_choices` and `safe_fallback_beat` all ask this question, and a
+    story that ended in the prompt but not on the wire would leave a child holding
+    two choice cards under a goodbye.
+
+    1. **The plan ran out** — `seq` has reached the skeleton's length.
+    2. **The sitting reached the parent's cap** — `wellbeing.winding_down`. The
+       story is *landed*, not cut: this beat is generated under `FINAL_BEAT_RULE`
+       and `CAP_CLOSE_RULE`, so the companion resolves the story, says goodbye by
+       name and plants tomorrow's hook, exactly as a natural ending would (§13.6).
+
+    Deliberately read live rather than latched, so a parent who changes the cap
+    mid-sitting has changed it (§12.7).
+    """
+    return seq >= total_beats(adventure) or wellbeing.winding_down(adventure)
 
 
 def next_position(adventure: Adventure) -> tuple[int, Beat | None]:
@@ -952,6 +971,9 @@ def build_beat_context(
         beat_id=f"b{seq}",
         is_first=seq == 1,
         is_final=is_final_seq(adventure, seq),
+        # Empty unless the *cap* is what is ending this story, in which case the
+        # close gets §13.6's extra tone note on top of the ordinary close rule.
+        close_reason=wellbeing.close_reason(adventure),
         demand=demand,
         ask_now=seq in learning_seqs(adventure),
         stage=stage,
@@ -2122,7 +2144,12 @@ def end_adventure(
         locked.status = Adventure.Status.COMPLETED if completed else Adventure.Status.ABANDONED
         locked.completed_at = timezone.now()
         locked.save(update_fields=["status", "completed_at", "updated_at"])
-        _finalise_session(locked, reason)
+        # §13.6: a story that reached its natural end and one that was landed at
+        # the cap are both `completed` narratively and are two different facts
+        # about the child's afternoon. `ended_reason` is the column that keeps them
+        # apart, and the parent's report reads it — so it is decided here, from the
+        # clock, rather than taken from a client that has no way to know.
+        _finalise_session(locked, wellbeing.ended_reason_for(locked, reason))
         # Inside the transaction that closed the sitting, so the enqueue cannot
         # happen for a close that rolled back — and so a client sending `end`
         # twice enqueues once, because the second call returned at the guard above.

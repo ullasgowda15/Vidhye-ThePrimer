@@ -63,7 +63,7 @@ from apps.accounts.models import User
 from apps.common.permissions import IsParentOwner
 from apps.companion.models import Companion
 from apps.profiles.models import Child
-from apps.story import orchestrator, streaming
+from apps.story import orchestrator, streaming, wellbeing
 from apps.story.models import Adventure
 from apps.story.serializers import (
     AdventureEndRequestSerializer,
@@ -72,12 +72,33 @@ from apps.story.serializers import (
     AdventureStartSerializer,
     ChoiceAcceptedSerializer,
     ChoiceRequestSerializer,
+    WellbeingSerializer,
     start_payload,
 )
 
 logger = logging.getLogger(__name__)
 
 STREAM_CONTENT_TYPE = "text/event-stream"
+
+
+class RestingHours(APIException):
+    """The parent's daily time window is closed (§13.6).
+
+    **403 rather than 200-with-a-flag, and the child never sees it.** The child
+    surface asks `GET …/wellbeing` on mount and renders the companion resting —
+    a scene, with the companion's own line in it, never an error (§13). This
+    status is the *backstop* under that: a client that skips the read, a second
+    device, a stale tab, a script. Making the door a real refusal rather than a
+    convention is what stops "we asked the client not to" from being the whole
+    enforcement.
+
+    `detail` carries the companion's line, so even a caller that renders the error
+    body renders something warm.
+    """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    default_detail = "Stories are resting just now."
+    default_code = "outside_time_window"
 
 
 class CompanionRequired(APIException):
@@ -159,6 +180,22 @@ class AdventureStartView(AdventureChildView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        # §13.6, and the condition is the point: the window is checked **only when
+        # this request would start a new story**. A child already in one is allowed
+        # to reach their warm close even if the window shut while they were playing,
+        # because nothing in this product takes something away mid-sentence
+        # (`story.wellbeing`). Checked before the plan call, so a refusal costs
+        # nothing.
+        #
+        # The extra read this costs is one indexed query on the story-start path,
+        # and it is the same question `resume_or_create_adventure` asks again under
+        # its lock. Racing it is harmless: a second request that slips through here
+        # is handed the first request's adventure rather than starting its own.
+        if orchestrator.current_adventure(child) is None:
+            gate = wellbeing.gate_for(child)
+            if not gate.open:
+                raise RestingHours(detail=gate.message)
+
         adventure, created = orchestrator.resume_or_create_adventure(child)
         return Response(
             AdventureStartSerializer(self.payload_for(adventure)).data,
@@ -196,6 +233,49 @@ class AdventureCurrentView(AdventureChildView):
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         return Response(AdventureStartSerializer(self.payload_for(adventure)).data)
+
+
+@extend_schema_view(
+    get=extend_schema(
+        operation_id="child_wellbeing",
+        summary="May a story start right now? (§13.6)",
+        description=(
+            "`open: true` when the child is inside the daily time window their "
+            "parent set, or when no window is set — which is the default.\n\n"
+            "`message` is the companion's own line for the closed case, so the "
+            "child surface renders a warm scene rather than composing its own "
+            "wording (§13). The child is **never** shown an error, a countdown, or "
+            "a time; nothing in this response counts anything down.\n\n"
+            "Advisory to the client and enforced on the server: "
+            "`POST /children/{id}/adventures` refuses a *new* story outside the "
+            "window regardless of whether this was asked. A story already in "
+            "progress is always allowed to reach its ending."
+        ),
+        responses=WellbeingSerializer,
+    )
+)
+class ChildWellbeingView(AdventureChildView):
+    """What the child surface asks before it asks for a story.
+
+    A read, so a client may call it as often as it likes, and it costs no
+    generation. It shares `AdventureChildView`'s ownership + consent + companion
+    checks because it is answered from the same place in the request as the start
+    endpoint — a client must not be able to learn a child's play window through a
+    door the start endpoint would have closed.
+    """
+
+    serializer_class = WellbeingSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "adventure_read"
+
+    def get(self, request: Request, child_id: str, *args: Any, **kwargs: Any) -> Response:
+        child = self.child_for(request, child_id)
+        gate = wellbeing.gate_for(child)
+        return Response(
+            WellbeingSerializer(
+                {"open": gate.open, "reason": gate.reason, "message": gate.message}
+            ).data
+        )
 
 
 class AdventureScopedView(GenericAPIView):

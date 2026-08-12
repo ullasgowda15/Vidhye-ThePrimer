@@ -25,6 +25,14 @@ export type Me = components['schemas']['Me'];
 export type Child = components['schemas']['Child'];
 export type ChildRequest = components['schemas']['ChildRequest'];
 export type PatchedChildRequest = components['schemas']['PatchedChildRequest'];
+/** The parent's controls for one child (§7.13, §12.7). */
+export type ChildSettings = components['schemas']['ChildSettings'];
+export type PatchedChildSettingsRequest = components['schemas']['PatchedChildSettingsRequest'];
+export type Accessibility = components['schemas']['Accessibility'];
+/** May a story start right now (§13.6)? */
+export type Wellbeing = components['schemas']['Wellbeing'];
+/** The plain-language privacy statement (§12.8). */
+export type PrivacyDisclosure = components['schemas']['PrivacyDisclosure'];
 export type SignupRequest = components['schemas']['SignupRequest'];
 export type SignupResponse = components['schemas']['SignupResponse'];
 /** Login and refresh both return this: an access token, and nothing else. */
@@ -238,21 +246,19 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 /**
- * Open an authenticated streaming GET, refreshing once on a 401.
+ * An authenticated request whose body this module must **not** read.
  *
- * The beat stream is the one authenticated call that cannot go through
- * `request()` — that function reads the whole body to parse it, which is exactly
- * what a stream must not do. So it went out with a bare `fetch` and a token, and
- * therefore had no silent refresh: an access token that expired in the seconds
- * before the stream opened left the child looking at a thinking companion forever,
- * with a 401 nobody could act on. Access tokens live fifteen minutes and a child's
- * session is longer than that, so this is a routine event, not an edge case.
+ * `request()` parses the whole body to return typed JSON, which is exactly wrong
+ * for the two calls that are not JSON: the beat stream, which must not be
+ * buffered, and the data export, which is a binary archive. Both still need the
+ * silent-refresh-and-retry that `request()` provides — without it, an access token
+ * that expired in the seconds before the call left the child looking at a thinking
+ * companion forever (that is the real bug this was extracted from), and would
+ * leave a parent with a failed download for the same reason.
  *
- * The response is returned unread. The caller consumes `response.body`.
+ * The response is returned unread; the caller decides what to do with it.
  */
-export async function openStream(path: string, signal?: AbortSignal): Promise<Response> {
-  const options: RequestOptions = { accept: 'text/event-stream', signal };
-
+async function sendAuthenticated(path: string, options: RequestOptions): Promise<Response> {
   let response = await send(path, options, bridge.accessToken());
   if (response.status === 401) {
     const refreshed = await bridge.refresh();
@@ -263,6 +269,11 @@ export async function openStream(path: string, signal?: AbortSignal): Promise<Re
     }
   }
   return response;
+}
+
+/** Open the beat stream (§18.5). See `sendAuthenticated`. */
+export function openStream(path: string, signal?: AbortSignal): Promise<Response> {
+  return sendAuthenticated(path, { accept: 'text/event-stream', signal });
 }
 
 export const api = {
@@ -316,6 +327,79 @@ export const api = {
     request<Child>(`${V1}/children/${id}`, { method: 'PATCH', body: payload }),
 
   deleteChild: (id: string) => request<null>(`${V1}/children/${id}`, { method: 'DELETE' }),
+
+  // --- settings & controls (§12.7) -----------------------------------------
+
+  /** This child's controls, **as the safety layer will actually enforce them**. */
+  childSettings: (childId: string, signal?: AbortSignal) =>
+    request<ChildSettings>(`${V1}/children/${childId}/settings`, { signal }),
+
+  /**
+   * Change one or more controls (§12.7).
+   *
+   * Takes effect on the next generation — there is no cache anywhere between this
+   * and the prompt assembler, the safety classifier or the deterministic guard.
+   * `accessibility` is merged server-side, so sending one flag changes one flag.
+   */
+  updateChildSettings: (childId: string, payload: PatchedChildSettingsRequest) =>
+    request<ChildSettings>(`${V1}/children/${childId}/settings`, {
+      method: 'PATCH',
+      body: payload,
+    }),
+
+  /**
+   * May a story start right now (§13.6)?
+   *
+   * Asked by the child surface *before* it asks for an adventure, so a closed
+   * time window becomes a warm scene instead of a failed request. Advisory here
+   * and enforced on the server: the start endpoint refuses a new story outside
+   * the window whether or not this was called.
+   */
+  wellbeing: (childId: string, signal?: AbortSignal) =>
+    request<Wellbeing>(`${V1}/children/${childId}/wellbeing`, { signal }),
+
+  // --- privacy centre (§12.8) ----------------------------------------------
+
+  /** The plain-language disclosure. Readable without an account, deliberately. */
+  privacy: (signal?: AbortSignal) =>
+    request<PrivacyDisclosure>(`${V1}/privacy`, { signal, authenticated: false }),
+
+  /**
+   * Download everything we hold about this family, as a zip (§12.8).
+   *
+   * The one call that does not go through `request()`: that function parses the
+   * body as JSON, and this body is a binary archive. A POST rather than a GET so
+   * it is never a cacheable, history-recorded, cross-site-fetchable URL — see the
+   * view's own docstring.
+   *
+   * Returns the blob and the filename the server chose, so the caller can save it
+   * without inventing a name.
+   */
+  exportAccount: async (): Promise<{ blob: Blob; filename: string }> => {
+    const response = await sendAuthenticated(`${V1}/account/export`, {
+      method: 'POST',
+      accept: 'application/zip',
+    });
+    if (!response.ok) {
+      throw new ApiError(
+        `POST ${V1}/account/export failed`,
+        response.status,
+        await parseBody(response),
+      );
+    }
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const named = /filename="([^"]+)"/.exec(disposition)?.[1];
+    return { blob: await response.blob(), filename: named ?? 'primer-export.zip' };
+  },
+
+  /**
+   * Delete the account and every child's data (§12.8). Irreversible.
+   *
+   * The password is re-checked server-side: an access token on a shared tablet
+   * must not be enough to erase a family's stories.
+   */
+  deleteAccount: (password: string) =>
+    request<null>(`${V1}/account`, { method: 'DELETE', body: { password } }),
 
   companionCatalog: (signal?: AbortSignal) =>
     request<CompanionCatalog>(`${V1}/companion-catalog`, { signal }),

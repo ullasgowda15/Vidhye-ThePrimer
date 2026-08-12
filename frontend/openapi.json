@@ -28,6 +28,60 @@
                 }
             }
         },
+        "/api/v1/account": {
+            "delete": {
+                "operationId": "account_delete",
+                "description": "Irreversible and immediate. Requires the account password in the body. Export first if you want a copy — afterwards there is nothing left to export.",
+                "summary": "Delete the account and every child's data (§12.8)",
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Deleted. The session is over."
+                    }
+                }
+            }
+        },
+        "/api/v1/account/export": {
+            "post": {
+                "operationId": "account_export",
+                "description": "A zip of JSON: the account, and for each child their profile and settings, their companion, every story **verbatim** with what they chose, every memory, their learning progress, their world map, every session report, and every safety incident we recorded about them.\n\nMemory embeddings are omitted — they are machine representations of the sentences already in the bundle.",
+                "summary": "Download everything we hold about your family (§12.8)",
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/zip": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
         "/api/v1/adventures/{adventure_id}/choice": {
             "post": {
                 "operationId": "adventure_choice",
@@ -929,6 +983,163 @@
                 }
             }
         },
+        "/api/v1/children/{child_id}/settings": {
+            "get": {
+                "operationId": "child_settings_read",
+                "description": "The session cap, daily time window, intensity ceiling, avoid-topics, fears, voice/text switches and accessibility flags.\n\nReturned **normalised**: what comes back is what the safety layer will actually enforce, not the raw stored column.",
+                "summary": "This child's settings and controls (§12.7)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChildSettings"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            },
+            "put": {
+                "operationId": "child_settings_replace",
+                "description": "`GET`/`PATCH /children/{id}/settings` — the parent's controls.\n\nDeliberately **not** consent-gated, and deliberately still owner-gated. See the\nmodule docstring; `IsParentOwner` runs against the child before the row is\nserialised, so a request from the wrong family cannot learn that this child\nexists, let alone what their parent has forbidden.",
+                "summary": "Replace this child's settings",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChildSettingsRequest"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChildSettingsRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ChildSettingsRequest"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChildSettings"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            },
+            "patch": {
+                "operationId": "child_settings_update",
+                "description": "Takes effect on the **next generation** — there is no cache to wait for. The prompt assembler, the independent classifier and the deterministic policy all read these values at the moment a beat is written or graded (§12.7, §13.4), and the wellbeing rules are read on every stream open (§13.6).\n\n`accessibility` is merged rather than replaced, so sending one flag changes one flag.",
+                "summary": "Change this child's settings",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PatchedChildSettingsRequest"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PatchedChildSettingsRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PatchedChildSettingsRequest"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ChildSettings"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
         "/api/v1/children/{child_id}/transcripts": {
             "get": {
                 "operationId": "child_transcripts",
@@ -965,6 +1176,47 @@
                                     "items": {
                                         "$ref": "#/components/schemas/TranscriptSummary"
                                     }
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/wellbeing": {
+            "get": {
+                "operationId": "child_wellbeing",
+                "description": "`open: true` when the child is inside the daily time window their parent set, or when no window is set — which is the default.\n\n`message` is the companion's own line for the closed case, so the child surface renders a warm scene rather than composing its own wording (§13). The child is **never** shown an error, a countdown, or a time; nothing in this response counts anything down.\n\nAdvisory to the client and enforced on the server: `POST /children/{id}/adventures` refuses a *new* story outside the window regardless of whether this was asked. A story already in progress is always allowed to reach its ending.",
+                "summary": "May a story start right now? (§13.6)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Wellbeing"
                                 }
                             }
                         },
@@ -1275,6 +1527,28 @@
                     }
                 }
             }
+        },
+        "/api/v1/privacy": {
+            "get": {
+                "operationId": "privacy_disclosure",
+                "description": "The plain-language disclosure (§12.8, §13.8).\n\nUnauthenticated on purpose. A parent deciding whether to sign up has to be\nable to read what we do with their child's data *before* they have an account,\nand a privacy statement behind a login is a privacy statement written for\npeople who have already agreed.",
+                "summary": "What we collect, why, and what we never do (§12.8)",
+                "tags": [
+                    "v1"
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PrivacyDisclosure"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
         }
     },
     "components": {
@@ -1290,6 +1564,64 @@
                 "required": [
                     "access"
                 ]
+            },
+            "Accessibility": {
+                "type": "object",
+                "description": "§14.6's flags, as a declared shape rather than a free JSON blob.\n\nDeclared so the parent screen is generated from the schema and so an unknown\nkey is a 400 rather than a setting that silently does nothing — a toggle a\nparent flips that has no effect is the exact failure §12.7 forbids.",
+                "properties": {
+                    "captions": {
+                        "type": "boolean",
+                        "description": "Show everything spoken as text on the child's screen."
+                    },
+                    "reduced_motion": {
+                        "type": "boolean",
+                        "description": "Still scenes: transitions, breathing and flourishes are disabled."
+                    },
+                    "dyslexia_font": {
+                        "type": "boolean",
+                        "description": "Render the child's story text in a dyslexia-friendly face."
+                    },
+                    "high_contrast": {
+                        "type": "boolean",
+                        "description": "Raise contrast on the child surface."
+                    },
+                    "audio_volume": {
+                        "type": "number",
+                        "format": "double",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "description": "Narration volume, 0.0 to 1.0."
+                    }
+                }
+            },
+            "AccessibilityRequest": {
+                "type": "object",
+                "description": "§14.6's flags, as a declared shape rather than a free JSON blob.\n\nDeclared so the parent screen is generated from the schema and so an unknown\nkey is a 400 rather than a setting that silently does nothing — a toggle a\nparent flips that has no effect is the exact failure §12.7 forbids.",
+                "properties": {
+                    "captions": {
+                        "type": "boolean",
+                        "description": "Show everything spoken as text on the child's screen."
+                    },
+                    "reduced_motion": {
+                        "type": "boolean",
+                        "description": "Still scenes: transitions, breathing and flourishes are disabled."
+                    },
+                    "dyslexia_font": {
+                        "type": "boolean",
+                        "description": "Render the child's story text in a dyslexia-friendly face."
+                    },
+                    "high_contrast": {
+                        "type": "boolean",
+                        "description": "Raise contrast on the child surface."
+                    },
+                    "audio_volume": {
+                        "type": "number",
+                        "format": "double",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "description": "Narration volume, 0.0 to 1.0."
+                    }
+                }
             },
             "AdventureCompanion": {
                 "type": "object",
@@ -1647,6 +1979,139 @@
                     "birthdate",
                     "first_name"
                 ]
+            },
+            "ChildSettings": {
+                "type": "object",
+                "description": "The parent's controls for one child (§7.13, §12.7).\n\nA serializer of its own rather than a subset of `ChildSerializer`, for two\nreasons that are really one. First, this is the write surface for the *safety*\ncontrols, and a PATCH that could also move `birthdate` would let the settings\npage silently change the age band every safety decision is keyed on. Second,\nthe settings screen is its own page with its own schema, and generating a form\nfrom a serializer that also carries `created_at` and `age_out_of_range` means\nhand-maintaining the list of what to render.\n\n**Everything here is honored on the very next generation.** There is no cache\nto invalidate and no denormalised copy to update: the assembler, the classifier\nand the deterministic policy all read `profiles.settings.settings_for(child)`\nat the moment a beat is generated or graded, and the orchestrator asks the same\nfunction on every stream open. That is what makes \"honored immediately\" a\nproperty of the architecture rather than a promise about cache TTLs.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "readOnly": true
+                    },
+                    "first_name": {
+                        "type": "string",
+                        "readOnly": true
+                    },
+                    "fears": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 60
+                        },
+                        "description": "Things they are a little scared of. Handled gently, never used as a threat.",
+                        "maxItems": 10
+                    },
+                    "avoid_topics": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 60
+                        },
+                        "description": "Topics never to include. Copied verbatim into the safety layer.",
+                        "maxItems": 10
+                    },
+                    "intensity_ceiling": {
+                        "type": "integer",
+                        "maximum": 3,
+                        "minimum": 0,
+                        "description": "0 = gentlest, 3 = most adventurous. Enforced in generation and in the guard."
+                    },
+                    "session_cap_min": {
+                        "type": "integer",
+                        "maximum": 30,
+                        "minimum": 5,
+                        "description": "Minutes per sitting, after which the story winds down to a warm close."
+                    },
+                    "time_window_start": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Local start of the daily window, or null."
+                    },
+                    "time_window_end": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Local end of the daily window, or null."
+                    },
+                    "voice_on": {
+                        "type": "boolean"
+                    },
+                    "text_on": {
+                        "type": "boolean"
+                    },
+                    "accessibility": {
+                        "$ref": "#/components/schemas/Accessibility"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "readOnly": true
+                    }
+                },
+                "required": [
+                    "first_name",
+                    "id",
+                    "updated_at"
+                ]
+            },
+            "ChildSettingsRequest": {
+                "type": "object",
+                "description": "The parent's controls for one child (§7.13, §12.7).\n\nA serializer of its own rather than a subset of `ChildSerializer`, for two\nreasons that are really one. First, this is the write surface for the *safety*\ncontrols, and a PATCH that could also move `birthdate` would let the settings\npage silently change the age band every safety decision is keyed on. Second,\nthe settings screen is its own page with its own schema, and generating a form\nfrom a serializer that also carries `created_at` and `age_out_of_range` means\nhand-maintaining the list of what to render.\n\n**Everything here is honored on the very next generation.** There is no cache\nto invalidate and no denormalised copy to update: the assembler, the classifier\nand the deterministic policy all read `profiles.settings.settings_for(child)`\nat the moment a beat is generated or graded, and the orchestrator asks the same\nfunction on every stream open. That is what makes \"honored immediately\" a\nproperty of the architecture rather than a promise about cache TTLs.",
+                "properties": {
+                    "fears": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 60
+                        },
+                        "description": "Things they are a little scared of. Handled gently, never used as a threat.",
+                        "maxItems": 10
+                    },
+                    "avoid_topics": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 60
+                        },
+                        "description": "Topics never to include. Copied verbatim into the safety layer.",
+                        "maxItems": 10
+                    },
+                    "intensity_ceiling": {
+                        "type": "integer",
+                        "maximum": 3,
+                        "minimum": 0,
+                        "description": "0 = gentlest, 3 = most adventurous. Enforced in generation and in the guard."
+                    },
+                    "session_cap_min": {
+                        "type": "integer",
+                        "maximum": 30,
+                        "minimum": 5,
+                        "description": "Minutes per sitting, after which the story winds down to a warm close."
+                    },
+                    "time_window_start": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Local start of the daily window, or null."
+                    },
+                    "time_window_end": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Local end of the daily window, or null."
+                    },
+                    "voice_on": {
+                        "type": "boolean"
+                    },
+                    "text_on": {
+                        "type": "boolean"
+                    },
+                    "accessibility": {
+                        "$ref": "#/components/schemas/AccessibilityRequest"
+                    }
+                }
             },
             "ChoiceAccepted": {
                 "type": "object",
@@ -2341,6 +2806,63 @@
                     }
                 }
             },
+            "PatchedChildSettingsRequest": {
+                "type": "object",
+                "description": "The parent's controls for one child (§7.13, §12.7).\n\nA serializer of its own rather than a subset of `ChildSerializer`, for two\nreasons that are really one. First, this is the write surface for the *safety*\ncontrols, and a PATCH that could also move `birthdate` would let the settings\npage silently change the age band every safety decision is keyed on. Second,\nthe settings screen is its own page with its own schema, and generating a form\nfrom a serializer that also carries `created_at` and `age_out_of_range` means\nhand-maintaining the list of what to render.\n\n**Everything here is honored on the very next generation.** There is no cache\nto invalidate and no denormalised copy to update: the assembler, the classifier\nand the deterministic policy all read `profiles.settings.settings_for(child)`\nat the moment a beat is generated or graded, and the orchestrator asks the same\nfunction on every stream open. That is what makes \"honored immediately\" a\nproperty of the architecture rather than a promise about cache TTLs.",
+                "properties": {
+                    "fears": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 60
+                        },
+                        "description": "Things they are a little scared of. Handled gently, never used as a threat.",
+                        "maxItems": 10
+                    },
+                    "avoid_topics": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 60
+                        },
+                        "description": "Topics never to include. Copied verbatim into the safety layer.",
+                        "maxItems": 10
+                    },
+                    "intensity_ceiling": {
+                        "type": "integer",
+                        "maximum": 3,
+                        "minimum": 0,
+                        "description": "0 = gentlest, 3 = most adventurous. Enforced in generation and in the guard."
+                    },
+                    "session_cap_min": {
+                        "type": "integer",
+                        "maximum": 30,
+                        "minimum": 5,
+                        "description": "Minutes per sitting, after which the story winds down to a warm close."
+                    },
+                    "time_window_start": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Local start of the daily window, or null."
+                    },
+                    "time_window_end": {
+                        "type": "string",
+                        "format": "time",
+                        "nullable": true,
+                        "description": "Local end of the daily window, or null."
+                    },
+                    "voice_on": {
+                        "type": "boolean"
+                    },
+                    "text_on": {
+                        "type": "boolean"
+                    },
+                    "accessibility": {
+                        "$ref": "#/components/schemas/AccessibilityRequest"
+                    }
+                }
+            },
             "PersonalityPresetEnum": {
                 "enum": [
                     "warm_guide",
@@ -2371,6 +2893,50 @@
                     "key",
                     "label",
                     "traits"
+                ]
+            },
+            "PrivacyDisclosure": {
+                "type": "object",
+                "description": "The plain-language privacy statement (§12.8, §13.8).\n\nServed from `apps.accounts.privacy` rather than written into the React page,\nbecause every sentence in it is a claim about what this server does and the\ntwo have to change together. See that module.",
+                "properties": {
+                    "version": {
+                        "type": "string",
+                        "description": "Bumped whenever a claim changes, so a parent can tell what they read."
+                    },
+                    "headline": {
+                        "type": "string"
+                    },
+                    "sections": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PrivacySection"
+                        }
+                    }
+                },
+                "required": [
+                    "headline",
+                    "sections",
+                    "version"
+                ]
+            },
+            "PrivacySection": {
+                "type": "object",
+                "description": "One section of the disclosure (§12.8).",
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "body": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "body",
+                    "id",
+                    "title"
                 ]
             },
             "Progress": {
@@ -2922,6 +3488,29 @@
                     "movement",
                     "objective",
                     "status"
+                ]
+            },
+            "Wellbeing": {
+                "type": "object",
+                "description": "Whether a story may begin right now (§13.6).\n\nThree fields, and what is *not* here is the design. There is no \"minutes left\",\nno \"you have played N times today\", no next-open time and no streak: a\ncountdown on a four-year-old's screen is pressure, and pressure is the thing\n§13.6 forbids. The parent sees the numbers, on the parent surface. The child\nsees their companion having a rest.",
+                "properties": {
+                    "open": {
+                        "type": "boolean",
+                        "description": "True when a new story may start. True whenever no window is set."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "`time_window` when the daily window is shut, else empty."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The companion's own line for the child, or empty when open."
+                    }
+                },
+                "required": [
+                    "message",
+                    "open",
+                    "reason"
                 ]
             }
         },

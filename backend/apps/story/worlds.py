@@ -52,6 +52,7 @@ from django.utils import timezone
 from apps.memory.interest import Topic
 from apps.memory.models import WorldPlace
 from apps.profiles.models import Child
+from apps.profiles.settings import settings_for
 
 logger = logging.getLogger(__name__)
 
@@ -370,11 +371,10 @@ def select_world(child: Child, interests: Sequence[Topic]) -> World:
     somebody adds a world of dusk-lit places is the day a three-year-old would
     otherwise be sent to one.
     """
-    reachable = [world for world in WORLDS if _reachable(world, child.intensity_ceiling)]
+    ceiling = settings_for(child).intensity_ceiling
+    reachable = [world for world in WORLDS if _reachable(world, ceiling)]
     if not reachable:
-        logger.error(
-            "story.no_world_for_ceiling child=%s ceiling=%s", child.pk, child.intensity_ceiling
-        )
+        logger.error("story.no_world_for_ceiling child=%s ceiling=%s", child.pk, ceiling)
         return DEFAULT_WORLD
 
     visits = _visits_by_world(child)
@@ -409,7 +409,7 @@ def select_place(child: Child, world: World) -> Setting:
     the revisit branch, because a parent who lowers the ceiling has changed where
     their child may go, not merely where they may go next.
     """
-    ceiling = child.intensity_ceiling
+    ceiling = settings_for(child).intensity_ceiling
     known = [row for row in _known_places(child, world) if _intensity_of(row) <= ceiling]
     unseen = [
         place
@@ -462,17 +462,16 @@ def _elsewhere(child: Child, *, exclude: World) -> Setting:
     gentlest place in the registry is both the safest answer available and something
     an operator needs to see in the log.
     """
+    ceiling = settings_for(child).intensity_ceiling
     candidates = [
         (world, place)
         for world in WORLDS
         if world is not exclude
         for place in world.places
-        if place.intensity <= child.intensity_ceiling
+        if place.intensity <= ceiling
     ]
     if not candidates:
-        logger.error(
-            "story.ceiling_out_of_range child=%s ceiling=%s", child.pk, child.intensity_ceiling
-        )
+        logger.error("story.ceiling_out_of_range child=%s ceiling=%s", child.pk, ceiling)
         candidates = [
             (world, place)
             for world in WORLDS

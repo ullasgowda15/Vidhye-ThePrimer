@@ -22,6 +22,15 @@ happened in it. That ordering is the same one the greeting endpoint uses and it 
 load-bearing for the same reason (§11.10): the sensitive thing here is not the
 payload, it is the fact of it.
 
+**Ownership, and deliberately not consent.** Through Day 12 these reads also
+required an active consent record, which meant a parent whose consent had lapsed
+could not open their own child's transparency log — the screen §12.8 says is where
+data rights are exercised. §13.7 grants the parent the right to read, export and
+delete *at all times*; consent gates what we may **do** with a child's data, not
+what a parent may **see** of it. The gate therefore stays on the processing paths
+(`profiles.views` on create, `story.views` on generation) and is off here. The
+full argument is in `apps.accounts.consent`.
+
 **They are all reads.** The one exception is invisible and deliberate: asking for a
 report that was never generated generates it (`reports.report_for_session`), so a
 broker outage on the evening a child played does not leave a permanent hole in the
@@ -35,7 +44,7 @@ child to read (§14.2).
 from __future__ import annotations
 
 import datetime
-from typing import Any, cast
+from typing import Any
 
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
@@ -45,8 +54,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from apps.accounts.consent import require_consent
-from apps.accounts.models import User
 from apps.analytics import reports, skills, transparency
 from apps.analytics.models import SessionReport
 from apps.analytics.serializers import (
@@ -88,7 +95,6 @@ class ParentChildView(GenericAPIView):
     def child_for(self, request: Request, child_id: Any) -> Child:
         child = get_object_or_404(Child, pk=child_id)
         self.check_object_permissions(request, child)
-        require_consent(cast(User, request.user))
         return child
 
 
@@ -329,6 +335,10 @@ class TranscriptView(GenericAPIView):
         # Against the adventure, whose `child.parent_id` is what `IsParentOwner`
         # walks to. Checked before a single beat is read — the transcript is the
         # most sensitive read in the product after retrieval itself.
+        #
+        # Ownership and nothing else, for the reason `accounts.consent` sets out:
+        # this is the §12.6 transparency log, and a parent who has withdrawn
+        # consent has *more* claim to read what was already generated about their
+        # child, not less.
         self.check_object_permissions(request, adventure)
-        require_consent(cast(User, request.user))
         return Response(TranscriptSerializer(transparency.transcript_for(adventure)).data)

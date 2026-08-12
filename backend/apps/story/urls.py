@@ -11,6 +11,7 @@ from apps.story.views import (
     AdventureCurrentView,
     AdventureEndView,
     AdventureStartView,
+    ChildWellbeingView,
     adventure_stream,
 )
 
@@ -19,6 +20,11 @@ urlpatterns = [
         "children/<uuid:child_id>/adventures",
         AdventureStartView.as_view(),
         name="adventure-start",
+    ),
+    path(
+        "children/<uuid:child_id>/wellbeing",
+        ChildWellbeingView.as_view(),
+        name="child-wellbeing",
     ),
     path(
         "children/<uuid:child_id>/adventures/current",
