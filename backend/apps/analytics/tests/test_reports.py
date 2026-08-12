@@ -56,6 +56,39 @@ def _snapshot_last_week(
     )
 
 
+def _snapshot(child: Any, *, days_ago: int, entries: list[dict[str, Any]]) -> SessionReport:
+    """A report dated `days_ago`, carrying exactly these skill entries.
+
+    The general form of `_snapshot_last_week`, for the tests that need a *history*
+    rather than a single baseline — specifically the ones about an objective the
+    child practised weeks ago with other objectives in between, which is the
+    ordinary shape of a real child's history and the one §10.3's interleaving
+    guarantees.
+    """
+    return SessionReport.objects.create(
+        child=child,
+        session_key=uuid.uuid4(),
+        occurred_at=timezone.now() - datetime.timedelta(days=days_ago),
+        ended_reason="completed",
+        skills=entries,
+    )
+
+
+def _entry(code: str, *, mastery: float, status: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "code": code,
+        "domain": "numeracy",
+        "milestone": "Counting and quantity",
+        "asks": 2,
+        "unaided": 2,
+        "assisted": 0,
+        "retried": 0,
+        "mastery": mastery,
+        "status": status,
+        **extra,
+    }
+
+
 def _row_for(weekly: reports.WeeklyReport, code: str) -> dict[str, Any]:
     return next(row for row in weekly.skills if row["objective"] == code)
 
@@ -115,6 +148,34 @@ def test_the_key_choice_is_a_card_the_child_took_and_not_one_they_left(aarav, fa
             taken.add(label)
 
     assert any(label in report.key_choice for label in taken)
+
+
+def test_the_key_choice_says_what_the_story_did_and_not_what_we_told_it_to_do(
+    aarav, fake_ai
+) -> None:
+    """`Choice.consequence_summary` is written for the next generation, not a parent.
+
+    It is in machine register and it carries `Beat.next_hint` — our private
+    instruction to the writer. Rendered on the report page it read *"…The beat's
+    own steer for what follows: if the child counts -> cross the river"*, which is
+    the product's seams showing on the one surface that is a recap.
+    """
+    adventure = play(aarav, correct=True)
+    session = finish(adventure)
+
+    report = reports.generate_session_report(session)
+
+    assert report.key_choice
+    assert "steer for what follows" not in report.key_choice
+    assert "At beat" not in report.key_choice
+    for beat in Beat.objects.filter(adventure=adventure):
+        assert not beat.next_hint or beat.next_hint not in report.key_choice
+    # What came of it is the story's own next line, so it is quotable from a beat.
+    narrations = " ".join(
+        beat.narration for beat in Beat.objects.filter(adventure=adventure).order_by("seq")
+    )
+    said = report.key_choice.split("What happened next: ")[-1].rstrip("…")
+    assert said in narrations
 
 
 def test_a_sitting_that_never_branched_claims_no_key_choice(aarav, fake_ai) -> None:
@@ -308,6 +369,61 @@ def test_the_highlight_never_calls_a_provider_when_there_is_nothing_to_point_at(
     assert fake_ai.highlight_calls == 0
 
 
+def test_our_own_scenery_is_not_something_the_child_did(aarav, fake_ai, monkeypatch) -> None:
+    """A moment has to be the child's (§12.1).
+
+    The setting and the cast are ours. A sentence grounded only on them is a
+    sentence about our own prose — and it used to pass the gate, be stored as
+    `model`, and be published under a line telling the parent it had been checked
+    against what actually happened.
+
+    Asserted where the defect lived: on the specifics `_highlight` hands the model,
+    which must contain nothing the child did not put there themselves.
+    """
+    seen: dict[str, set[str]] = {}
+
+    def spy(child: Any, digest: str, specifics: set[str]) -> str:
+        seen["specifics"] = specifics
+        return f"{child.first_name} named the little frog Sparkle."
+
+    monkeypatch.setattr(reports.prompts, "highlight_for", spy)
+    adventure = play(aarav, correct=True)
+    spoke(adventure, "Sparkle")
+    session = finish(adventure)
+
+    reports.generate_session_report(session)
+
+    scenery: set[str] = set()
+    for beat in Beat.objects.filter(adventure=adventure):
+        scene = beat.scene or {}
+        scenery.update(str(name) for name in (scene.get("characters_present") or []))
+        if setting := str(scene.get("setting") or "").strip():
+            scenery.add(setting)
+    assert scenery, "the fixture must have scenery for this test to mean anything"
+    assert not (scenery & seen["specifics"])
+
+    # …and the gate still rejects a sentence that names only our own prose.
+    assert not prompts.is_grounded(
+        "Aarav loved the mossy hollow at dawn — full of wonder.", "Aarav", seen["specifics"]
+    )
+    assert prompts.is_grounded("Aarav named the frog Sparkle.", "Aarav", seen["specifics"])
+
+
+def test_a_sitting_the_child_put_nothing_into_is_quiet_and_costs_nothing(aarav, fake_ai) -> None:
+    """A scene with a setting and a cast in it is still a sitting with no moment."""
+    from apps.story import orchestrator
+
+    adventure = orchestrator.create_adventure(aarav)
+    beat = orchestrator.create_beat(adventure, seq=1)
+    assert (beat.scene or {}).get("setting"), "the fixture must have scenery to be worth testing"
+    session = finish(adventure)
+
+    report = reports.generate_session_report(session)
+
+    assert fake_ai.highlight_calls == 0
+    assert report.highlight_source == HighlightSource.QUIET
+
+
 def test_the_generated_path_runs_end_to_end_against_a_provider(aarav, fake_ai) -> None:
     """The model branch, with nothing stubbed but the provider itself.
 
@@ -457,6 +573,73 @@ def test_a_milestone_reached_this_week_is_reported_in_plain_language(aarav, fake
     # §10.6: the parent hears the milestone, never the objective code.
     assert code not in milestone["name"]
     assert milestone["step"]
+
+
+def test_a_skill_practised_weeks_ago_is_not_reported_as_first_practised(aarav) -> None:
+    """The baseline is per objective, not "the last report before the week".
+
+    §10.3 interleaves domains, so the most recent report before any given week is
+    usually about a *different* objective. Reading that one row as the baseline
+    for everything makes a skill the child has practised for a month read as
+    brand new.
+    """
+    _snapshot(
+        aarav, days_ago=21, entries=[_entry("count_to_3", mastery=0.55, status=skills.MASTERED)]
+    )
+    # …and in between, a sitting about something else entirely.
+    _snapshot(
+        aarav,
+        days_ago=9,
+        entries=[
+            {
+                "code": "name_colours",
+                "domain": "vocabulary",
+                "milestone": "Words for the world",
+                "asks": 2,
+                "mastery": 0.5,
+                "status": skills.PRACTISING,
+            }
+        ],
+    )
+    _snapshot(
+        aarav, days_ago=0, entries=[_entry("count_to_3", mastery=0.64, status=skills.MASTERED)]
+    )
+
+    movement = _row_for(reports.generate_weekly_report(aarav), "count_to_3")["movement"]
+
+    assert movement != "first practised this week"
+    assert movement == "moved on this week"
+
+
+def test_a_milestone_crossed_weeks_ago_is_not_claimed_again_this_week(aarav) -> None:
+    """The same defect, in the form that tells a parent something false.
+
+    Mastered three weeks ago, practised again this week, with an unrelated sitting
+    in between. Without a per-objective baseline the digest announces "a step
+    reached" — every week, for as long as the child keeps touching it.
+    """
+    _snapshot(
+        aarav, days_ago=21, entries=[_entry("count_to_3", mastery=0.64, status=skills.MASTERED)]
+    )
+    _snapshot(
+        aarav,
+        days_ago=9,
+        entries=[
+            {
+                "code": "name_colours",
+                "domain": "vocabulary",
+                "milestone": "Words for the world",
+                "asks": 2,
+                "mastery": 0.5,
+                "status": skills.PRACTISING,
+            }
+        ],
+    )
+    _snapshot(
+        aarav, days_ago=0, entries=[_entry("count_to_3", mastery=0.64, status=skills.MASTERED)]
+    )
+
+    assert reports.generate_weekly_report(aarav).milestone is None
 
 
 def test_the_weeks_highlight_prefers_the_most_specific_real_moment(

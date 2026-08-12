@@ -17,11 +17,14 @@ asks for one sentence about one moment, and nothing else.
 
 **Nothing it returns is trusted.** `is_grounded` re-checks the sentence against the
 session's own specifics before it is stored: the child's name as we hold it, plus
-at least one thing that actually appears in the sitting — a card they took, a word
-they said, a number they answered, someone who was in the scene. A sentence that
-names none of them may be beautifully written and about nobody, and §13.9 is
-explicit that a confident falsehood told about a child is a real harm. It is
-rejected and the caller falls back to a sentence built out of columns.
+at least one thing **the child themselves put into the sitting** — a card they
+took, a word they said, a number they answered. Deliberately not the setting or
+the cast: those are ours, and a sentence grounded only on them is a sentence about
+our own writing dressed as a moment in a child's afternoon (see
+`reports._highlight`). A sentence that names none of the child's own specifics may
+be beautifully written and about nobody, and §13.9 is explicit that a confident
+falsehood told about a child is a real harm. It is rejected and the caller falls
+back to a sentence built out of columns.
 
 **"Nothing notable happened" is a correct answer.** §12.1 says honest, never
 inflated, and most sittings of a four-year-old are ordinary. The schema has a

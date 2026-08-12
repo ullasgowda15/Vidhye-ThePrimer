@@ -26,12 +26,19 @@ is the difference between two things we wrote down at the time — not a re-run 
 §10.5's arithmetic against today's catalog. When there is no earlier snapshot to
 compare against, the report says "first practised this week" rather than inventing
 a baseline, which is the same rule §13.9 applies to everything else here.
+
+The baseline is looked up **per objective** (`_baseline_index`) and not per report.
+That distinction is load-bearing rather than fussy: §10.3 interleaves domains, so
+the last report before a week is usually about something else entirely, and reading
+it as the baseline for everything makes "first practised this week" and "a step
+reached this week" into claims we make about skills the child has had for months.
 """
 
 from __future__ import annotations
 
 import datetime
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,6 +71,11 @@ MOVEMENT_EPSILON = 0.02
 #: further back than any parent scrolls in one sitting and is bounded.
 REPORT_PAGE = 60
 
+#: The longest "what happened next" may run in a session report. One sentence of
+#: the story's own narration; the rare very long one is trimmed at a word
+#: boundary, and the whole beat is a click away in the transparency log (§12.6).
+MAX_CONSEQUENCE_CHARS = 160
+
 #: How far back the interest trend looks. §11.7's own example is a month
 #: ("this month: space, then dinosaurs, now ocean") and the graph's half-life is
 #: 30 days, so two months is one full fade plus the phase before it — long enough
@@ -74,6 +86,16 @@ TREND_WINDOW_DAYS = 60
 #: How many phases the trend sentence names. Three is the shape of §11.7's own
 #: example and is where the sentence stops being readable.
 TREND_PHASES = 3
+
+#: How many past reports the weekly digest will read through looking for a
+#: baseline snapshot of the objectives practised this week.
+#:
+#: The walk stops as soon as every one of them has been found, so this bound is
+#: only reached by a child who practised something this week and *never* before —
+#: in which case "first practised this week" is the true answer anyway and the
+#: scan has cost one indexed query. Sized well past a year of daily play so the
+#: cap is a guard against an unbounded read rather than a limit on memory.
+BASELINE_SCAN = 400
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +220,23 @@ def _key_choice(beats: list[Beat], choices: dict[Any, Choice]) -> str:
     building toward, and the second is the one a parent recognises when their child
     tells them about it.
 
+    **What came of it is the next beat's own opening line, not
+    `Choice.consequence_summary`.** That column looks like the right one and is
+    not: `orchestrator.consequence_summary` writes it *for the next generation*,
+    so it is in machine register and it carries `Beat.next_hint` — our private
+    instruction to the writer. Rendered on a parent's page it reads
+    *"At beat 3, Aarav chose … The beat's own steer for what follows: if the child
+    counts -> cross the river"*, which is the seams of the product showing through
+    the one surface that is supposed to be a recap. The next beat's narration is
+    what actually happened next, in the story's words, and the parent can read the
+    rest of it verbatim one click away (§12.6).
+
     Empty when nothing branched. A sitting where the child only tapped to carry on
     had no key choice, and saying so by omission is better than promoting a
     "continue" tap into a decision.
     """
-    for beat in reversed(beats):
+    for index in range(len(beats) - 1, -1, -1):
+        beat = beats[index]
         if len(beat.options) < 2:
             continue
         choice = choices.get(beat.pk)
@@ -212,9 +246,29 @@ def _key_choice(beats: list[Beat], choices: dict[Any, Choice]) -> str:
         label = str((option or {}).get("label") or "").strip()
         if not label:
             continue
-        consequence = " ".join(str(choice.consequence_summary or "").split())
-        return f'Chose "{label}". {consequence}'.strip() if consequence else f'Chose "{label}".'
+        after = beats[index + 1] if index + 1 < len(beats) else None
+        consequence = _first_sentence(after.narration) if after is not None else ""
+        if consequence:
+            return f'Chose "{label}". What happened next: {consequence}'
+        return f'Chose "{label}".'
     return ""
+
+
+def _first_sentence(text: str) -> str:
+    """The opening sentence of a beat's narration, flattened and bounded.
+
+    Verbatim as far as it goes — this is story the child was actually told, and
+    the transparency log shows the whole of it — but one sentence, because the
+    report is a recap and a parent who wants the prose has a link to it.
+    """
+    flat = " ".join(str(text or "").split())
+    if not flat:
+        return ""
+    stop = re.search(r"[.!?]", flat)
+    sentence = flat[: stop.end()] if stop else flat
+    if len(sentence) <= MAX_CONSEQUENCE_CHARS:
+        return sentence
+    return sentence[:MAX_CONSEQUENCE_CHARS].rsplit(" ", 1)[0] + "…"
 
 
 # ---------------------------------------------------------------------------
@@ -354,11 +408,21 @@ def _highlight(
     four-year-old are ordinary; a product that produced a delighted sentence about
     every one of them would be producing noise, and a parent would learn to skip
     the line that matters.
+
+    **A moment has to be the child's.** The specifics a sentence may be grounded
+    on are what the child said, answered and chose — not the setting we wrote or
+    the characters we invented. Scenery used to be in this set, on the reasoning
+    that a sentence naming Bramble should not be rejected for it; but a sentence
+    that names *both* Bramble and something the child did already passes on the
+    child's half, so the only sentence scenery ever admitted was one about our own
+    prose — "Aarav loved the mossy riverbank at dawn", stored as `model` and
+    published under a line saying it was checked against what happened. That is
+    the sitting the `quiet` branch is for.
     """
     contributions = _child_contributions(beats, choices)
     fallback, fallback_source = _plain_highlight(child, contributions)
 
-    specifics = prompts.specifics_from(*(text for _, text in contributions), *_scenery(beats))
+    specifics = prompts.specifics_from(*(text for _, text in contributions))
     if not specifics:
         return fallback, fallback_source
 
@@ -410,24 +474,6 @@ def _child_contributions(beats: list[Beat], choices: dict[Any, Choice]) -> list[
         if len(beat.options) >= 2 and str(option.get("label") or "").strip():
             chose.append((CHOSE, str(option["label"]).strip()))
     return [*said, *answered, *chose]
-
-
-def _scenery(beats: list[Beat]) -> list[str]:
-    """Names from the sitting a true sentence could reach for.
-
-    Who was in the scene and where it was. Not the child's own contribution, so it
-    never grounds a highlight *on its own* — `_child_contributions` comes first in
-    the specifics set and a sentence about scenery alone is a sentence about our
-    writing, which the prompt already forbids. It is here so a true sentence about
-    a child helping Bramble is not rejected for naming Bramble.
-    """
-    names: list[str] = []
-    for beat in beats:
-        scene = beat.scene or {}
-        names.extend(str(name) for name in (scene.get("characters_present") or []))
-        if setting := str(scene.get("setting") or "").strip():
-            names.append(setting)
-    return names
 
 
 def _plain_highlight(child: Child, contributions: list[tuple[str, str]]) -> tuple[str, str]:
@@ -515,15 +561,8 @@ def generate_weekly_report(child: Child, week: datetime.date | None = None) -> W
         ).order_by("occurred_at")
     )
 
-    # The last report *before* this week, so a movement can be measured for an
-    # objective the child was already working on. None for a first week, which is
-    # what makes "first practised this week" an honest thing to say rather than a
-    # default.
-    baseline = (
-        SessionReport.objects.filter(child=child, occurred_at__date__lt=start)
-        .order_by("-occurred_at")
-        .first()
-    )
+    touched = _touched(reports)
+    before = _baseline_index(child, start, set(touched))
 
     completed = sum(1 for report in reports if report.ended_reason == "completed")
     live = {view.code: view for view in skills.skill_views(child)}
@@ -535,8 +574,8 @@ def generate_weekly_report(child: Child, week: datetime.date | None = None) -> W
         sessions=len(reports),
         completion_rate=round(completed / len(reports), 2) if reports else 0.0,
         highlight=_week_highlight(reports),
-        skills=_week_skills(reports, baseline, live),
-        milestone=_week_milestone(child, reports, baseline),
+        skills=_week_skills(touched, before, live),
+        milestone=_week_milestone(touched, before),
         interests_trend=[
             topic.name for topic in interest.top_interests(child, limit=TOP_INTERESTS)
         ],
@@ -561,16 +600,8 @@ def _week_highlight(reports: list[SessionReport]) -> str:
     return best.highlight
 
 
-def _snapshot_index(report: SessionReport | None) -> dict[str, dict[str, Any]]:
-    return {str(entry.get("code")): entry for entry in (report.skills if report else []) or []}
-
-
-def _week_skills(
-    reports: list[SessionReport],
-    baseline: SessionReport | None,
-    live: dict[str, skills.SkillView],
-) -> list[dict[str, Any]]:
-    """Skills touched this week, with the movement we recorded for each (§12.2).
+def _touched(reports: list[SessionReport]) -> dict[str, dict[str, Any]]:
+    """What this week practised: objective code -> the last snapshot, and the asks.
 
     Only objectives the child actually practised this week appear — the full
     curriculum is what the Insights page is for, and a weekly digest listing
@@ -582,11 +613,60 @@ def _week_skills(
             code = str(entry.get("code") or "")
             if not code:
                 continue
-            seen = touched.setdefault(code, {"first": entry, "last": entry, "asks": 0})
+            seen = touched.setdefault(code, {"last": entry, "asks": 0})
             seen["last"] = entry
             seen["asks"] += int(entry.get("asks") or 0)
+    return touched
 
-    before = _snapshot_index(baseline)
+
+def _baseline_index(
+    child: Child, start: datetime.date, codes: set[str]
+) -> dict[str, dict[str, Any]]:
+    """The last snapshot written for each of these objectives *before* this week.
+
+    **Per objective, and that is the whole point.** The obvious implementation —
+    take the most recent report before the week and read it — is wrong here, and
+    wrong in a way that produces confident false claims rather than missing ones.
+    §10.3's selector interleaves domains, so consecutive sittings deliberately
+    practise *different* objectives; the last report before any given week is
+    therefore usually about something else, and an objective missing from it would
+    be read as an objective with no history. `_movement` would announce a skill
+    practised for months as "first practised this week", and `_week_milestone`
+    would compare `MASTERED` against a baseline of nothing and report a step as
+    crossed *this week* — every week, for as long as the child kept touching it.
+
+    Walked newest-first and stopped as soon as every code is accounted for, so the
+    common case reads one or two rows. An objective that genuinely has no earlier
+    snapshot is simply absent, which is what lets "first practised this week" mean
+    something when it is said.
+    """
+    if not codes:
+        return {}
+
+    wanted = set(codes)
+    index: dict[str, dict[str, Any]] = {}
+    snapshots = (
+        SessionReport.objects.filter(child=child, occurred_at__date__lt=start)
+        .order_by("-occurred_at")
+        .values_list("skills", flat=True)[:BASELINE_SCAN]
+    )
+    for snapshot in snapshots:
+        for entry in snapshot or []:
+            code = str(entry.get("code") or "")
+            if code in wanted:
+                index[code] = entry
+                wanted.discard(code)
+        if not wanted:
+            break
+    return index
+
+
+def _week_skills(
+    touched: dict[str, dict[str, Any]],
+    before: dict[str, dict[str, Any]],
+    live: dict[str, skills.SkillView],
+) -> list[dict[str, Any]]:
+    """Skills touched this week, with the movement we recorded for each (§12.2)."""
     rows: list[dict[str, Any]] = []
     for code in sorted(touched):
         seen = touched[code]
@@ -631,9 +711,8 @@ def _movement(earlier: dict[str, Any] | None, latest: dict[str, Any]) -> str:
 
 
 def _week_milestone(
-    child: Child,
-    reports: list[SessionReport],
-    baseline: SessionReport | None,
+    touched: dict[str, dict[str, Any]],
+    before: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
     """A milestone step reached this week, or None (§10.6, §18.7).
 
@@ -643,19 +722,17 @@ def _week_milestone(
     this claim that is checkable — "it is mastered now and they played this week"
     would report the same milestone every week forever.
 
+    The baseline has to be looked up **per objective** for that sentence to be
+    true; see `_baseline_index` for why reading a single earlier report instead
+    turns this function into exactly the every-week claim it exists to avoid.
+
     None is the ordinary answer. Milestones are months apart at this age, and a
     weekly digest that produced one every week would be describing something else.
     """
-    before = _snapshot_index(baseline)
-    latest: dict[str, dict[str, Any]] = {}
-    for report in reports:
-        for entry in report.skills or []:
-            latest[str(entry.get("code"))] = entry
-
     crossed = [
         code
-        for code, entry in latest.items()
-        if str(entry.get("status")) == skills.MASTERED
+        for code, seen in touched.items()
+        if str(seen["last"].get("status")) == skills.MASTERED
         and str((before.get(code) or {}).get("status") or skills.NOT_STARTED) != skills.MASTERED
     ]
     if not crossed:

@@ -254,6 +254,18 @@ def milestone_rollup(child: Child) -> list[MilestoneView]:
     joins their curriculum and the milestone drops from mastered to practising —
     true, and unreadable on its own. Next to "can count up to five visible
     things", it reads as what it is: a new step appearing, not a skill lost.
+
+    **With one floor, and it is not a softening.** `NOT_STARTED` renders as "Not
+    covered yet", and taking the plain minimum makes that the answer for every
+    milestone with an untouched rung in it — which is every milestone, for the
+    first several months of a child's life here. A parent whose child counted to
+    three twice this afternoon would open the Insights page and read "Counting and
+    quantity: Not covered yet" directly above "Just starting to count… we have seen
+    this 2 times so far". The card would contradict itself, and the pill would be
+    the half that was false. `furthest` cannot rescue it, because `furthest` is
+    empty until something is *mastered*. So: once any objective under a milestone
+    has evidence, the milestone reads at least `EMERGING`; the minimum still
+    decides everything above that, and `MASTERED` still means all of them.
     """
     order = {NOT_STARTED: 0, EMERGING: 1, PRACTISING: 2, MASTERED: 3}
     grouped: dict[str, list[SkillView]] = {}
@@ -271,6 +283,9 @@ def milestone_rollup(child: Child) -> list[MilestoneView]:
     for name, skills in grouped.items():
         milestone = milestones[name]
         status = min(skills, key=lambda view: order[view.status]).status
+        started = any(view.status != NOT_STARTED for view in skills)
+        if started and order[status] < order[EMERGING]:
+            status = EMERGING
         # `skills` is already in curriculum order, so the last mastered one is the
         # furthest along the chain rather than the last one alphabetically.
         mastered = [view for view in skills if view.status == MASTERED]

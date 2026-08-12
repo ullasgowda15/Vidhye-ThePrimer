@@ -147,6 +147,25 @@ def test_the_furthest_step_follows_the_curriculum_and_not_the_alphabet(aarav) ->
     assert "ten" in counting.furthest
 
 
+def test_a_milestone_being_practised_is_never_reported_as_not_covered(aarav) -> None:
+    """ "Not covered yet" has to mean not covered (§12.3).
+
+    The plain minimum makes it the answer for any milestone with an untouched rung
+    — which is every milestone for months — so a parent whose child counted to
+    three this afternoon would read "Counting and quantity: Not covered yet"
+    directly above "we have seen this 2 times so far".
+    """
+    set_progress(aarav, "count_to_3", mastery=0.2, evidence_count=2)
+
+    counting = _milestone(aarav, "Counting and quantity")
+
+    assert counting.status == skills.EMERGING
+    # …and the honest reading above the floor is untouched: one mastered rung out
+    # of three is still not a mastered milestone.
+    set_progress(aarav, "count_to_3", mastery=skills.reach_for("count_to_3", "numeracy"))
+    assert _milestone(aarav, "Counting and quantity").status == skills.EMERGING
+
+
 def test_a_milestone_nobody_has_touched_says_so_rather_than_hiding(aarav) -> None:
     rollup = skills.milestone_rollup(aarav)
 
