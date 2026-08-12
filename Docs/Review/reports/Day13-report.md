@@ -100,15 +100,15 @@ The last one is the tell: the mechanism was designed correctly and simply never 
 
 ### P0 — blockers
 
-- **P0-1 — Deleting a child or an account leaves every generated image and audio clip in object storage, permanently.** `ChildViewSet.perform_destroy` and `AccountDeleteView.delete` cascade the `Media` rows and never call `media.service.delete_child_media`, which exists and already handles the shared-object case correctly. Because the rows go first, the keys become unrecoverable. Fails criterion 5 ("cascades **completely** (no orphans)") and contradicts five parent-facing or self-documenting claims listed above. Fix: call `delete_child_media` on the child (and on each child of the account) *before* the cascade, and test it against storage rather than against `information_schema`.
+- **P0-1 — Deleting a child or an account leaves every generated image and audio clip in object storage, permanently** ✅ **FIXED**. `ChildViewSet.perform_destroy` and `AccountDeleteView.delete` cascade the `Media` rows and never call `media.service.delete_child_media`, which exists and already handles the shared-object case correctly. Because the rows go first, the keys become unrecoverable. Fails criterion 5 ("cascades **completely** (no orphans)") and contradicts five parent-facing or self-documenting claims listed above. Fix: call `delete_child_media` on the child (and on each child of the account) *before* the cascade, and test it against storage rather than against `information_schema`.
 
 ### P1
 
-- **P1-1 — The privacy disclosure states three things that are not true yet**, in the document whose own module docstring says *"Every claim here is checked against the code, and the ones that are not yet true are not made."*
+- **P1-1 — The privacy disclosure states two things that are not true yet** ✅ **FIXED**, in the document whose own module docstring says *"Every claim here is checked against the code, and the ones that are not yet true are not made."*
   - *"Encrypted backups roll off on their own schedule and are never used to restore a deleted family."* There are no backups. `Docs/Hosting.md` item 10 lists nightly `pg_dump` to R2 as a **to-do** — *"Do this before onboarding real families — it's the one irreplaceable thing"* — and nothing in the repo implements, encrypts or expires one.
   - *"Access to production data is restricted and audited."* §13.8 asks for audit logging on child data as a design goal; nothing implements it, and there is no production deployment yet.
-  - The same paragraph's *"and that check is tested from the outside, with two real accounts, on every endpoint"* is **true** and should stay — it is the model for how the other two should be phrased. The file already knows how to write an unbuilt commitment honestly (the provider paragraph does exactly that); these three sentences just did not get the same treatment.
-- **P1-2 — `useChildSettings` documents caching behaviour it does not have.** Its docstring says *"`staleTime: 0` and a refetch on focus, deliberately against the pattern the dashboard reads use… this is the one document in the product where showing a stale value is showing a *wrong safety setting*."* The hook sets neither option, so it inherits `App.tsx`'s defaults — `staleTime: 30_000` and `refetchOnWindowFocus: **false**` — i.e. the exact opposite of both claims. Real effect is modest but real: the child's story page holds the accessibility flags for up to 30s and never re-reads them on focus, and the parent's settings form can open on a stale copy. Two lines to fix, and the comment is currently a false statement about a safety surface.
+  - For contrast, the same section's *"and that check is tested from the outside, with two real accounts, on every endpoint"* is **true** and should stay — it is the model for how the other two should be phrased. The file already knows how to write an unbuilt commitment honestly (the provider paragraph does exactly that); these two sentences just did not get the same treatment.
+- **P1-2 — `useChildSettings` documents caching behaviour it does not have** ✅ **FIXED**. Its docstring says *"`staleTime: 0` and a refetch on focus, deliberately against the pattern the dashboard reads use… this is the one document in the product where showing a stale value is showing a *wrong safety setting*."* The hook sets neither option, so it inherits `App.tsx`'s defaults — `staleTime: 30_000` and `refetchOnWindowFocus: **false**` — i.e. the exact opposite of both claims. Real effect is modest but real: the child's story page holds the accessibility flags for up to 30s and never re-reads them on focus, and the parent's settings form can open on a stale copy. Two lines to fix, and the comment is currently a false statement about a safety surface.
 
 ### P2 — improvements (recorded, not fixed in this session)
 
@@ -178,7 +178,7 @@ All six P2s are left open and recorded above. None is a correctness or privacy f
 | `npm run typecheck` | `tsc --noEmit` clean |
 | `makemigrations --check --dry-run` | "No changes detected" — this fix touches no model |
 | Schema / client regenerated | `frontend/openapi.json` + `schema.ts` — one operation changed (`children_destroy` summary + description), regenerated and committed so the CI staleness check stays green |
-| **CI** | PENDING_CI |
+| **CI** | **run `31600559534` — green** on the fix commit `d140004`. All three jobs pass (Frontend 1m2s, Backend 7m26s, Backend image 35s), and the CI counts match the local run exactly: **1149** backend, **142** frontend (11 files) |
 
 Final scorecard: ✅ **7 / 7**. The verdict after this session is **SHIP**, with the six P2s carried forward.
 
