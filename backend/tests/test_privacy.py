@@ -31,6 +31,9 @@ from django.db import connection
 
 from apps.accounts.models import ConsentRecord
 from apps.companion.models import Companion
+from apps.media.models import Media
+from apps.media.service import get_or_generate_image
+from apps.media.storage import key_for_url
 from apps.memory.models import Memory, MemoryType
 from apps.profiles.models import Child
 from apps.story.models import Adventure, Beat, Choice, PlaySession
@@ -89,6 +92,38 @@ def played(child) -> Adventure:
         salience=0.9,
     )
     return adventure
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"pretend pixels"
+
+
+class _StubImageProvider:
+    """Returns the same bytes for any prompt, so the object is content-addressed
+    to one key and two children asking for the same picture really do share it."""
+
+    name = "stub"
+    supports_image_reference = False
+    supports_negative_prompt = False
+    supports_seed = False
+
+    def is_configured(self) -> bool:
+        return True
+
+    def generate(self, prompt: str, *, negative_prompt: str = "", seed: int | None = None) -> bytes:
+        return PNG
+
+
+def _picture(child: Child, scene: str = "scene-1") -> Media:
+    """One real trip through the media pipeline: bytes scanned, stored, row written."""
+    return get_or_generate_image(
+        child=child,
+        style_hash="style-1",
+        character_hash="character-1",
+        scene_hash=scene,
+        prompt="a mossy riverbank",
+        seed=None,
+        provider=_StubImageProvider(),
+    )
 
 
 def _bundle(response: Any) -> dict[str, Any]:
@@ -395,6 +430,71 @@ class TestDeletingTheAccount:
                     offenders.append(name)
 
         assert offenders == []
+
+
+class TestDeletingLeavesNothingInStorage:
+    """Criterion 5's other half: a child's data is not only rows (§13.8, §17.5).
+
+    The structural test above walks `information_schema` and proves no row still
+    references the child. That is necessary and it is not sufficient — a picture is
+    an object in a bucket, and a bucket has no foreign keys. Day 13 shipped with
+    both deletes cascading the `Media` rows and removing nothing from storage, and
+    every test passed, because none of them looked in the bucket.
+
+    Worse than a leak that could be swept later: `service.purge_objects` decides
+    what is safe to remove by asking which URLs no surviving row wants, so once the
+    rows cascade there is nothing left that knows the keys exist. The objects
+    become unreachable rather than merely orphaned. Hence storage first, then the
+    cascade — and hence a test that reads the filesystem.
+    """
+
+    def test_deleting_a_child_removes_the_objects_behind_their_pictures(
+        self, auth, child, offline_media
+    ) -> None:
+        media = _picture(child)
+        stored = offline_media / key_for_url(media.url)
+        assert stored.exists(), "setup: the object should be in storage"
+
+        assert auth.delete(f"{CHILDREN_URL}/{child.id}").status_code == 204
+
+        assert not Media.objects.filter(child=child).exists()
+        assert not stored.exists(), "the picture is still in the bucket"
+
+    def test_deleting_the_account_removes_them_for_every_child(
+        self, auth, child, offline_media
+    ) -> None:
+        sibling = Child.objects.create(
+            parent=child.parent, first_name="Mira", birthdate=child.birthdate
+        )
+        mine = _picture(child, scene="scene-1")
+        theirs = _picture(sibling, scene="scene-2")
+
+        assert auth.delete(ACCOUNT_URL, {"password": PASSWORD}, format="json").status_code == 204
+
+        assert not Media.objects.exists()
+        assert not (offline_media / key_for_url(mine.url)).exists()
+        assert not (offline_media / key_for_url(theirs.url)).exists()
+
+    def test_a_sibling_keeps_the_picture_they_share(self, auth, child, offline_media) -> None:
+        """The property `delete_child_media` already had, which must not regress.
+
+        Objects are content-addressed and child-agnostic, so two children can
+        legitimately point at one file. Deleting one child must take their *row*
+        and leave the object, or the delete would blank the sibling's storybook —
+        which is why this is a per-row purge and not a per-prefix one.
+        """
+        sibling = Child.objects.create(
+            parent=child.parent, first_name="Mira", birthdate=child.birthdate
+        )
+        mine = _picture(child)
+        theirs = _picture(sibling)
+        assert mine.url == theirs.url, "setup: one object, two rows"
+
+        assert auth.delete(f"{CHILDREN_URL}/{child.id}").status_code == 204
+
+        assert Media.objects.filter(pk=theirs.pk).exists()
+        # The URL the sibling's device would fetch still resolves to real bytes.
+        assert (offline_media / key_for_url(theirs.url)).exists()
 
 
 # ---------------------------------------------------------------------------

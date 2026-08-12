@@ -15,8 +15,13 @@ export and delete at all times, and a parent whose consent has lapsed reaching a
 screen where the only thing they can do is *restrict* their child further — or a
 screen showing them what is currently set — is exactly the right outcome.
 `apps.accounts.consent` carries the full argument.
+
+**Deleting a child is two deletions, not one** (§13.8, §17.5). The cascade clears
+Postgres; `perform_destroy` clears object storage first, because the rows are what
+record where the objects are. That ordering is argued where it is implemented.
 """
 
+import logging
 from typing import cast
 
 from drf_spectacular.utils import extend_schema, extend_schema_view
@@ -28,8 +33,11 @@ from rest_framework.serializers import BaseSerializer
 from apps.accounts.consent import require_consent
 from apps.accounts.models import User
 from apps.common.permissions import IsParentOwner, ParentScopedQuerysetMixin
+from apps.media import service as media_service
 from apps.profiles.models import Child
 from apps.profiles.serializers import ChildSerializer, ChildSettingsSerializer
+
+logger = logging.getLogger(__name__)
 
 
 @extend_schema_view(
@@ -46,10 +54,11 @@ from apps.profiles.serializers import ChildSerializer, ChildSettingsSerializer
     ),
     destroy=extend_schema(
         operation_id="children_destroy",
-        summary="Delete a child and every row linked to them",
+        summary="Delete a child and everything held about them",
         description=(
-            "Every table referencing a child cascades from this row (§17.5), so one "
-            "delete satisfies 'delete my child's data'."
+            "Every table referencing a child cascades from this row (§17.5), **and** "
+            "the pictures and narration held for them are removed from object "
+            "storage, so one delete satisfies 'delete my child's data'."
         ),
     ),
 )
@@ -64,6 +73,37 @@ class ChildViewSet(ParentScopedQuerysetMixin, viewsets.ModelViewSet):
         parent = cast(User, self.request.user)
         require_consent(parent)
         serializer.save(parent=parent)
+
+    def perform_destroy(self, instance: Child) -> None:
+        """Delete the child, and the objects behind their pictures with them.
+
+        **Storage first, then the cascade, and the order is the whole fix.** A
+        `Media` row is what records the key an object lives under, and
+        `media.service.purge_objects` decides what is safe to remove by asking
+        which URLs no *surviving* row still wants. Let the cascade run first and
+        those rows are gone, so nothing in the system knows the keys exist any
+        more — the objects are not merely orphaned, they are unreachable, and no
+        later sweep can find them. Day 13 shipped exactly that: the cascade was
+        complete in Postgres and removed nothing from the bucket.
+
+        Not a signal, for the reason `apps.accounts.consent` is not one either:
+        "what happens when a child is deleted" should be answerable by reading the
+        two endpoints that delete a child, not by knowing which receivers are
+        connected.
+
+        `delete_child_media` is per-row rather than per-prefix, which is what lets
+        a sibling — or another family who happened to need the same picture — keep
+        theirs: objects are content-addressed and shared, and the object survives
+        as long as one row still points at it.
+        """
+        rows, objects = media_service.delete_child_media(instance)
+        logger.info(
+            "privacy.child_deleted child=%s media_rows=%d media_objects=%d",
+            instance.pk,
+            rows,
+            objects,
+        )
+        instance.delete()
 
 
 @extend_schema_view(

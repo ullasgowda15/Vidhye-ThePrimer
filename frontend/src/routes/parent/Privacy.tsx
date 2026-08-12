@@ -139,8 +139,8 @@ function DeleteChildSection() {
                 <div>
                   <h3 className="text-3 font-semibold">{child.first_name}</h3>
                   <p className="mt-1 text-2 text-text-muted">
-                    Their profile, companion, every story, every memory and every report. This
-                    cannot be undone.
+                    Their profile, companion, every story, every memory, every report, and every
+                    picture and recording we made for them. This cannot be undone.
                   </p>
                 </div>
                 {pending === child.id ? null : (

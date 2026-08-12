@@ -632,8 +632,8 @@ export interface paths {
         put: operations["children_update"];
         post?: never;
         /**
-         * Delete a child and every row linked to them
-         * @description Every table referencing a child cascades from this row (§17.5), so one delete satisfies 'delete my child's data'.
+         * Delete a child and everything held about them
+         * @description Every table referencing a child cascades from this row (§17.5), **and** the pictures and narration held for them are removed from object storage, so one delete satisfies 'delete my child's data'.
          */
         delete: operations["children_destroy"];
         options?: never;

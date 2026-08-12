@@ -1387,8 +1387,8 @@
             },
             "delete": {
                 "operationId": "children_destroy",
-                "description": "Every table referencing a child cascades from this row (§17.5), so one delete satisfies 'delete my child's data'.",
-                "summary": "Delete a child and every row linked to them",
+                "description": "Every table referencing a child cascades from this row (§17.5), **and** the pictures and narration held for them are removed from object storage, so one delete satisfies 'delete my child's data'.",
+                "summary": "Delete a child and everything held about them",
                 "parameters": [
                     {
                         "in": "path",

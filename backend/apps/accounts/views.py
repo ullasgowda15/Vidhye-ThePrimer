@@ -42,6 +42,7 @@ from apps.accounts.serializers import (
 )
 from apps.accounts.verification import send_verification_email
 from apps.common.throttling import AuthAnonThrottle, AuthUserThrottle, SessionRefreshThrottle
+from apps.media import service as media_service
 
 logger = logging.getLogger(__name__)
 
@@ -320,12 +321,23 @@ class AccountExportView(APIView):
 class AccountDeleteView(APIView):
     """`DELETE /account` — the account and every child, gone (§12.8, §13.7).
 
-    One `User.delete()`. Every table in the product reaches a parent either
-    directly or through a child, and every one of those FKs is `CASCADE` — which
-    is asserted at the model level rather than trusted
+    One `User.delete()` for the database. Every table in the product reaches a
+    parent either directly or through a child, and every one of those FKs is
+    `CASCADE` — which is asserted at the model level rather than trusted
     (`tests/test_privacy.py::test_every_fk_cascades_from_the_account`), so a future
     model that hangs off a child with `PROTECT` fails a test rather than leaving an
     orphan behind a promise.
+
+    **And one media purge per child before it, because the database is not the
+    only place a child's data lives.** Their companion's portrait, every
+    illustration and every line of recorded narration are objects in storage, and
+    the `Media` rows are the only record of where they are. The cascade removes
+    those rows; on its own it would therefore leave the objects behind *and*
+    destroy the means of ever finding them again. That is what the first version
+    of this endpoint did, and the day's own "no orphans" test did not catch it
+    because it walks `information_schema` — and an object in a bucket is not a row.
+    `tests/test_privacy.py::TestDeletingLeavesNothingInStorage` is the test that
+    looks in the right place.
 
     **Requires the password.** Deletion is the one irreversible action in the
     product, and an access token left on a shared tablet must not be enough to
@@ -361,7 +373,18 @@ class AccountDeleteView(APIView):
         serializer = AccountDeleteSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
 
-        children = parent.children.count()
+        # Object storage first, per child, then the one cascade. The rows are what
+        # record where the objects live, so a cascade that ran first would leave
+        # every picture and every recorded line in the bucket with nothing left
+        # that could ever name them again. `profiles.views.ChildViewSet
+        # .perform_destroy` argues this at length; it is the same deletion.
+        children = list(parent.children.all())
+        media_rows = media_objects = 0
+        for child in children:
+            rows, objects = media_service.delete_child_media(child)
+            media_rows += rows
+            media_objects += objects
+
         parent_id, email = parent.pk, parent.email
         parent.delete()
         # After the delete, so a failed delete cannot produce a log line claiming
@@ -369,7 +392,12 @@ class AccountDeleteView(APIView):
         # event we may need to prove happened, and there is no row left to prove it
         # with.
         logger.warning(
-            "privacy.account_deleted parent=%s email=%s children=%d", parent_id, email, children
+            "privacy.account_deleted parent=%s email=%s children=%d media_rows=%d media_objects=%d",
+            parent_id,
+            email,
+            len(children),
+            media_rows,
+            media_objects,
         )
 
         # The refresh cookie would otherwise sit on the device pointing at an

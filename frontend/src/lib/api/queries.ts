@@ -411,12 +411,20 @@ export function useDeleteChild() {
  * dashboard reads use: a parent may have changed a control on another device or in
  * another tab, and this is the one document in the product where showing a stale
  * value is showing a *wrong safety setting*.
+ *
+ * Both are set **explicitly** rather than left to the defaults, and that is the
+ * point rather than noise. The app-wide defaults in `App.tsx` are `staleTime:
+ * 30_000` and `refetchOnWindowFocus: false` — the opposite of both — so a hook
+ * that only *described* this behaviour would have inherited the reverse of it,
+ * silently, which is what happened when this was first written.
  */
 export function useChildSettings(childId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.childSettings(childId ?? ''),
     queryFn: ({ signal }) => api.childSettings(childId as string, signal),
     enabled: enabled(childId),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
 }
 
