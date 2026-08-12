@@ -18,6 +18,16 @@ export const queryKeys = {
   companion: (childId: string) => ['companion', childId] as const,
   greeting: (childId: string) => ['greeting', childId] as const,
   adventure: (childId: string) => ['adventure', childId] as const,
+  sessionReports: (childId: string) => ['session-reports', childId] as const,
+  sessionReport: (childId: string, sessionId: string) =>
+    ['session-report', childId, sessionId] as const,
+  weeklyReport: (childId: string, week?: string) =>
+    ['weekly-report', childId, week ?? 'current'] as const,
+  progress: (childId: string) => ['progress', childId] as const,
+  insights: (childId: string) => ['insights', childId] as const,
+  memories: (childId: string) => ['memories', childId] as const,
+  transcripts: (childId: string) => ['transcripts', childId] as const,
+  transcript: (adventureId: string) => ['transcript', adventureId] as const,
 };
 
 /**
@@ -269,6 +279,96 @@ export function useResetAdventure(childId: string | undefined) {
     if (!childId) return;
     queryClient.removeQueries({ queryKey: queryKeys.adventure(childId) });
   };
+}
+
+/**
+ * The parent dashboard's reads (§12).
+ *
+ * All eight share one posture, and it is the opposite of the child surface's.
+ *
+ * - **Errors are shown, not hidden.** The child never sees an error (§13); a
+ *   parent reading a report about their own child has to be told plainly when we
+ *   could not load it, or the dashboard's honesty is a claim about the happy path
+ *   only. So none of these fall back to a friendly placeholder — the pages render
+ *   `error` (see `Section` in `routes/parent/ui.tsx`).
+ * - **Nothing polls.** These are documents, not live state. A parent leaving the
+ *   tab open overnight must not send a request a minute at a surface that is only
+ *   interesting once a day.
+ * - **Session reports and transcripts never go stale**, because they are records
+ *   of finished afternoons and cannot change. The weekly report and the insights
+ *   *can* change — a sitting this evening moves both — so they are left on the
+ *   default staleness and refetch when the parent comes back to them.
+ */
+const RECORD = { staleTime: Infinity, refetchOnWindowFocus: false } as const;
+
+function enabled(childId: string | undefined) {
+  return Boolean(childId);
+}
+
+export function useSessionReports(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.sessionReports(childId ?? ''),
+    queryFn: ({ signal }) => api.sessionReports(childId as string, signal),
+    enabled: enabled(childId),
+  });
+}
+
+export function useSessionReport(childId: string | undefined, sessionId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.sessionReport(childId ?? '', sessionId ?? ''),
+    queryFn: ({ signal }) => api.sessionReport(childId as string, sessionId as string, signal),
+    enabled: enabled(childId) && Boolean(sessionId),
+    ...RECORD,
+  });
+}
+
+export function useWeeklyReport(childId: string | undefined, week?: string) {
+  return useQuery({
+    queryKey: queryKeys.weeklyReport(childId ?? '', week),
+    queryFn: ({ signal }) => api.weeklyReport(childId as string, week, signal),
+    enabled: enabled(childId),
+  });
+}
+
+export function useProgress(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.progress(childId ?? ''),
+    queryFn: ({ signal }) => api.progress(childId as string, signal),
+    enabled: enabled(childId),
+  });
+}
+
+export function useInsights(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.insights(childId ?? ''),
+    queryFn: ({ signal }) => api.insights(childId as string, signal),
+    enabled: enabled(childId),
+  });
+}
+
+export function useMemories(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.memories(childId ?? ''),
+    queryFn: ({ signal }) => api.memories(childId as string, signal),
+    enabled: enabled(childId),
+  });
+}
+
+export function useTranscripts(childId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.transcripts(childId ?? ''),
+    queryFn: ({ signal }) => api.transcripts(childId as string, signal),
+    enabled: enabled(childId),
+  });
+}
+
+export function useTranscript(adventureId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.transcript(adventureId ?? ''),
+    queryFn: ({ signal }) => api.transcript(adventureId as string, signal),
+    enabled: Boolean(adventureId),
+    ...RECORD,
+  });
 }
 
 export function useDeleteChild() {

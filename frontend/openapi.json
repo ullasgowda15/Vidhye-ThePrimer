@@ -149,6 +149,47 @@
                 }
             }
         },
+        "/api/v1/adventures/{adventure_id}/transcript": {
+            "get": {
+                "operationId": "adventure_transcript",
+                "description": "Exactly what the child saw and heard, beat by beat, with what they did under each one. Nothing is summarised or omitted — that is the feature (§12.6).\n\nOwner-scoped against the child the adventure belongs to.",
+                "summary": "One story, verbatim (§12.6)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "adventure_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Transcript"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
         "/api/v1/auth/login": {
             "post": {
                 "operationId": "auth_login",
@@ -608,6 +649,322 @@
                             "application/json": {
                                 "schema": {
                                     "$ref": "#/components/schemas/Arrival"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/insights": {
+            "get": {
+                "operationId": "child_insights",
+                "description": "Shared plumbing for the child-scoped dashboard reads.\n\nOne `child_for` rather than a `get_object_or_404` per view, so the ownership\ncheck cannot be forgotten on the one endpoint somebody adds in a hurry — and so\nit is always in the same place in the request: before anything is read.",
+                "summary": "Milestones and the interest trend (§12.3, §12.5, §11.7)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Insights"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/memories": {
+            "get": {
+                "operationId": "child_memories",
+                "description": "The parent-facing half of the memory graph: what was kept, in the companion's own words, most salient first. Deleted memories are not returned.\n\nNo ranking numbers are included — see the schema. This is a record of moments, not a score sheet.",
+                "summary": "What the companion remembers about this child (§12.6, §11.10)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Memory"
+                                    }
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/progress": {
+            "get": {
+                "operationId": "child_progress",
+                "description": "Every objective in this child's curriculum with where they are on it: `not_started`, `emerging`, `practising` or `mastered`, and the same thing as a sentence.\n\n**Never a grade or a percentile** (§12.3). `mastery` and `reach` are carried for completeness and are not meant to be rendered: mastery is on the difficulty scale, and its ceiling differs per objective, so the number alone says something untrue about a child who has finished counting to three.",
+                "summary": "Per-objective progress in plain language (§12.3)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Progress"
+                                    }
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/reports/session/{session_id}": {
+            "get": {
+                "operationId": "reports_session",
+                "description": "Where the child went, the choice that mattered, the objective that was exercised and how it went, and one specific real moment.\n\nGenerated after the sitting ends. Asking for a report that was never generated generates it, so an outage on a worker cannot leave a hole in the dashboard. A sitting still in progress has no report and returns 404 — there is nothing to recap yet.",
+                "summary": "The report for one sitting (§12.1)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    },
+                    {
+                        "in": "path",
+                        "name": "session_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionReport"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/reports/sessions": {
+            "get": {
+                "operationId": "reports_sessions",
+                "description": "Shared plumbing for the child-scoped dashboard reads.\n\nOne `child_for` rather than a `get_object_or_404` per view, so the ownership\ncheck cannot be forgotten on the one endpoint somebody adds in a hurry — and so\nit is always in the same place in the request: before anything is read.",
+                "summary": "This child's session reports, newest first",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/SessionReportSummary"
+                                    }
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/reports/weekly": {
+            "get": {
+                "operationId": "reports_weekly",
+                "description": "Monday to Sunday. `week` is any date inside the week wanted (`YYYY-MM-DD`); it defaults to this week.\n\nComputed on read from the session reports written at the time plus the live skill model and interest graph — so it is never stale, and its movement claims are measured against snapshots rather than recomputed.",
+                "summary": "The weekly digest (§12.2, §18.7)",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    },
+                    {
+                        "in": "query",
+                        "name": "week",
+                        "schema": {
+                            "type": "string"
+                        },
+                        "description": "Any date inside the week wanted, as YYYY-MM-DD."
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/WeeklyReport"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
+        "/api/v1/children/{child_id}/transcripts": {
+            "get": {
+                "operationId": "child_transcripts",
+                "description": "Shared plumbing for the child-scoped dashboard reads.\n\nOne `child_for` rather than a `get_object_or_404` per view, so the ownership\ncheck cannot be forgotten on the one endpoint somebody adds in a hurry — and so\nit is always in the same place in the request: before anything is read.",
+                "summary": "The transparency log's index — every story this child has played",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/TranscriptSummary"
+                                    }
                                 }
                             }
                         },
@@ -1671,6 +2028,54 @@
                     "version"
                 ]
             },
+            "Insights": {
+                "type": "object",
+                "description": "The insights page in one read (§12.3, §12.5).",
+                "properties": {
+                    "milestones": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Milestone"
+                        }
+                    },
+                    "interests": {
+                        "$ref": "#/components/schemas/InterestTrend"
+                    }
+                },
+                "required": [
+                    "interests",
+                    "milestones"
+                ]
+            },
+            "InterestTrend": {
+                "type": "object",
+                "description": "§11.7's \"this month: space, then dinosaurs, now ocean\", as data.",
+                "properties": {
+                    "now": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "What they love this week, strongest first."
+                    },
+                    "earlier": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "What they loved when we last looked, from the stored snapshots."
+                    },
+                    "story": {
+                        "type": "string",
+                        "description": "The same thing as a sentence, or empty when there is not enough history."
+                    }
+                },
+                "required": [
+                    "earlier",
+                    "now",
+                    "story"
+                ]
+            },
             "Me": {
                 "type": "object",
                 "description": "The parent as the client sees them. No permission or staff flags leak out.",
@@ -1715,12 +2120,85 @@
                     "locale"
                 ]
             },
+            "Memory": {
+                "type": "object",
+                "description": "One thing the companion remembers, for the parent to read (§12.6, §11.10).\n\nNo `salience`, no `decay`, no `recall_count` and no embedding. Those are how\nretrieval ranks; showing them would invite a parent to read a number as a\nverdict on a moment in their child's life, and none of them mean that. `type`\nis sent as its own label rather than its database value for the same reason.",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "type": {
+                        "type": "string"
+                    },
+                    "type_label": {
+                        "type": "string"
+                    },
+                    "content": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "adventure_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "nullable": true
+                    }
+                },
+                "required": [
+                    "adventure_id",
+                    "content",
+                    "created_at",
+                    "id",
+                    "type",
+                    "type_label"
+                ]
+            },
             "MethodEnum": {
                 "enum": [
                     "checkbox_attestation"
                 ],
                 "type": "string",
                 "description": "* `checkbox_attestation` - Checkbox attestation"
+            },
+            "Milestone": {
+                "type": "object",
+                "description": "A developmental step and everything under it (§10.6, §12.5).",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "domain": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "The least advanced objective under it — so 'mastered' means all of them."
+                    },
+                    "furthest": {
+                        "type": "string",
+                        "description": "The furthest thing in this milestone the child does reliably, or empty."
+                    },
+                    "skills": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Progress"
+                        }
+                    }
+                },
+                "required": [
+                    "description",
+                    "domain",
+                    "furthest",
+                    "name",
+                    "skills",
+                    "status"
+                ]
             },
             "PaletteColors": {
                 "type": "object",
@@ -1895,6 +2373,55 @@
                     "traits"
                 ]
             },
+            "Progress": {
+                "type": "object",
+                "description": "One objective on the insights page (§12.3).\n\n`mastery` and `reach` are on the wire because the brief's `/progress` shape\nnames the first, and because the first is meaningless without the second — see\n`apps.analytics.skills`. **Neither is rendered.** The parent surface shows\n`status` and `summary`; a percentage would be exactly the grade §12.3 forbids.",
+                "properties": {
+                    "domain": {
+                        "type": "string"
+                    },
+                    "objective": {
+                        "type": "string"
+                    },
+                    "milestone": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "not_started / emerging / practising / mastered."
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "The same thing in a sentence, for a person."
+                    },
+                    "evidence_count": {
+                        "type": "integer"
+                    },
+                    "mastery": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "reach": {
+                        "type": "number",
+                        "format": "double",
+                        "description": "The highest mastery this objective's asks reach."
+                    }
+                },
+                "required": [
+                    "description",
+                    "domain",
+                    "evidence_count",
+                    "mastery",
+                    "milestone",
+                    "objective",
+                    "reach",
+                    "status",
+                    "summary"
+                ]
+            },
             "ReasonEnum": {
                 "enum": [
                     "completed",
@@ -1902,6 +2429,127 @@
                 ],
                 "type": "string",
                 "description": "* `completed` - completed\n* `exit` - exit"
+            },
+            "SessionReport": {
+                "type": "object",
+                "description": "One sitting, as §12.1 asks for it: where, what, how, and one real moment.",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "occurred_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "duration_s": {
+                        "type": "integer"
+                    },
+                    "ended_reason": {
+                        "type": "string",
+                        "description": "`completed` when the child reached the warm close, `exit` when they left before it, `cap` when the session limit ended it. Reported as it is — a short session is not a failed one (§13.6)."
+                    },
+                    "beats": {
+                        "type": "integer"
+                    },
+                    "adventure_id": {
+                        "type": "string",
+                        "format": "uuid",
+                        "nullable": true
+                    },
+                    "adventure_title": {
+                        "type": "string"
+                    },
+                    "world_name": {
+                        "type": "string"
+                    },
+                    "place_name": {
+                        "type": "string"
+                    },
+                    "key_choice": {
+                        "type": "string",
+                        "description": "The branch that mattered and what came of it. Empty if nothing branched."
+                    },
+                    "objective_code": {
+                        "type": "string"
+                    },
+                    "milestone_name": {
+                        "type": "string",
+                        "description": "§10.6's plain language for what was practised. Never an objective code."
+                    },
+                    "how_it_went": {
+                        "type": "string"
+                    },
+                    "highlight": {
+                        "type": "string"
+                    },
+                    "highlight_source": {
+                        "type": "string",
+                        "description": "`model` — written by a model and checked against this session; `data` — assembled from what the child actually did; `quiet` — nothing notable happened and we said so (§13.9)."
+                    },
+                    "skills": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/SkillEvidence"
+                        }
+                    }
+                },
+                "required": [
+                    "adventure_id",
+                    "adventure_title",
+                    "beats",
+                    "duration_s",
+                    "ended_reason",
+                    "highlight",
+                    "highlight_source",
+                    "how_it_went",
+                    "key_choice",
+                    "milestone_name",
+                    "objective_code",
+                    "occurred_at",
+                    "place_name",
+                    "session_id",
+                    "skills",
+                    "world_name"
+                ]
+            },
+            "SessionReportSummary": {
+                "type": "object",
+                "description": "One row of the reports index (§12.10).",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "occurred_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "adventure_title": {
+                        "type": "string"
+                    },
+                    "world_name": {
+                        "type": "string"
+                    },
+                    "ended_reason": {
+                        "type": "string"
+                    },
+                    "highlight": {
+                        "type": "string"
+                    },
+                    "highlight_source": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "adventure_title",
+                    "ended_reason",
+                    "highlight",
+                    "highlight_source",
+                    "occurred_at",
+                    "session_id",
+                    "world_name"
+                ]
             },
             "SignupRequest": {
                 "type": "object",
@@ -1948,6 +2596,51 @@
                     "user"
                 ]
             },
+            "SkillEvidence": {
+                "type": "object",
+                "description": "What one objective was asked and how it went, in one sitting (§12.1).",
+                "properties": {
+                    "code": {
+                        "type": "string"
+                    },
+                    "domain": {
+                        "type": "string"
+                    },
+                    "milestone": {
+                        "type": "string"
+                    },
+                    "asks": {
+                        "type": "integer",
+                        "description": "How many times it came up in this sitting."
+                    },
+                    "unaided": {
+                        "type": "integer",
+                        "description": "How many they managed on their own."
+                    },
+                    "assisted": {
+                        "type": "integer",
+                        "description": "How many the companion helped with."
+                    },
+                    "retried": {
+                        "type": "integer",
+                        "description": "How many took more than one go."
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "not_started / emerging / practising / mastered, as of this sitting."
+                    }
+                },
+                "required": [
+                    "asks",
+                    "assisted",
+                    "code",
+                    "domain",
+                    "milestone",
+                    "retried",
+                    "status",
+                    "unaided"
+                ]
+            },
             "TokenObtainPairRequest": {
                 "type": "object",
                 "properties": {
@@ -1965,6 +2658,127 @@
                 "required": [
                     "email",
                     "password"
+                ]
+            },
+            "Transcript": {
+                "type": "object",
+                "description": "One story, exactly as the child experienced it (§12.6).",
+                "properties": {
+                    "adventureId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "world": {
+                        "type": "string"
+                    },
+                    "place": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "startedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "completedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "beats": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TranscriptBeat"
+                        }
+                    }
+                },
+                "required": [
+                    "adventureId",
+                    "beats",
+                    "completedAt",
+                    "place",
+                    "startedAt",
+                    "status",
+                    "title",
+                    "world"
+                ]
+            },
+            "TranscriptBeat": {
+                "type": "object",
+                "description": "One beat, verbatim (§12.6).",
+                "properties": {
+                    "seq": {
+                        "type": "integer"
+                    },
+                    "narration": {
+                        "type": "string"
+                    },
+                    "emotion": {
+                        "type": "string"
+                    },
+                    "imageUrl": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "safetyStatus": {
+                        "type": "string"
+                    },
+                    "asked": {
+                        "type": "string"
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "answered": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "answered",
+                    "asked",
+                    "emotion",
+                    "imageUrl",
+                    "narration",
+                    "options",
+                    "safetyStatus",
+                    "seq"
+                ]
+            },
+            "TranscriptSummary": {
+                "type": "object",
+                "description": "One row of the transparency index (§12.10).",
+                "properties": {
+                    "adventureId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "startedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "beats": {
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "adventureId",
+                    "beats",
+                    "startedAt",
+                    "status",
+                    "title"
                 ]
             },
             "User": {
@@ -2001,6 +2815,113 @@
                     "email",
                     "id",
                     "locale"
+                ]
+            },
+            "WeeklyMilestone": {
+                "type": "object",
+                "description": "A milestone step crossed during the week (§10.6, §18.7).",
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "step": {
+                        "type": "string",
+                        "description": "The objective that completed it, in plain language."
+                    },
+                    "reached": {
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "name",
+                    "reached",
+                    "step"
+                ]
+            },
+            "WeeklyReport": {
+                "type": "object",
+                "description": "§18.7's weekly report, spelled as §18.7 spells it.",
+                "properties": {
+                    "week": {
+                        "type": "string",
+                        "description": "e.g. \"2026-08-01/2026-08-07\" (Monday to Sunday)."
+                    },
+                    "sessions": {
+                        "type": "integer"
+                    },
+                    "completionRate": {
+                        "type": "number",
+                        "format": "double"
+                    },
+                    "highlight": {
+                        "type": "string"
+                    },
+                    "skills": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/WeeklySkill"
+                        }
+                    },
+                    "milestone": {
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/WeeklyMilestone"
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "interests_trend": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "recommendation": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "completionRate",
+                    "highlight",
+                    "interests_trend",
+                    "milestone",
+                    "recommendation",
+                    "sessions",
+                    "skills",
+                    "week"
+                ]
+            },
+            "WeeklySkill": {
+                "type": "object",
+                "description": "One objective's week (§18.7's `skills[]`).",
+                "properties": {
+                    "domain": {
+                        "type": "string"
+                    },
+                    "objective": {
+                        "type": "string"
+                    },
+                    "milestone": {
+                        "type": "string"
+                    },
+                    "asks": {
+                        "type": "integer"
+                    },
+                    "movement": {
+                        "type": "string",
+                        "description": "How this moved across the week, in words. A phrase rather than §18.7's `\"+0.2\"`: mastery is on the difficulty scale and its ceiling differs per objective, so the number is not interpretable without the curriculum in hand (see `apps.analytics.skills`)."
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "asks",
+                    "domain",
+                    "milestone",
+                    "movement",
+                    "objective",
+                    "status"
                 ]
             }
         },

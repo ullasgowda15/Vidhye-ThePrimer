@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { tokens } from '@/design/tokens';
 import ChildHome from '@/routes/child/ChildHome';
-import ParentHome from '@/routes/parent/ParentHome';
+import ParentHome from '@/routes/parent/Home';
 
 function renderWithProviders(ui: React.ReactElement, initialPath = '/') {
   const queryClient = new QueryClient({

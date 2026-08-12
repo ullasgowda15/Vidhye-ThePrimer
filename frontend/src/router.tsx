@@ -5,12 +5,18 @@ import MeetCompanion from './routes/child/MeetCompanion';
 import ReturningGreeting from './routes/child/ReturningGreeting';
 import StoryPage from './routes/child/StoryPage';
 import AdultGateRoute from './routes/parent/AdultGateRoute';
+import Children from './routes/parent/Children';
+import Home from './routes/parent/Home';
+import Insights from './routes/parent/Insights';
 import Login from './routes/parent/Login';
 import Onboarding from './routes/parent/Onboarding';
 import ParentGate from './routes/parent/ParentGate';
-import ParentHome from './routes/parent/ParentHome';
 import ProtectedRoute from './routes/parent/ProtectedRoute';
+import Reports from './routes/parent/Reports';
+import SessionReport from './routes/parent/SessionReport';
 import Signup from './routes/parent/Signup';
+import Transparency from './routes/parent/Transparency';
+import WeeklyReport from './routes/parent/WeeklyReport';
 
 /**
  * Two route trees, deliberately separate (PRODUCT.md §14.2):
@@ -57,7 +63,25 @@ export const router = createBrowserRouter(
             { path: 'onboarding', element: <Onboarding /> },
             {
               element: <ProtectedRoute />,
-              children: [{ index: true, element: <ParentHome /> }],
+              // The dashboard (§12.10). `child/:childId/...` rather than
+              // `:childId/...` so a child id can never be confused with a
+              // sibling route like `login` — React Router ranks static segments
+              // above dynamic ones, but a URL space where those two kinds of
+              // segment share a level is one rename away from a collision.
+              children: [
+                { index: true, element: <Home /> },
+                { path: 'children', element: <Children /> },
+                { path: 'child/:childId', element: <Reports /> },
+                { path: 'child/:childId/reports', element: <Reports /> },
+                { path: 'child/:childId/reports/:sessionId', element: <SessionReport /> },
+                { path: 'child/:childId/weekly', element: <WeeklyReport /> },
+                { path: 'child/:childId/insights', element: <Insights /> },
+                { path: 'child/:childId/transparency', element: <Transparency /> },
+                {
+                  path: 'child/:childId/transparency/:adventureId',
+                  element: <Transparency />,
+                },
+              ],
             },
           ],
         },

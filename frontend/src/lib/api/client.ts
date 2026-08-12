@@ -40,6 +40,16 @@ export type AdventureStart = components['schemas']['AdventureStart'];
 export type ChoiceRequest = components['schemas']['ChoiceRequestRequest'];
 export type ChoiceAccepted = components['schemas']['ChoiceAccepted'];
 export type AdventureEnd = components['schemas']['AdventureEnd'];
+/** Parent dashboard (§12). Reports, insights, transparency. */
+export type SessionReport = components['schemas']['SessionReport'];
+export type SessionReportSummary = components['schemas']['SessionReportSummary'];
+export type WeeklyReport = components['schemas']['WeeklyReport'];
+export type Progress = components['schemas']['Progress'];
+export type Insights = components['schemas']['Insights'];
+export type Milestone = components['schemas']['Milestone'];
+export type ParentMemory = components['schemas']['Memory'];
+export type Transcript = components['schemas']['Transcript'];
+export type TranscriptSummary = components['schemas']['TranscriptSummary'];
 export type PaletteColors = components['schemas']['PaletteColors'];
 export type ArchetypeOption = components['schemas']['ArchetypeOption'];
 /** Catalogue keys. Unions of literals, so a typo is a build error. */
@@ -401,4 +411,49 @@ export const api = {
       method: 'POST',
       body: { reason },
     }),
+
+  // --- parent dashboard (§12) ----------------------------------------------
+  // All eight are plain authenticated reads and all eight are owner-scoped
+  // server-side. Nothing here is ever called from the child tree.
+
+  /** This child's session reports, newest first (§12.10). */
+  sessionReports: (childId: string, signal?: AbortSignal) =>
+    request<SessionReportSummary[]>(`${V1}/children/${childId}/reports/sessions`, { signal }),
+
+  /**
+   * The report for one sitting (§12.1).
+   *
+   * Generated after the sitting ends; asking for one that was never generated
+   * generates it, so a worker outage cannot leave a hole in the dashboard. A
+   * sitting still in progress answers 404 — there is nothing to recap yet.
+   */
+  sessionReport: (childId: string, sessionId: string, signal?: AbortSignal) =>
+    request<SessionReport>(`${V1}/children/${childId}/reports/session/${sessionId}`, { signal }),
+
+  /** The week's digest (§12.2, §18.7). `week` is any date inside the week wanted. */
+  weeklyReport: (childId: string, week?: string, signal?: AbortSignal) =>
+    request<WeeklyReport>(
+      `${V1}/children/${childId}/reports/weekly${week ? `?week=${week}` : ''}`,
+      { signal },
+    ),
+
+  /** Per-objective progress in plain language (§12.3). Never rendered as a number. */
+  progress: (childId: string, signal?: AbortSignal) =>
+    request<Progress[]>(`${V1}/children/${childId}/progress`, { signal }),
+
+  /** Milestones and the interest trend (§12.3, §12.5, §11.7). */
+  insights: (childId: string, signal?: AbortSignal) =>
+    request<Insights>(`${V1}/children/${childId}/insights`, { signal }),
+
+  /** What the companion remembers about this child (§12.6). */
+  memories: (childId: string, signal?: AbortSignal) =>
+    request<ParentMemory[]>(`${V1}/children/${childId}/memories`, { signal }),
+
+  /** The transparency log's index — every story this child has played (§12.6). */
+  transcripts: (childId: string, signal?: AbortSignal) =>
+    request<TranscriptSummary[]>(`${V1}/children/${childId}/transcripts`, { signal }),
+
+  /** One story, verbatim (§12.6). */
+  transcript: (adventureId: string, signal?: AbortSignal) =>
+    request<Transcript>(`${V1}/adventures/${adventureId}/transcript`, { signal }),
 };

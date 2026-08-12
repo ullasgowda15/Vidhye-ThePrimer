@@ -80,12 +80,12 @@ def no_media_worker(monkeypatch: Any) -> None:
 def enqueued(monkeypatch: Any) -> dict[str, list[str]]:
     """Capture what `end_adventure` hands to workers, instead of sending it.
 
-    Both jobs, because from Day 10 the close enqueues two (§5.4, §5.5) and a test
-    that only stubbed one would post real traffic to a broker the suite does not
-    own — and would hide a regression in which the second enqueue silently
+    Every job the close enqueues that this suite has an opinion about, because a
+    test that only stubbed one would post real traffic to a broker the suite does
+    not own — and would hide a regression in which another enqueue silently
     disappeared.
     """
-    sent: dict[str, list[str]] = {"consolidate": [], "learning": []}
+    sent: dict[str, list[str]] = {"consolidate": [], "learning": [], "report": []}
     monkeypatch.setattr(
         orchestrator.consolidate, "delay", lambda session_id: sent["consolidate"].append(session_id)
     )
@@ -93,6 +93,14 @@ def enqueued(monkeypatch: Any) -> dict[str, list[str]]:
         orchestrator.update_from_session,
         "delay",
         lambda session_id: sent["learning"].append(session_id),
+    )
+    # Four from Day 12 (§12.1). The parent's report reads what the mastery update
+    # writes, so a learning test that let it run would be paying for a model call
+    # to produce a sentence nothing in this suite reads.
+    monkeypatch.setattr(
+        orchestrator.generate_report,
+        "delay",
+        lambda session_id: sent["report"].append(session_id),
     )
     return sent
 

@@ -9,6 +9,82 @@
 
 import { cloneElement, useId, type ReactElement, type ReactNode } from 'react';
 
+import { STATUS_LABEL, STATUS_STYLE } from './dashboard';
+
+export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-lg border border-border bg-surface p-5 shadow-card ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A block of the dashboard, with its three states written once.
+ *
+ * The `error` branch is the point. The child surface never shows an error (§13)
+ * and this surface must — a parent reading a report about their own child is owed
+ * "we could not load this" rather than an empty panel that looks like "your child
+ * did nothing". Getting that backwards on one page would undo §12.6's whole
+ * argument, so no page is allowed to write its own version of it.
+ */
+export function Section({
+  title,
+  hint,
+  isLoading,
+  error,
+  isEmpty,
+  emptyText,
+  children,
+}: {
+  title?: string;
+  hint?: string;
+  isLoading?: boolean;
+  error?: unknown;
+  isEmpty?: boolean;
+  emptyText?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="mt-6">
+      {title ? <h2 className="text-4 font-semibold">{title}</h2> : null}
+      {hint ? <p className="mt-1 text-2 text-text-muted">{hint}</p> : null}
+      <div className="mt-4">
+        {isLoading ? <p className="text-2 text-text-muted">Loading…</p> : null}
+        {!isLoading && error ? (
+          <Notice>We could not load this just now. Please try again in a moment.</Notice>
+        ) : null}
+        {!isLoading && !error && isEmpty ? (
+          <p className="text-2 text-text-muted">{emptyText ?? 'Nothing here yet.'}</p>
+        ) : null}
+        {!isLoading && !error && !isEmpty ? children : null}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * One of the four status words (§12.3), as a word.
+ *
+ * There is no bar, no ring and no percentage in here, and that is a design
+ * constraint rather than an unfinished component: a filled bar *is* a grade, and
+ * a parent reading one at 64% would be reading something untrue about a child who
+ * has finished counting to three (see `apps/analytics/skills.py`). Colour carries
+ * the same four steps as the word so the page can be scanned, and never a fifth
+ * meaning like "behind".
+ */
+export function StatusPill({ status }: { status: string }) {
+  return (
+    <span
+      className={`inline-block whitespace-nowrap rounded-full border px-3 py-1 text-1 font-semibold ${
+        STATUS_STYLE[status] ?? STATUS_STYLE.not_started
+      }`}
+    >
+      {STATUS_LABEL[status] ?? status}
+    </span>
+  );
+}
+
 export function ParentShell({
   title,
   subtitle,

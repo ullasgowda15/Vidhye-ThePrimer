@@ -141,6 +141,7 @@ class ScriptedAIProvider:
         self.beat_calls = 0
         self.memory_calls = 0
         self.greeting_calls = 0
+        self.highlight_calls = 0
 
     def queue_beat_response(self, *raw: str) -> None:
         """Answer the next beat call(s) with exactly these strings."""
@@ -170,6 +171,10 @@ class ScriptedAIProvider:
         if schema.get("title") == "ReturningGreetingText":
             self.greeting_calls += 1
             return json.dumps(self.greeting(system, user))
+
+        if schema.get("title") == "SessionHighlight":
+            self.highlight_calls += 1
+            return json.dumps(self.highlight(user))
 
         self.beat_calls += 1
         if self.queued:
@@ -269,6 +274,44 @@ class ScriptedAIProvider:
             greeting += f" I keep thinking about it: {remembered}"
         greeting += f" Come on — {companion} has somewhere new to show you today."
         return {"greeting": greeting, "remembered": remembered}
+
+    @staticmethod
+    def highlight(user: str) -> dict[str, Any]:
+        """The parent report's one sentence, read out of the session digest (§12.1).
+
+        Built the same way `memories` is and for the same reason: a scripted
+        highlight that returned a fixed warm sentence would sail through
+        `analytics.prompts.is_grounded` only by accident, and the grounding gate is
+        the thing Day 12 has to prove works. This one quotes something the child
+        actually did — so a report test sees the *model* path, and a test that
+        breaks the grounding check sees it fail.
+
+        `notable` is false when the digest holds nothing the child contributed,
+        which is the branch §12.1 needs to exist: a quiet session is a correct
+        answer, not a prompt to invent one.
+        """
+        name = (
+            match.group(1)
+            if (match := re.search(r"^Child: ([^,\n]+)", user, re.M))
+            else "The child"
+        )
+        said = re.search(r'said "([^"\n]+)"', user)
+        answered = re.search(r'answered "([^"\n]+)"', user)
+        chosen = re.search(r'chose "([^"\n]+)"', user)
+
+        if said:
+            return {"notable": True, "highlight": f"{name} named it {said.group(1)}."}
+        if answered:
+            return {
+                "notable": True,
+                "highlight": f"{name} counted {answered.group(1)} of them, unprompted.",
+            }
+        if chosen:
+            return {
+                "notable": True,
+                "highlight": f'{name} chose "{chosen.group(1)}" — curious as ever.',
+            }
+        return {"notable": False, "highlight": ""}
 
     @staticmethod
     def learning_ask(user: str) -> dict[str, Any] | None:

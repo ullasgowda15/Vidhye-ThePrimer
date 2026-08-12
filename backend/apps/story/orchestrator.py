@@ -96,6 +96,7 @@ from django.db import IntegrityError, transaction
 from django.db import connection as db_connection
 from django.utils import timezone
 
+from apps.analytics.tasks import generate_report
 from apps.companion import cast
 from apps.companion import scenes as companion_scenes
 from apps.companion import service as companion_service
@@ -2149,13 +2150,18 @@ def _close_out_session(adventure: Adventure, reason: str) -> None:
     off contain the same beats and are two different things to remember about a
     session (§13.6).
 
-    Then the three jobs, and they are siblings rather than a pipeline: memory
+    Then the four jobs. The first three are siblings rather than a pipeline: memory
     consolidation reads the sitting for what is worth *remembering* (§11.4), the
     learning update reads the same sitting for what it says the child can *do*
     (§10.5), and the interest update reads it for what they want more of (§11.7).
-    None depends on another's output and none may run inline — all three are
-    enqueued off the request that a four-year-old's device makes just before the
-    screen says goodnight.
+    None depends on another's output and none may run inline — all are enqueued off
+    the request that a four-year-old's device makes just before the screen says
+    goodnight.
+
+    The fourth, the parent's session report (§12.1), is the exception: it reads
+    what the middle two wrote. It is enqueued last for tidiness and waits on their
+    gates for correctness (`analytics.tasks.generate_report`), because Celery
+    promises nothing about the order siblings run in.
 
     **A failure to enqueue one must not cost the others.** They are separate
     `.delay` calls in separate `try` blocks for that reason: a broker that rejects
@@ -2190,6 +2196,17 @@ def _close_out_session(adventure: Adventure, reason: str) -> None:
         update_interests.delay(session_id)
     except Exception:
         logger.exception("story.interests_enqueue_failed session=%s", session_id)
+
+    # Last, and the only one of the four with an opinion about order: the parent's
+    # report *snapshots* what the two updates above just wrote (§12.1). It waits
+    # for their gates rather than trusting this line — see `analytics.tasks` — so
+    # being enqueued last is a hint, not the mechanism. A broker that rejects it
+    # costs nothing permanent either: the dashboard generates a missing report on
+    # read (`analytics.reports.report_for_session`).
+    try:
+        generate_report.delay(session_id)
+    except Exception:
+        logger.exception("story.report_enqueue_failed session=%s", session_id)
 
 
 def _finalise_session(adventure: Adventure, reason: str) -> None:

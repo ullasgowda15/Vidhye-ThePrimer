@@ -250,6 +250,10 @@ def closed(
     # same reason as the first: this suite owns neither a broker nor the skill
     # model, and an un-stubbed `.delay` would put real traffic on both.
     monkeypatch.setattr(story_orchestrator.update_from_session, "delay", lambda session_id: None)
+    # And a fourth from Day 12 (§12.1). Stubbed for the same reason again, plus
+    # one of its own: the report generation asks a model for its highlight, and a
+    # memory test must not spend a provider call to prove a memory was written.
+    monkeypatch.setattr(story_orchestrator.generate_report, "delay", lambda session_id: None)
 
     adventure = Adventure.objects.get(session=played)
     with django_capture_on_commit_callbacks(execute=True):

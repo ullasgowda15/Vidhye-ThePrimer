@@ -74,6 +74,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/adventures/{adventure_id}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One story, verbatim (§12.6)
+         * @description Exactly what the child saw and heard, beat by beat, with what they did under each one. Nothing is summarised or omitted — that is the feature (§12.6).
+         *
+         *     Owner-scoped against the child the adventure belongs to.
+         */
+        get: operations["adventure_transcript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -300,6 +322,166 @@ export interface paths {
          *     It costs a language call and a voice call, so it is throttled like a write. `audio_url` may be null — the scene is designed to work in silence, and a child is never shown that anything is missing.
          */
         get: operations["companion_greeting"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/insights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Milestones and the interest trend (§12.3, §12.5, §11.7)
+         * @description Shared plumbing for the child-scoped dashboard reads.
+         *
+         *     One `child_for` rather than a `get_object_or_404` per view, so the ownership
+         *     check cannot be forgotten on the one endpoint somebody adds in a hurry — and so
+         *     it is always in the same place in the request: before anything is read.
+         */
+        get: operations["child_insights"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/memories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the companion remembers about this child (§12.6, §11.10)
+         * @description The parent-facing half of the memory graph: what was kept, in the companion's own words, most salient first. Deleted memories are not returned.
+         *
+         *     No ranking numbers are included — see the schema. This is a record of moments, not a score sheet.
+         */
+        get: operations["child_memories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-objective progress in plain language (§12.3)
+         * @description Every objective in this child's curriculum with where they are on it: `not_started`, `emerging`, `practising` or `mastered`, and the same thing as a sentence.
+         *
+         *     **Never a grade or a percentile** (§12.3). `mastery` and `reach` are carried for completeness and are not meant to be rendered: mastery is on the difficulty scale, and its ceiling differs per objective, so the number alone says something untrue about a child who has finished counting to three.
+         */
+        get: operations["child_progress"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/reports/session/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The report for one sitting (§12.1)
+         * @description Where the child went, the choice that mattered, the objective that was exercised and how it went, and one specific real moment.
+         *
+         *     Generated after the sitting ends. Asking for a report that was never generated generates it, so an outage on a worker cannot leave a hole in the dashboard. A sitting still in progress has no report and returns 404 — there is nothing to recap yet.
+         */
+        get: operations["reports_session"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/reports/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * This child's session reports, newest first
+         * @description Shared plumbing for the child-scoped dashboard reads.
+         *
+         *     One `child_for` rather than a `get_object_or_404` per view, so the ownership
+         *     check cannot be forgotten on the one endpoint somebody adds in a hurry — and so
+         *     it is always in the same place in the request: before anything is read.
+         */
+        get: operations["reports_sessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/reports/weekly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The weekly digest (§12.2, §18.7)
+         * @description Monday to Sunday. `week` is any date inside the week wanted (`YYYY-MM-DD`); it defaults to this week.
+         *
+         *     Computed on read from the session reports written at the time plus the live skill model and interest graph — so it is never stale, and its movement claims are measured against snapshots rather than recomputed.
+         */
+        get: operations["reports_weekly"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/children/{child_id}/transcripts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The transparency log's index — every story this child has played
+         * @description Shared plumbing for the child-scoped dashboard reads.
+         *
+         *     One `child_for` rather than a `get_object_or_404` per view, so the ownership
+         *     check cannot be forgotten on the one endpoint somebody adds in a hurry — and so
+         *     it is always in the same place in the request: before anything is read.
+         */
+        get: operations["child_transcripts"];
         put?: never;
         post?: never;
         delete?: never;
@@ -764,6 +946,20 @@ export interface components {
             service: string;
             version: string;
         };
+        /** @description The insights page in one read (§12.3, §12.5). */
+        Insights: {
+            milestones: components["schemas"]["Milestone"][];
+            interests: components["schemas"]["InterestTrend"];
+        };
+        /** @description §11.7's "this month: space, then dinosaurs, now ocean", as data. */
+        InterestTrend: {
+            /** @description What they love this week, strongest first. */
+            now: string[];
+            /** @description What they loved when we last looked, from the stored snapshots. */
+            earlier: string[];
+            /** @description The same thing as a sentence, or empty when there is not enough history. */
+            story: string;
+        };
         /** @description The parent as the client sees them. No permission or staff flags leak out. */
         Me: {
             /** Format: uuid */
@@ -777,10 +973,40 @@ export interface components {
             readonly children: components["schemas"]["Child"][];
         };
         /**
+         * @description One thing the companion remembers, for the parent to read (§12.6, §11.10).
+         *
+         *     No `salience`, no `decay`, no `recall_count` and no embedding. Those are how
+         *     retrieval ranks; showing them would invite a parent to read a number as a
+         *     verdict on a moment in their child's life, and none of them mean that. `type`
+         *     is sent as its own label rather than its database value for the same reason.
+         */
+        Memory: {
+            /** Format: uuid */
+            id: string;
+            type: string;
+            type_label: string;
+            content: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            adventure_id: string | null;
+        };
+        /**
          * @description * `checkbox_attestation` - Checkbox attestation
          * @enum {string}
          */
         MethodEnum: "checkbox_attestation";
+        /** @description A developmental step and everything under it (§10.6, §12.5). */
+        Milestone: {
+            name: string;
+            domain: string;
+            description: string;
+            /** @description The least advanced objective under it — so 'mastered' means all of them. */
+            status: string;
+            /** @description The furthest thing in this milestone the child does reliably, or empty. */
+            furthest: string;
+            skills: components["schemas"]["Progress"][];
+        };
         /**
          * @description The resolved palette.
          *
@@ -853,11 +1079,75 @@ export interface components {
             traits: string[];
         };
         /**
+         * @description One objective on the insights page (§12.3).
+         *
+         *     `mastery` and `reach` are on the wire because the brief's `/progress` shape
+         *     names the first, and because the first is meaningless without the second — see
+         *     `apps.analytics.skills`. **Neither is rendered.** The parent surface shows
+         *     `status` and `summary`; a percentage would be exactly the grade §12.3 forbids.
+         */
+        Progress: {
+            domain: string;
+            objective: string;
+            milestone: string;
+            description: string;
+            /** @description not_started / emerging / practising / mastered. */
+            status: string;
+            /** @description The same thing in a sentence, for a person. */
+            summary: string;
+            evidence_count: number;
+            /** Format: double */
+            mastery: number;
+            /**
+             * Format: double
+             * @description The highest mastery this objective's asks reach.
+             */
+            reach: number;
+        };
+        /**
          * @description * `completed` - completed
          *     * `exit` - exit
          * @enum {string}
          */
         ReasonEnum: "completed" | "exit";
+        /** @description One sitting, as §12.1 asks for it: where, what, how, and one real moment. */
+        SessionReport: {
+            /** Format: uuid */
+            session_id: string;
+            /** Format: date-time */
+            occurred_at: string;
+            duration_s: number;
+            /** @description `completed` when the child reached the warm close, `exit` when they left before it, `cap` when the session limit ended it. Reported as it is — a short session is not a failed one (§13.6). */
+            ended_reason: string;
+            beats: number;
+            /** Format: uuid */
+            adventure_id: string | null;
+            adventure_title: string;
+            world_name: string;
+            place_name: string;
+            /** @description The branch that mattered and what came of it. Empty if nothing branched. */
+            key_choice: string;
+            objective_code: string;
+            /** @description §10.6's plain language for what was practised. Never an objective code. */
+            milestone_name: string;
+            how_it_went: string;
+            highlight: string;
+            /** @description `model` — written by a model and checked against this session; `data` — assembled from what the child actually did; `quiet` — nothing notable happened and we said so (§13.9). */
+            highlight_source: string;
+            skills: components["schemas"]["SkillEvidence"][];
+        };
+        /** @description One row of the reports index (§12.10). */
+        SessionReportSummary: {
+            /** Format: uuid */
+            session_id: string;
+            /** Format: date-time */
+            occurred_at: string;
+            adventure_title: string;
+            world_name: string;
+            ended_reason: string;
+            highlight: string;
+            highlight_source: string;
+        };
         SignupRequest: {
             /** Format: email */
             email: string;
@@ -876,9 +1166,60 @@ export interface components {
             user: components["schemas"]["User"];
             access: string;
         };
+        /** @description What one objective was asked and how it went, in one sitting (§12.1). */
+        SkillEvidence: {
+            code: string;
+            domain: string;
+            milestone: string;
+            /** @description How many times it came up in this sitting. */
+            asks: number;
+            /** @description How many they managed on their own. */
+            unaided: number;
+            /** @description How many the companion helped with. */
+            assisted: number;
+            /** @description How many took more than one go. */
+            retried: number;
+            /** @description not_started / emerging / practising / mastered, as of this sitting. */
+            status: string;
+        };
         TokenObtainPairRequest: {
             email: string;
             password: string;
+        };
+        /** @description One story, exactly as the child experienced it (§12.6). */
+        Transcript: {
+            /** Format: uuid */
+            adventureId: string;
+            title: string;
+            world: string;
+            place: string;
+            status: string;
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            completedAt: string | null;
+            beats: components["schemas"]["TranscriptBeat"][];
+        };
+        /** @description One beat, verbatim (§12.6). */
+        TranscriptBeat: {
+            seq: number;
+            narration: string;
+            emotion: string;
+            imageUrl: string | null;
+            safetyStatus: string;
+            asked: string;
+            options: string[];
+            answered: string;
+        };
+        /** @description One row of the transparency index (§12.10). */
+        TranscriptSummary: {
+            /** Format: uuid */
+            adventureId: string;
+            title: string;
+            status: string;
+            /** Format: date-time */
+            startedAt: string;
+            beats: number;
         };
         /** @description The parent as the client sees them. No permission or staff flags leak out. */
         User: {
@@ -890,6 +1231,36 @@ export interface components {
             readonly locale: string;
             /** Format: date-time */
             readonly created_at: string;
+        };
+        /** @description A milestone step crossed during the week (§10.6, §18.7). */
+        WeeklyMilestone: {
+            name: string;
+            /** @description The objective that completed it, in plain language. */
+            step: string;
+            reached: boolean;
+        };
+        /** @description §18.7's weekly report, spelled as §18.7 spells it. */
+        WeeklyReport: {
+            /** @description e.g. "2026-08-01/2026-08-07" (Monday to Sunday). */
+            week: string;
+            sessions: number;
+            /** Format: double */
+            completionRate: number;
+            highlight: string;
+            skills: components["schemas"]["WeeklySkill"][];
+            milestone: components["schemas"]["WeeklyMilestone"] | null;
+            interests_trend: string[];
+            recommendation: string;
+        };
+        /** @description One objective's week (§18.7's `skills[]`). */
+        WeeklySkill: {
+            domain: string;
+            objective: string;
+            milestone: string;
+            asks: number;
+            /** @description How this moved across the week, in words. A phrase rather than §18.7's `"+0.2"`: mastery is on the difficulty scale and its ceiling differs per objective, so the number is not interpretable without the curriculum in hand (see `apps.analytics.skills`). */
+            movement: string;
+            status: string;
         };
     };
     responses: never;
@@ -969,6 +1340,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdventureEnd"];
+                };
+            };
+        };
+    };
+    adventure_transcript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                adventure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Transcript"];
                 };
             };
         };
@@ -1239,6 +1631,157 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Arrival"];
+                };
+            };
+        };
+    };
+    child_insights: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Insights"];
+                };
+            };
+        };
+    };
+    child_memories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Memory"][];
+                };
+            };
+        };
+    };
+    child_progress: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Progress"][];
+                };
+            };
+        };
+    };
+    reports_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionReport"];
+                };
+            };
+        };
+    };
+    reports_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionReportSummary"][];
+                };
+            };
+        };
+    };
+    reports_weekly: {
+        parameters: {
+            query?: {
+                /** @description Any date inside the week wanted, as YYYY-MM-DD. */
+                week?: string;
+            };
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WeeklyReport"];
+                };
+            };
+        };
+    };
+    child_transcripts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptSummary"][];
                 };
             };
         };

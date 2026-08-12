@@ -17,7 +17,7 @@ import Login from '@/routes/parent/Login';
 import Onboarding from '@/routes/parent/Onboarding';
 import AdultGateRoute from '@/routes/parent/AdultGateRoute';
 import ParentGate from '@/routes/parent/ParentGate';
-import ParentHome from '@/routes/parent/ParentHome';
+import ParentHome from '@/routes/parent/Home';
 import ProtectedRoute from '@/routes/parent/ProtectedRoute';
 import { PARENT_GATE_TTL_MS, useAuthStore } from '@/store/auth';
 
