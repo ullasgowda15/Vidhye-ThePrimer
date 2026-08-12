@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useDeleteChild, useMe } from '@/lib/api/queries';
 
 import { DashboardShell } from './DashboardShell';
-import { Card, PrimaryButton, QuietButton, Section } from './ui';
+import { LINK, Card, PrimaryButton, QuietButton, Section } from './ui';
 
 /**
  * Manage children (§12.10's last node).
@@ -50,10 +50,7 @@ export default function Children() {
                   </p>
                 ) : null}
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <Link
-                    to={`/parent/child/${child.id}/reports`}
-                    className="text-2 text-primary underline underline-offset-4"
-                  >
+                  <Link to={`/parent/child/${child.id}/reports`} className={`text-2 ${LINK}`}>
                     Reports
                   </Link>
                   <QuietButton
@@ -74,7 +71,7 @@ export default function Children() {
         <Link to="/parent/onboarding">
           <PrimaryButton type="button">Add a child</PrimaryButton>
         </Link>
-        <Link to="/" className="text-2 text-primary underline underline-offset-4">
+        <Link to="/" className={`text-2 ${LINK}`}>
           Back to the story
         </Link>
       </div>

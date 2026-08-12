@@ -11,6 +11,14 @@
  * It ends by handing the tablet over rather than at a dashboard, because the
  * thing this flow exists to produce is not an account — it is a child meeting
  * their companion (§4.3).
+ *
+ * **The step indicator is drawn as well as counted** (§14.6, §4.2). "Step 2 of 4"
+ * is a true sentence and a poor one: a parent two minutes into setting up a
+ * product for their child wants to know how much is left, and a number does not
+ * answer that at a glance. The dots do, and the sentence stays underneath them
+ * for anyone the dots do not serve — colour is never the sole signal, and the
+ * whole thing is one `aria-label` to a screen reader rather than four unlabelled
+ * shapes.
  */
 
 import { useState } from 'react';
@@ -55,10 +63,9 @@ export default function Onboarding() {
   return (
     <ParentShell
       title="Set up The Primer"
-      subtitle={
-        step === 'handover' ? undefined : `Step ${STEPS.indexOf(step) + 1} of ${STEPS.length - 1}`
-      }
+      subtitle={step === 'handover' ? undefined : 'A couple of minutes, and mostly optional.'}
     >
+      {step === 'handover' ? null : <Steps current={step} />}
       {step === 'account' ? <AccountForm onDone={() => setStep('consent')} /> : null}
       {step === 'consent' ? <ConsentStep onDone={() => setStep('child')} /> : null}
       {step === 'child' ? (
@@ -81,6 +88,42 @@ export default function Onboarding() {
       ) : null}
       {step === 'handover' && child ? <HandoverStep childId={child.id} name={child.name} /> : null}
     </ParentShell>
+  );
+}
+
+/** The four setup steps, in order, with the words a parent would use for them. */
+const STEP_LABELS: Record<Exclude<Step, 'handover'>, string> = {
+  account: 'Your account',
+  consent: 'Permission',
+  child: 'About your child',
+  companion: 'Their friend',
+};
+
+function Steps({ current }: { current: Step }) {
+  const index = STEPS.indexOf(current);
+  const total = STEPS.length - 1;
+  const label = STEP_LABELS[current as Exclude<Step, 'handover'>];
+
+  return (
+    <div className="mb-6">
+      {/* One label for the whole indicator. Four separately-announced dots would
+          be four pieces of noise; this is one sentence, and it is the same
+          sentence the sighted reader gets below. */}
+      <ol className="flex gap-2" aria-label={`Step ${index + 1} of ${total}: ${label}`}>
+        {STEPS.slice(0, total).map((step, position) => (
+          <li
+            key={step}
+            aria-hidden="true"
+            className={`h-1.5 flex-1 rounded-full transition-colors duration-base ${
+              position <= index ? 'bg-primary' : 'bg-border'
+            }`}
+          />
+        ))}
+      </ol>
+      <p className="mt-2 text-1 text-text-muted">
+        Step {index + 1} of {total} · {label}
+      </p>
+    </div>
   );
 }
 

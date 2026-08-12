@@ -5,7 +5,7 @@ import { useMe, useSessionReports } from '@/lib/api/queries';
 
 import { DashboardShell } from './DashboardShell';
 import { ENDING, when } from './dashboard';
-import { Card, PrimaryButton, Section } from './ui';
+import { Card, LINK, LinkButton, Section } from './ui';
 
 /**
  * Parent Home — today's highlight and the way into everything else (§12.10).
@@ -19,35 +19,46 @@ import { Card, PrimaryButton, Section } from './ui';
  * A child who has not played yet says so plainly. It would be easy to fill the
  * space with an encouraging sentence, and that is the exact habit §12.1 forbids —
  * the space is empty because nothing has happened.
+ *
+ * **The one empty state that gets more than a sentence is the first-run one.**
+ * "No child profiles yet." is true, and on the very first visit it is also a dead
+ * end: a parent who skipped the child step during onboarding lands here and is
+ * told what is missing with no way to fix it. That is a different situation from
+ * a report that has not generated — nothing has gone wrong, the product simply
+ * has not started — so it gets a sentence about what happens next and the button
+ * that starts it. Every other empty state on this surface stays one line.
  */
 export default function Home() {
   const { data: me, isLoading } = useMe();
   const children = me?.children ?? [];
+  const firstRun = !isLoading && children.length === 0;
 
   return (
     <DashboardShell title="Parent area">
-      <Section
-        title="Your children"
-        isLoading={isLoading}
-        isEmpty={!isLoading && children.length === 0}
-        emptyText="No child profiles yet."
-      >
-        <ul className="grid gap-4">
-          {children.map((child) => (
-            <li key={child.id}>
-              <ChildCard child={child} />
-            </li>
-          ))}
-        </ul>
-      </Section>
-
-      {!isLoading && children.length === 0 ? (
-        <div className="mt-4">
-          <Link to="/parent/onboarding">
-            <PrimaryButton type="button">Add your first child</PrimaryButton>
-          </Link>
-        </div>
-      ) : null}
+      {firstRun ? (
+        <Section title="Your children">
+          <Card>
+            <h3 className="text-4 font-semibold">Nobody here yet</h3>
+            <p className="mt-2 text-2 text-text-muted">
+              Add a child and pick their companion — a name, a birthday and two minutes. Everything
+              else is optional, and you can change all of it later.
+            </p>
+            <p className="mt-4">
+              <LinkButton href="/parent/onboarding">Add your first child</LinkButton>
+            </p>
+          </Card>
+        </Section>
+      ) : (
+        <Section title="Your children" isLoading={isLoading}>
+          <ul className="grid gap-4">
+            {children.map((child) => (
+              <li key={child.id}>
+                <ChildCard child={child} />
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
     </DashboardShell>
   );
 }
@@ -92,7 +103,7 @@ function ChildCard({ child }: { child: Child }) {
           <p className="mt-3">
             <Link
               to={`/parent/child/${child.id}/reports/${latest.session_id}`}
-              className="text-2 text-primary underline underline-offset-4"
+              className={`text-2 ${LINK}`}
             >
               Read the full report
             </Link>
@@ -101,16 +112,10 @@ function ChildCard({ child }: { child: Child }) {
       ) : null}
 
       <div className="mt-4 flex flex-wrap gap-3 text-2">
-        <Link
-          to={`/parent/child/${child.id}`}
-          className="text-primary underline underline-offset-4"
-        >
+        <Link to={`/parent/child/${child.id}`} className={LINK}>
           {child.first_name}&rsquo;s dashboard
         </Link>
-        <Link
-          to={`/parent/child/${child.id}/transparency`}
-          className="text-primary underline underline-offset-4"
-        >
+        <Link to={`/parent/child/${child.id}/transparency`} className={LINK}>
           Read their stories
         </Link>
       </div>

@@ -28,9 +28,10 @@ same tuple twice calls the provider once" an assertion rather than a claim, and
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from django.db import IntegrityError, transaction
 
@@ -133,6 +134,8 @@ def get_or_generate_image(
         scene_hash=scene_hash,
         prompt_hash=sha16(prompt),
         produce=lambda: _generate_image(prompt, seed, provider),
+        # Image models bill per picture, not per prompt token (§22.4).
+        cost_units={"images": 1},
     )
 
 
@@ -177,6 +180,10 @@ def get_or_generate_audio(
         scene_hash=scene_hash,
         prompt_hash=sha16(f"{vendor_voice}:{text}"),
         produce=lambda: _generate_audio(text, voice_id, provider),
+        # TTS vendors bill per character of the text handed to them. The *length*
+        # only — this is a unit count, and the line itself is a child's story
+        # (§13.8), which is why nothing about the text reaches the cost row.
+        cost_units={"characters": len(text)},
     )
 
 
@@ -210,7 +217,57 @@ def get_or_generate_stock(
         scene_hash=scene_hash,
         prompt_hash=sha16(f"{provider_name}:{scene_hash}"),
         produce=lambda: (data, provider_name),
+        # No `cost_units`, and no image count: a stock file was not generated and
+        # billing it as a picture would put spend on the safety fallback path,
+        # which is the one place a rising cost number must never discourage use.
+        # The span is still written — provider `stock`, zero units — so the
+        # dashboard can see how often the substitution fired.
     )
+
+
+def _trace_media_cost(
+    *,
+    media_type: str,
+    provider_name: str,
+    units: dict[str, Any],
+    started: float,
+) -> None:
+    """One `GenerationCost` span for a media provider call (§19.9).
+
+    `provider_label` returns `provider` or `provider:model`, which is exactly the
+    key `analytics.pricing` looks rates up by, so it is split back into the two
+    columns the cost table keeps apart rather than re-derived.
+
+    The operation name is the media type's product word — `illustration`,
+    `narration` — because that is what the internal dashboard's per-operation
+    table is read in. `media_type` itself (`image`/`audio`) is the *kind*.
+
+    Import-local, like the router's: `apps.analytics` must stay importable without
+    the media app and vice versa.
+    """
+    from apps.analytics import cost
+    from apps.analytics.models import CostKind
+
+    provider, _, model = provider_name.partition(":")
+    kind = CostKind.IMAGE if media_type == MediaType.IMAGE else CostKind.TTS
+
+    cost.record(
+        kind=kind,
+        operation=OPERATION_FOR_TYPE.get(media_type, media_type),
+        provider=provider,
+        model=model,
+        units=units,
+        latency_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+#: Media type -> the span name in the cost table. See `_trace_media_cost`.
+#: Annotated `str` keys rather than `MediaType`, because `media_type` travels
+#: through this module as a plain string.
+OPERATION_FOR_TYPE: dict[str, str] = {
+    MediaType.IMAGE: "illustration",
+    MediaType.AUDIO: "narration",
+}
 
 
 def _get_or_generate(
@@ -222,6 +279,7 @@ def _get_or_generate(
     scene_hash: str,
     prompt_hash: str,
     produce: Callable[[], tuple[bytes, str]],
+    cost_units: dict[str, Any] | None = None,
 ) -> Media:
     tuple_filter = {
         "type": media_type,
@@ -275,9 +333,23 @@ def _get_or_generate(
             size=shared.bytes,
         )
 
-    # 3. Nothing cached: pay for it.
+    # 3. Nothing cached: pay for it — and say so (§19.9, §22.4).
+    #
+    # This is the only line in the media pipeline that spends money, which is why
+    # the cost span is written here and not in the two `_generate_*` helpers: a
+    # future third media type gets traced by existing here, and a cache hit above
+    # writes nothing because a hit costs nothing. `units` is what the vendor bills
+    # for — a picture is per image, a spoken line is per character — and
+    # `cost_units` is passed down by the caller that knows which.
+    started = time.monotonic()
     raw, provider_name = produce()
     STATS.record_generation(provider_name, media_type)
+    _trace_media_cost(
+        media_type=media_type,
+        provider_name=provider_name,
+        units=dict(cost_units or {}),
+        started=started,
+    )
 
     verdict = scan(raw)
     if not verdict.is_safe:

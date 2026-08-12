@@ -22,6 +22,8 @@ from typing import Any
 
 from django.utils import timezone
 
+from apps.analytics import events
+from apps.analytics.models import Event
 from apps.safety.models import Action, SafetyIncident, Severity
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,22 @@ def record(
         getattr(child, "id", None),
         getattr(adventure, "id", None),
         payload,
+    )
+    # §5.6 and §22.5. The counter, not a second copy of the record: `SafetyIncident`
+    # is the row a human reviews (§13.11), this is the row a rate is computed from,
+    # and the rule about content applies to it twice over — nothing from `detail`
+    # crosses, only the four labels the guardrail metric groups by.
+    #
+    # `track` swallows its own failures, which is the same posture the write above
+    # takes and for the same reason: a child's story does not stop because a
+    # counter could not be incremented.
+    events.track(
+        Event.SAFETY_INCIDENT,
+        child=child,
+        severity=severity,
+        category=category[:64],
+        action=action,
+        escalated=escalated,
     )
     return incident
 

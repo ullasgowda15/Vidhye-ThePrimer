@@ -20,11 +20,23 @@
   --primitive-cocoa: #4a3524;
 
   /* --- Primitives: Calm ------------------------------------------------ */
+  /*
+   * The parent theme is a *reading* surface and §14.6 sets WCAG AA on it, which
+   * for the 14px status pills means 4.5:1 against `--bg`, not against white.
+   *
+   * The teal and the green shipped at 3.95:1 and 4.06:1 and were both rendered as
+   * text — `dashboard.ts` puts `text-accent` on "practising" and `text-success` on
+   * "mastered", which are the two words a parent looks for on every card. They are
+   * darkened here to 5.05:1 and 5.00:1. Same hues, same meaning; a step down in
+   * lightness is all it took, which is what makes this worth doing rather than
+   * arguing about. `a11y.test.tsx` computes both ratios from this file so the next
+   * pair cannot ship below AA either.
+   */
   --primitive-off-white: #f7f8fa;
   --primitive-white: #ffffff;
   --primitive-indigo: #3f4fa8;
-  --primitive-teal: #1f8a80;
-  --primitive-green: #2f8a4f;
+  --primitive-teal: #19776f;
+  --primitive-green: #277a44;
   --primitive-slate: #2c3444;
 
   /* --- Primitives: night / calm-evening palette (§15.1) ----------------- */

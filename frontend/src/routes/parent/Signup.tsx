@@ -1,7 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 
 import AccountForm from './AccountForm';
-import { ParentShell } from './ui';
+import { LINK, ParentShell } from './ui';
 
 /** Standalone signup. Onboarding reuses the same form as its first step (§4.2). */
 export default function Signup() {
@@ -13,7 +13,7 @@ export default function Signup() {
 
       <p className="mt-5 text-2 text-text-muted">
         Already have one?{' '}
-        <Link to="/parent/login" className="text-primary underline underline-offset-4">
+        <Link to="/parent/login" className={LINK}>
           Log in
         </Link>
       </p>

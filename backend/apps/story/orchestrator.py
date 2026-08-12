@@ -96,6 +96,8 @@ from django.db import IntegrityError, transaction
 from django.db import connection as db_connection
 from django.utils import timezone
 
+from apps.analytics import cost, events
+from apps.analytics.models import Event
 from apps.analytics.tasks import generate_report
 from apps.companion import cast
 from apps.companion import scenes as companion_scenes
@@ -646,12 +648,22 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
     """
     selection = learning.select_objective(child)
     personalization = personalize(child)
-    plan = build_plan(child, selection, personalization)
     # A sitting begins when a story does, unless the caller already had one. It is
     # created here rather than left null because `end` has to be able to say how
     # long the child played and why they stopped (§13.6) — a wellbeing signal the
     # parent dashboard reports, and one that cannot be reconstructed afterwards.
+    #
+    # It is created **before** the plan is generated, which it did not used to be,
+    # for one reason: the plan is a full LLM call and §22.4 measures cost per
+    # *session*. A plan generated before its sitting existed would be a real charge
+    # with nowhere to file it, and the adventure that costs the most to start would
+    # be the one the dashboard could say least about. Nothing between here and the
+    # plan can fail in a new way — `build_plan` catches `AIError` and falls back by
+    # design — so the worst case is an empty sitting row on a path that was already
+    # returning a 500.
     session = session or PlaySession.objects.create(child=child)
+    with cost.trace(child=child, session=session):
+        plan = build_plan(child, selection, personalization)
     adventure = Adventure.objects.create(
         child=child,
         session=session,
@@ -682,6 +694,24 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
         adventure.difficulty,
         personalization.setting.world.key,
         place.name,
+    )
+    # §5.6's denominator. Every started adventure, whether or not it is finished —
+    # `completion_rate` is completions ÷ this, so an emission missed here reads as
+    # a suspiciously good week rather than as a gap.
+    #
+    # Shape only, no content (§13.8): which world, how long the arc is, whether
+    # the child is somewhere they have been. Not the title, which is a sentence
+    # about this child's story.
+    events.track(
+        Event.ADVENTURE_STARTED,
+        child=child,
+        session=session,
+        adventure_id=str(adventure.pk),
+        world=personalization.setting.world.key,
+        returning_place=bool(personalization.setting.returning),
+        estimated_beats=adventure.estimated_beats,
+        objective=adventure.primary_objective_id or "",
+        difficulty=round(adventure.difficulty, 2),
     )
     return adventure
 
@@ -1017,6 +1047,31 @@ def create_beat(
     """
     seq = _next_seq(adventure) if seq is None else seq
     child = adventure.child
+    with cost.trace(child=child, session=adventure.session):
+        return _create_beat(
+            adventure,
+            seq=seq,
+            child=child,
+            prev_choice=prev_choice,
+            allow_fallback=allow_fallback,
+        )
+
+
+def _create_beat(
+    adventure: Adventure,
+    *,
+    seq: int,
+    child: Child,
+    prev_choice: Mapping[str, Any] | None,
+    allow_fallback: bool,
+) -> Beat:
+    """`create_beat`'s body, inside the cost trace it opened.
+
+    Split out only so the trace is one line: everything a beat spends — the beat
+    generation, its repair, the safety classifier's second-model call, and any
+    media generated inline — happens under this context and is attributed to the
+    sitting (§22.4).
+    """
     guarded = guard_beat_inputs(
         child, prev_choice, context=beat_context_for(adventure, seq=seq, prev_choice=prev_choice)
     )
@@ -1815,6 +1870,29 @@ def _persist_beat(
     # the child never saw. `capture` swallows everything, so a Redis outage costs
     # the signal and not the beat.
     transaction.on_commit(lambda: memory_capture.beat_recorded(beat))
+    # §5.6. **Inside** this transaction rather than on commit, and the difference
+    # from the STM event above is the store: short-term memory is Redis and cannot
+    # be rolled back, so it has to wait for the commit. An `Event` is a Postgres
+    # row in this very transaction, so a beat that lost its race takes its event
+    # down with it for free — which is the property we actually want, obtained by
+    # doing less.
+    #
+    # Worth its volume — five rows per adventure — because it is the denominator
+    # of the two safety-ops numbers §13.11 and §22.5 read. "Twelve incidents" means
+    # nothing; "twelve incidents in nine thousand beats" is a rate, and the
+    # proportion of beats served from the pre-vetted fallback pool is how the
+    # safety layer's health is watched at all. Nothing about what the beat *says*
+    # is on it (§13.8).
+    events.track(
+        Event.BEAT_DELIVERED,
+        child=adventure.child,
+        session=adventure.session,
+        adventure_id=str(adventure.pk),
+        seq=seq,
+        safety_status=safety_status,
+        interaction=str(contract.interaction.type),
+        learning_ask=demand is not None,
+    )
     return beat
 
 
@@ -2094,6 +2172,30 @@ def record_choice(
         retries,
         int(assisted),
     )
+    # §5.6, on the created path only, for the same reason `memory_capture` is: a
+    # double-tap is one decision arriving twice.
+    #
+    # **What is deliberately not on this event:** the label the child tapped, and
+    # the value they answered. Those are the child's own words and the content of
+    # their afternoon (§13.8), and the analytics question — *did a tap happen, how
+    # long did it take, did the companion help* — is answered without them.
+    # `chosen_key` is a positional key (`a`/`b`/`c`) rather than a label, which is
+    # shape.
+    events.track(
+        Event.CHOICE_MADE,
+        child=adventure.child,
+        session=adventure.session,
+        adventure_id=str(adventure.pk),
+        seq=beat.seq,
+        chosen_key=chosen_key,
+        latency_ms=latency_ms,
+        retries=retries,
+        assisted=assisted,
+        # Whether the beat was one of the Learning Engine's asks (§10.5) — which is
+        # what makes this tap evidence rather than a branch. Not the objective's
+        # outcome: that is the parent's report's job, not ops telemetry's.
+        learning_ask=bool((beat.interaction or {}).get("expected") is not None),
+    )
     # The summary is what the *next* beat is written against, so it has to include
     # this choice before anything is asked to react to it.
     refresh_running_summary(adventure)
@@ -2155,16 +2257,62 @@ def end_adventure(
         # twice enqueues once, because the second call returned at the guard above.
         transaction.on_commit(lambda: _close_out_session(locked, reason))
 
+    beats = locked.beats.count()
     logger.info(
         "story.adventure_ended adventure=%s status=%s reason=%s beats=%d",
         locked.id,
         locked.status,
         reason,
-        locked.beats.count(),
+        beats,
     )
+    _track_ending(locked, beats=beats)
     adventure.status = locked.status
     adventure.completed_at = locked.completed_at
     return locked
+
+
+def _track_ending(adventure: Adventure, *, beats: int) -> None:
+    """The two §5.6 events a finished sitting owes (§22.3, §22.5).
+
+    **`adventure.completed` fires only for a story that actually finished.** It is
+    the numerator of `completion_rate`, so an abandoned adventure emits nothing
+    here — the rate is completions ÷ starts, and a "completed" event carrying
+    `completed: false` would be a numerator that quietly counts everything. A child
+    who wandered off is a fact this pipeline records as an absence, plus a
+    `session.ended` that says why.
+
+    **`session.ended` fires either way**, because §22.5's guardrails are about
+    sittings and not about stories: the ended-reason mix, sessions per child per
+    day, and how long a child played are all read off it. `ended_reason` is the
+    one written by `_finalise_session` from the clock (§13.6) — never the client's.
+
+    Placed outside `end_adventure`'s transaction on purpose. The guard at the top
+    of that transaction already makes this run once per adventure, and an event
+    written inside it would be rolled back with any later failure — costing the
+    funnel a completion that really happened.
+    """
+    session = adventure.session
+    if adventure.status == Adventure.Status.COMPLETED:
+        events.track(
+            Event.ADVENTURE_COMPLETED,
+            child=adventure.child,
+            session=session,
+            adventure_id=str(adventure.pk),
+            beats=beats,
+            world=str((adventure.plan or {}).get("world") or ""),
+            objective=adventure.primary_objective_id or "",
+        )
+
+    if session is not None:
+        events.track(
+            Event.SESSION_ENDED,
+            child=adventure.child,
+            session=session,
+            ended_reason=session.ended_reason or "",
+            duration_s=session.duration_s,
+            beats=beats,
+            completed=adventure.status == Adventure.Status.COMPLETED,
+        )
 
 
 def _close_out_session(adventure: Adventure, reason: str) -> None:

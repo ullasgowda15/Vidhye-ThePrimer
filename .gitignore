@@ -57,6 +57,12 @@ db.sqlite3-journal
 /backend/staticfiles/
 staticfiles/
 static_root/
+# The warehouse export (`manage.py drain_events`, §5.6). Anchored like the two
+# above. These files are real families' telemetry — de-identified, but a running
+# log of when actual children played — and the default output directory sits
+# inside the repo so the command works on a fresh checkout. Committing one would
+# be the quietest possible privacy incident.
+/backend/exports/
 
 # Django migrations: KEEP these in git (they are source of truth for the schema).
 # Do NOT ignore migrations/*.py — they must be committed.

@@ -13,11 +13,18 @@ from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from apps.analytics.internal import metrics_dashboard
 from apps.common.views import HealthView
 
 API_V1 = "api/v1/"
 
 urlpatterns = [
+    # §22's internal dashboard, above `admin/` so it resolves first. Deliberately
+    # *not* under `api/v1/`: it is staff-only ops telemetry, and §5.6 keeps that
+    # strictly apart from the parent-facing API. Living outside the versioned
+    # prefix also keeps it out of the OpenAPI schema and therefore out of the
+    # generated TS client, so the parent app cannot call it even by accident.
+    path("admin/metrics", metrics_dashboard, name="internal-metrics"),
     path("admin/", admin.site.urls),
     path("api/health/", HealthView.as_view(), name="health"),
     path(API_V1, include("apps.accounts.urls")),

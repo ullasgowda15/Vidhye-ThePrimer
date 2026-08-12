@@ -4,7 +4,7 @@ import { useSessionReport } from '@/lib/api/queries';
 
 import { DashboardShell } from './DashboardShell';
 import { ENDING, useDashboardChild, when } from './dashboard';
-import { Card, Section, StatusPill } from './ui';
+import { LINK, Card, Section, StatusPill } from './ui';
 
 /**
  * One sitting, in full (§12.1).
@@ -37,7 +37,12 @@ export default function SessionReport() {
       title={child ? `${child.first_name}'s session` : 'Session report'}
       subtitle={report ? when(report.occurred_at) : undefined}
     >
-      <Section isLoading={isLoading || child === undefined} error={error} isEmpty={!report}>
+      <Section
+        isLoading={isLoading || child === undefined}
+        error={error}
+        isEmpty={!report}
+        emptyText="We have no report for this sitting. Reports are written after a session ends."
+      >
         {report ? (
           <div className="grid gap-4">
             <Card>
@@ -64,7 +69,7 @@ export default function SessionReport() {
                 <p className="mt-3">
                   <Link
                     to={`/parent/child/${childId}/transparency/${report.adventure_id}`}
-                    className="text-2 text-primary underline underline-offset-4"
+                    className={`text-2 ${LINK}`}
                   >
                     Read the story itself, word for word
                   </Link>

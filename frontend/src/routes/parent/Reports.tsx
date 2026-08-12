@@ -4,7 +4,7 @@ import { useSessionReports } from '@/lib/api/queries';
 
 import { DashboardShell } from './DashboardShell';
 import { ENDING, useDashboardChild, when } from './dashboard';
-import { Card, Section } from './ui';
+import { LINK, Card, Section } from './ui';
 
 /**
  * Every sitting this child has had, newest first (§12.10's Session Reports).
@@ -43,7 +43,7 @@ export default function Reports() {
                 <p className="mt-3">
                   <Link
                     to={`/parent/child/${childId}/reports/${report.session_id}`}
-                    className="text-2 text-primary underline underline-offset-4"
+                    className={`text-2 ${LINK}`}
                   >
                     Read the full report
                   </Link>

@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { errorMessage } from '@/lib/api/client';
 import { useAuthStore } from '@/store/auth';
 
-import { Field, Notice, ParentShell, PrimaryButton, TextInput } from './ui';
+import { LINK, Field, Notice, ParentShell, PrimaryButton, TextInput } from './ui';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -67,7 +67,7 @@ export default function Login() {
 
       <p className="mt-5 text-2 text-text-muted">
         New here?{' '}
-        <Link to="/parent/signup" className="text-primary underline underline-offset-4">
+        <Link to="/parent/signup" className={LINK}>
           Create an account
         </Link>
       </p>

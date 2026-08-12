@@ -1,0 +1,323 @@
+{% comment %}
+The internal metrics dashboard (PRODUCT.md §22, §5.6). Staff only — see
+`apps.analytics.internal`.
+
+Deliberately plain: no build step, no JavaScript, no chart library. This page is
+read by the people building the product, and every dependency it grows is one
+more thing that can be broken on the morning somebody needs to know what a
+session costs.
+
+Three things it is careful about, all of them honesty rather than style:
+
+* every rate shows its **fraction** next to its percentage, so "100%" over two
+  signups cannot be read as a result;
+* every §22.3 **target** is printed beside the number it judges, with §22.3's own
+  "directional, to be calibrated" caveat at the foot;
+* cost/session is printed next to **unattributed spend** and the **unpriced span
+  count**, which are the two ways the headline can be understating the truth.
+
+There is no per-child anything on this page, on purpose (§13.8).
+{% endcomment %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Primer — internal metrics</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0; padding: 2rem 1.5rem 4rem; max-width: 62rem;
+      background: Canvas; color: CanvasText;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+    h2 { font-size: 1.05rem; margin: 2.25rem 0 .5rem; }
+    p.sub { margin: 0 0 1.5rem; opacity: .7; font-size: .875rem; }
+    nav a {
+      display: inline-block; padding: .25rem .7rem; margin-right: .35rem;
+      border: 1px solid currentColor; border-radius: 999px;
+      text-decoration: none; color: inherit; font-size: .8125rem; opacity: .65;
+    }
+    nav a[aria-current="page"] { opacity: 1; font-weight: 600; }
+    table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+    caption { text-align: left; font-size: .8125rem; opacity: .7; padding-bottom: .4rem; }
+    th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid rgba(128,128,128,.35); }
+    th { font-weight: 600; font-size: .8125rem; opacity: .75; }
+    td.n, th.n { text-align: right; }
+    .big { font-size: 1.5rem; font-weight: 600; }
+    .muted { opacity: .6; }
+    .flag { font-weight: 600; }
+    footer { margin-top: 3rem; font-size: .8125rem; opacity: .65; }
+    .grid { display: flex; flex-wrap: wrap; gap: 1.5rem 2.5rem; margin: .5rem 0 0; }
+    .grid div { min-width: 9rem; }
+    .grid dt { font-size: .8125rem; opacity: .7; }
+    .grid dd { margin: .15rem 0 0; }
+    .wrap { overflow-x: auto; }
+  </style>
+</head>
+<body>
+
+<h1>The Primer — internal metrics</h1>
+<p class="sub">
+  {{ window.since|date:"j M Y, H:i" }} → {{ window.until|date:"j M Y, H:i" }}
+  · generated {{ generated_at|date:"j M Y, H:i" }}
+</p>
+
+<nav aria-label="Window">
+  {% for option in windows %}
+    <a href="?days={{ option }}"{% if option == days %} aria-current="page"{% endif %}>
+      {{ option }} days
+    </a>
+  {% endfor %}
+</nav>
+
+<h2>Funnel and engagement <span class="muted">(§22.3)</span></h2>
+<div class="wrap">
+<table>
+  <caption>Every rate carries the two numbers it was made from. A rate with an empty
+    denominator reads “—”, not 0% — nobody has reached that step yet.</caption>
+  <thead>
+    <tr><th>Metric</th><th class="n">Rate</th><th class="n">Of</th><th class="n">Target</th></tr>
+  </thead>
+  <tbody>
+    {% with a=snapshot.activation %}
+    <tr>
+      <td>Activation <span class="muted">— onboarded and first story finished</span></td>
+      <td class="n">{% if a.pct is None %}—{% else %}{{ a.pct }}%{% endif %}</td>
+      <td class="n muted">{{ a.numerator }}/{{ a.denominator }}</td>
+      <td class="n muted">≥{{ targets.activation }}%</td>
+    </tr>
+    {% endwith %}
+    {% with d=snapshot.day2_return %}
+    <tr>
+      <td>Day-2 return <span class="muted">— played again the next day</span></td>
+      <td class="n">{% if d.pct is None %}—{% else %}{{ d.pct }}%{% endif %}</td>
+      <td class="n muted">{{ d.numerator }}/{{ d.denominator }}</td>
+      <td class="n muted">≥{{ targets.day2_return }}%</td>
+    </tr>
+    {% endwith %}
+    {% with w=snapshot.w1_retention %}
+    <tr>
+      <td>W1 retention <span class="muted">— played in the week after their first story</span></td>
+      <td class="n">{% if w.pct is None %}—{% else %}{{ w.pct }}%{% endif %}</td>
+      <td class="n muted">{{ w.numerator }}/{{ w.denominator }}</td>
+      <td class="n muted">≥{{ targets.w1_retention }}%</td>
+    </tr>
+    {% endwith %}
+    {% with c=snapshot.completion_rate %}
+    <tr>
+      <td>Completion rate <span class="muted">— adventures finished ÷ started</span></td>
+      <td class="n">{% if c.pct is None %}—{% else %}{{ c.pct }}%{% endif %}</td>
+      <td class="n muted">{{ c.numerator }}/{{ c.denominator }}</td>
+      <td class="n muted">≥{{ targets.completion_rate }}%</td>
+    </tr>
+    {% endwith %}
+  </tbody>
+</table>
+</div>
+<p class="sub muted">
+  Retention cohorts exclude children whose first story is too recent to judge —
+  a child who played for the first time this morning cannot yet have returned tomorrow.
+</p>
+
+<h2>Adventures per child per week <span class="muted">(§22.1 — DWA is the North Star)</span></h2>
+<div class="wrap">
+<table>
+  <caption>A Delighted Weekly Active is a child who completed three or more adventures
+    that week. It is a count of children, never a measure of time on the app.</caption>
+  <thead>
+    <tr>
+      <th>Week of</th><th class="n">Adventures</th><th class="n">Active children</th>
+      <th class="n">Per child</th><th class="n">DWA</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for week in snapshot.weeks %}
+      <tr>
+        <td>{{ week.week_start|date:"j M Y" }}</td>
+        <td class="n">{{ week.adventures }}</td>
+        <td class="n">{{ week.active_children }}</td>
+        <td class="n">{{ week.per_child|floatformat:2 }}</td>
+        <td class="n flag">{{ week.dwa }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5" class="muted">No completed adventures in this window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="sub muted">Target: ≥{{ targets.per_child }} adventures per child per week.</p>
+
+<h2>Unit economics <span class="muted">(§22.4 — a headline metric from day one)</span></h2>
+<dl class="grid">
+  <div>
+    <dt>Cost per session</dt>
+    <dd class="big">
+      {% if spend.cost_per_session_usd is None %}
+        <span class="muted">no attributed sessions</span>
+      {% else %}
+        ${{ spend.cost_per_session_usd|floatformat:4 }}
+      {% endif %}
+    </dd>
+  </div>
+  <div>
+    <dt>Total spend</dt>
+    <dd class="big">${{ spend.total_usd|floatformat:4 }}</dd>
+  </div>
+  <div>
+    <dt>Sittings with spend</dt>
+    <dd class="big">{{ spend.sessions }}</dd>
+  </div>
+  <div>
+    <dt>Generations traced</dt>
+    <dd class="big">{{ spend.spans }}</dd>
+  </div>
+  <div>
+    <dt>Unattributed spend</dt>
+    <dd class="big">${{ spend.unattributed_usd|floatformat:4 }}</dd>
+  </div>
+  <div>
+    <dt>Unpriced generations</dt>
+    <dd class="big">{{ spend.unpriced_spans }}</dd>
+  </div>
+</dl>
+<p class="sub muted">
+  Cost per session divides total traced spend by the number of <em>sittings that spent
+  anything</em>. The two numbers on the right are how it can be understating the truth:
+  unattributed spend is real money with no sitting to file it under, and an unpriced
+  generation is a route with no entry in <code>analytics/pricing.py</code> — counted at
+  zero and flagged here rather than silently averaged in. A free route is priced, at zero,
+  and does not appear in that count.
+</p>
+
+<div class="wrap">
+<table>
+  <caption>Where the money goes, by kind and by generation.</caption>
+  <thead>
+    <tr><th>Kind</th><th class="n">Spend</th><th class="n">Generations</th></tr>
+  </thead>
+  <tbody>
+    {% for row in spend.by_kind %}
+      <tr>
+        <td>{{ row.kind }}</td>
+        <td class="n">${{ row.total_usd|floatformat:4 }}</td>
+        <td class="n">{{ row.spans }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="3" class="muted">Nothing generated in this window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="wrap">
+<table>
+  <caption>By operation — which generation to right-size first (§19.9).</caption>
+  <thead>
+    <tr><th>Operation</th><th>Kind</th><th class="n">Spend</th><th class="n">Generations</th></tr>
+  </thead>
+  <tbody>
+    {% for row in spend.by_operation %}
+      <tr>
+        <td>{{ row.operation }}</td>
+        <td class="muted">{{ row.kind }}</td>
+        <td class="n">${{ row.total_usd|floatformat:4 }}</td>
+        <td class="n">{{ row.spans }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="4" class="muted">Nothing generated in this window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>Wellbeing guardrails <span class="muted">(§22.5 — watched and capped, never maximised)</span></h2>
+<dl class="grid">
+  <div><dt>Sittings</dt><dd class="big">{{ snapshot.guardrails.sessions }}</dd></div>
+  <div>
+    <dt>Most sittings by one child in a day</dt>
+    <dd class="big">{{ snapshot.guardrails.max_sessions_per_child_day }}</dd>
+  </div>
+  <div>
+    <dt>Safety incidents</dt>
+    <dd class="big">{{ snapshot.guardrails.safety_incidents }}</dd>
+  </div>
+  <div>
+    <dt>Serious incidents</dt>
+    <dd class="big flag">{{ snapshot.guardrails.serious_safety_incidents }}</dd>
+  </div>
+</dl>
+<p class="sub muted">
+  How sittings ended: {{ snapshot.guardrails.ended_reasons|default:"—" }}.
+  <code>cap</code> is the wellbeing control working — a story landed warmly at the
+  parent's limit (§13.6), not a session cut short. Any serious safety incident is a
+  stop-the-line event.
+</p>
+
+<h2>Pipeline health</h2>
+<div class="wrap">
+<table>
+  <caption>Every event name and how many landed. A metric that has quietly fallen to
+    zero and a service that has quietly stopped emitting look identical everywhere else
+    on this page.</caption>
+  <thead><tr><th>Event</th><th class="n">Count</th></tr></thead>
+  <tbody>
+    {% for name, count in snapshot.events %}
+      <tr><td><code>{{ name }}</code></td><td class="n">{{ count }}</td></tr>
+    {% empty %}
+      <tr><td colspan="2" class="muted">No events in this window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if silent %}
+  <p class="sub muted">Never emitted, ever: {% for name in silent %}<code>{{ name }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}.</p>
+{% endif %}
+
+<h2>Last {{ cost_rows|length }} generations</h2>
+<div class="wrap">
+<table>
+  <caption>The raw spans behind the average. No child, no sitting, no prompt — what was
+    generated, by whom, how much of it, and what it cost.</caption>
+  <thead>
+    <tr>
+      <th>When</th><th>Operation</th><th>Route</th><th>Units</th>
+      <th class="n">Cost</th><th class="n">Latency</th><th>Attributed</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in cost_rows %}
+      <tr>
+        <td class="muted">{{ row.occurred_at|date:"j M H:i:s" }}</td>
+        <td>{{ row.operation }}</td>
+        <td class="muted"><code>{{ row.label }}</code></td>
+        <td class="muted">{{ row.units }}</td>
+        <td class="n">
+          {% if row.priced %}${{ row.cost_usd|floatformat:6 }}{% else %}<span class="muted">unpriced</span>{% endif %}
+        </td>
+        <td class="n muted">{{ row.latency_ms|default_if_none:"—" }}</td>
+        <td class="muted">{% if row.attributed %}sitting{% else %}—{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="7" class="muted">No generations traced yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<footer>
+  <p>
+    §22.3's targets are directional and to be calibrated on real data — read them as a
+    yardstick, not a grade. Metric definitions, and the judgement calls inside each of
+    them, are written down in <code>apps/analytics/metrics.py</code>; prices are in
+    <code>apps/analytics/pricing.py</code> and are list prices, not quotes.
+  </p>
+  <p>
+    Product analytics and the parent-facing dashboard are separate by design (§5.6).
+    Nothing on this page is per-child, and nothing here is reachable from the parent API.
+  </p>
+</footer>
+
+</body>
+</html>

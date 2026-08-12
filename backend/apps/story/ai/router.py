@@ -17,12 +17,18 @@ error — but only if we fail fast instead of retrying forever.
 
 **This module raises `AIError` and nothing else.** That is a contract, not a
 tendency — see `_transport_error`.
+
+**Every call through here is traced with its cost** (§19.9, §22.4). The router is
+the only way a caller reaches an LLM, which is exactly why the span is written
+here: instrumentation a caller has to remember is instrumentation that is missing
+from the newest call site. See `_trace_llm_cost`.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast, runtime_checkable
@@ -111,6 +117,110 @@ def _transport_error(provider: str, model: str, exc: BaseException) -> ProviderE
     )
 
 
+def _usage_from(response: Any, input_field: str, output_field: str) -> dict[str, int] | None:
+    """Read a provider's token meter, or `None` if it did not report one.
+
+    Every SDK spells the same two numbers differently and every one of them treats
+    `usage` as optional, so this is `getattr` all the way down rather than
+    attribute access: a provider that stops sending usage must cost us a *priced*
+    span, never a `AttributeError` between a child and their story.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    incoming = getattr(usage, input_field, None)
+    outgoing = getattr(usage, output_field, None)
+    if incoming is None and outgoing is None:
+        return None
+    return {"input_tokens": int(incoming or 0), "output_tokens": int(outgoing or 0)}
+
+
+def _add_usage(
+    running: dict[str, int] | None, addition: dict[str, int] | None
+) -> dict[str, int] | None:
+    """Sum two meter readings. Either may be absent; both absent stays absent."""
+    if addition is None:
+        return running
+    if running is None:
+        return dict(addition)
+    return {key: running.get(key, 0) + addition.get(key, 0) for key in {*running, *addition}}
+
+
+#: Pydantic model name -> the span name a cost row is filed under. Mapped rather
+#: than derived so the internal dashboard's "which generation is expensive" table
+#: reads in the product's vocabulary (`plan`, `beat`, `safety`) instead of in
+#: class names, and so renaming a schema does not silently split one operation's
+#: history into two.
+_OPERATIONS = {
+    "Beat": "beat",
+    "StoryPlan": "plan",
+    "SessionMemories": "memories",
+    "SafetyVerdict": "safety",
+    "ReturningGreetingText": "greeting",
+    "SessionHighlight": "highlight",
+    "CharacterSheet": "character",
+}
+
+
+def operation_for(model: type[BaseModel]) -> str:
+    """The span name for a typed generation. Unknown schemas keep their own name
+    rather than being filed under "other" — an unfamiliar row in the cost table is
+    a prompt to add it here, and an "other" bucket is where spend goes to hide."""
+    return _OPERATIONS.get(model.__name__, model.__name__.lower())
+
+
+def _trace_llm_cost(
+    provider: StructuredProvider,
+    *,
+    operation: str,
+    system: str,
+    messages: list[dict[str, Any]],
+    completion: str,
+    started: float,
+) -> None:
+    """Write one `GenerationCost` span for a call that has just returned (§19.9).
+
+    Called after **every** `generate_json`, including the repair attempt, because
+    a repair is a second billed generation and §19.6's "one repair" budget is a
+    cost decision as much as a latency one — it should be visible as one.
+
+    **The estimate.** A provider that reports no usage is priced from character
+    counts at `_CHARS_PER_TOKEN`, and the span is stamped `estimated: true` so
+    nobody reads it as a measurement. Four characters per token is the usual rule
+    of thumb for English and is wrong for other scripts; it is here because
+    "roughly right, and labelled" beats a zero that looks like a fact.
+
+    Import-local: `apps.analytics` imports nothing from `story`, but the story app
+    is loaded during migrations and app-registry setup, and a module-level import
+    of a model here would make the AI layer's importability depend on the app
+    registry being ready.
+    """
+    from apps.analytics import cost
+    from apps.analytics.models import CostKind
+
+    usage = getattr(provider, "last_usage", None)
+    if usage is None:
+        prompt_chars = len(system) + sum(len(str(m.get("content", ""))) for m in messages)
+        usage = {
+            "input_tokens": prompt_chars // _CHARS_PER_TOKEN,
+            "output_tokens": len(completion) // _CHARS_PER_TOKEN,
+            "estimated": True,
+        }
+
+    cost.record(
+        kind=CostKind.LLM,
+        operation=operation,
+        provider=provider.name,
+        model=getattr(provider, "model", ""),
+        units=usage,
+        latency_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+#: Only used when a provider reports no usage. See `_trace_llm_cost`.
+_CHARS_PER_TOKEN = 4
+
+
 @runtime_checkable
 class StructuredProvider(Protocol):
     """One LLM provider, reduced to the only thing the router needs from it."""
@@ -128,7 +238,15 @@ class StructuredProvider(Protocol):
         messages: list[dict[str, Any]],
         schema: dict[str, Any],
     ) -> str:
-        """Return the model's response as a raw JSON string."""
+        """Return the model's response as a raw JSON string.
+
+        A provider **may** also set `self.last_usage` to
+        `{"input_tokens": n, "output_tokens": n}` after each call, which is what
+        `_trace_llm_cost` prices. Deliberately not part of this Protocol: it is
+        optional (a provider that cannot report usage is still a valid provider,
+        and gets an estimate instead), and the return type stays the one thing
+        every caller actually wants. Read through `getattr`, never assumed.
+        """
         ...
 
 
@@ -144,6 +262,9 @@ class AnthropicProvider:
     def __init__(self, api_key: str = "", model: str = "") -> None:
         self._api_key = api_key or settings.ANTHROPIC_API_KEY
         self._model = model or settings.AI_BEAT_MODEL
+        #: See `StructuredProvider.generate_json`. Reset on every call so a failed
+        #: generation can never be priced with the previous one's meter reading.
+        self.last_usage: dict[str, int] | None = None
 
     @property
     def model(self) -> str:
@@ -165,6 +286,7 @@ class AnthropicProvider:
         # line above it is not one. `except AIError: raise` keeps this method's
         # own considered refusals ("Claude declined the request") from being
         # re-labelled as transport failures.
+        self.last_usage = None
         try:
             import anthropic
 
@@ -185,6 +307,12 @@ class AnthropicProvider:
                 messages=cast("list[MessageParam]", messages),
                 output_config=output_config,
             )
+
+            # Read the meter before anything below can raise. A refusal and a
+            # truncated response both cost input tokens, and a span we only write
+            # on the happy path would under-report exactly the generations worth
+            # knowing the price of (§22.4).
+            self.last_usage = _usage_from(response, "input_tokens", "output_tokens")
 
             # A safety classifier can decline before any content is produced. That
             # is a 200 with an empty `content`, so check the stop reason first.
@@ -253,6 +381,8 @@ class OpenRouterProvider:
         self._mode = (
             self._JSON_MODE if self._policy is StructuredOutputMode.JSON_OBJECT else self._STRICT
         )
+        #: See `StructuredProvider.generate_json`.
+        self.last_usage: dict[str, int] | None = None
 
     @property
     def model(self) -> str:
@@ -279,6 +409,7 @@ class OpenRouterProvider:
         messages: list[dict[str, Any]],
         schema: dict[str, Any],
     ) -> str:
+        self.last_usage = None
         # See `_transport_error`. The inner `except BadRequestError` still runs
         # first — it is the nearer handler — so the strict-to-JSON-mode degrade is
         # unaffected; what changes is that the *re-raise* under `strict`, and every
@@ -348,6 +479,17 @@ class OpenRouterProvider:
             max_tokens=MAX_OUTPUT_TOKENS,
             messages=messages,
             response_format=response_format,
+        )
+
+        # Before the checks below, for the same reason the Anthropic branch reads
+        # its meter early: a rejected or truncated generation was still paid for.
+        # Note the *accumulate*: under AUTO a strict attempt can be rejected and
+        # retried in JSON mode inside one `generate_json`, and both attempts are
+        # billed. Overwriting here would silently halve the cost of every model
+        # that does not support strict schemas.
+        self.last_usage = _add_usage(
+            self.last_usage,
+            _usage_from(response, "prompt_tokens", "completion_tokens"),
         )
 
         if not response.choices:
@@ -521,8 +663,18 @@ class ModelRouter:
             schema if schema is not None else strip_unsupported_keywords(model.model_json_schema())
         )
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+        operation = operation_for(model)
 
+        started = time.monotonic()
         raw = provider.generate_json(system=system, messages=messages, schema=json_schema)
+        _trace_llm_cost(
+            provider,
+            operation=operation,
+            system=system,
+            messages=messages,
+            completion=raw,
+            started=started,
+        )
         try:
             return self._parse(raw, model)
         except (ValidationError, json.JSONDecodeError) as first_error:
@@ -546,7 +698,20 @@ class ModelRouter:
                 ),
             },
         ]
+        repair_started = time.monotonic()
         repaired = provider.generate_json(system=system, messages=messages, schema=json_schema)
+        # `operation` is unchanged and the span is separate, so the cost table
+        # shows a repaired beat as two `beat` spans. That is the honest shape: it
+        # is what was billed, and a repair rate is then `spans / beats` rather than
+        # a counter somebody has to remember to add.
+        _trace_llm_cost(
+            provider,
+            operation=operation,
+            system=system,
+            messages=messages,
+            completion=repaired,
+            started=repair_started,
+        )
         try:
             return self._parse(repaired, model)
         except (ValidationError, json.JSONDecodeError) as second_error:

@@ -34,6 +34,8 @@ from rest_framework.views import APIView
 
 from apps.accounts.consent import require_consent
 from apps.accounts.models import User
+from apps.analytics import events
+from apps.analytics.models import Event
 from apps.common.permissions import IsParentOwner
 from apps.common.throttling import CompanionCreateThrottle, CompanionReadThrottle
 from apps.companion import greeting
@@ -54,6 +56,20 @@ class CompanionExists(APIException):
     status_code = status.HTTP_409_CONFLICT
     default_detail = "This child already has a companion."
     default_code = "companion_exists"
+
+
+def _has_onboarded_before(child: Child) -> bool:
+    """Has this parent already finished §4.2's flow, for an earlier child?
+
+    Read off the event log rather than off a column on the account, because the
+    fact being recorded is "this parent has been through onboarding", and the
+    event log is where that fact already lives. A boolean on `User` would be a
+    second source that a backfill or a deleted child could put out of step with
+    the funnel it exists to feed.
+
+    Costs one indexed count on the last step of a flow a parent completes once.
+    """
+    return Event.objects.filter(name=Event.ONBOARDING_COMPLETED, parent_id=child.parent_id).exists()
 
 
 @extend_schema_view(
@@ -127,6 +143,20 @@ class CompanionView(GenericAPIView):
         # enqueue failure is logged and the assets are built on the next call to
         # the dev command — never surfaced to the child.
         _enqueue_assets(str(companion.id))
+
+        # The last two funnel steps (§22.3), and they are two rather than one on
+        # purpose. `companion.created` is *this* child getting a friend;
+        # `onboarding.completed` is the parent finishing §4.2's flow, which happens
+        # once per account and is what activation's first half asks about. A second
+        # child a month later fires the first and not the second, which is why the
+        # gate below is a query and not a flag on this request.
+        events.track(
+            Event.COMPANION_CREATED,
+            child=child,
+            archetype=getattr(companion, "archetype", ""),
+        )
+        if not _has_onboarded_before(child):
+            events.track(Event.ONBOARDING_COMPLETED, child=child)
 
         return Response(
             self.get_serializer(companion).data,

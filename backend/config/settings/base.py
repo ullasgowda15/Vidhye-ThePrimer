@@ -701,3 +701,30 @@ GOOGLE_TTS_VOICE_MAP = env.json("GOOGLE_TTS_VOICE_MAP", default={})
 # provider bug or a hostile response, not a picture. The scan rejects it before
 # it reaches storage (§13.8).
 MEDIA_MAX_BYTES = env.int("MEDIA_MAX_BYTES", default=12 * 1024 * 1024)
+
+
+# ---------------------------------------------------------------------------
+# Analytics and unit economics (PRODUCT.md §5.6, §13.8, §19.9, §22.4)
+# ---------------------------------------------------------------------------
+# Where `manage.py drain_events` writes the warehouse export. A directory under
+# the repo by default so the command works on a fresh checkout with no
+# configuration; in production this is a mounted volume that something ships to
+# object storage.
+EVENT_EXPORT_DIR = env("EVENT_EXPORT_DIR", default=str(BASE_DIR / "exports"))
+
+# §13.8: short retention on *raw child behavioural* events. Ninety days is long
+# enough to compute a W4 retention cohort and a quarter of unit economics, and
+# short enough that we are not sitting on two years of a four-year-old's taps.
+# Nothing applies it on a timer — `drain_events --prune` is deliberate and manual,
+# and it never deletes a row that has not reached the export.
+EVENT_RETENTION_DAYS = env.int("EVENT_RETENTION_DAYS", default=90)
+
+# Per-generation prices, merged over `apps.analytics.pricing`'s built-in table.
+# Shaped `{"llm": {"provider:model": [in_per_1m, out_per_1m]}, "image":
+# {"provider": per_image}, "tts": {"provider": per_1k_chars}}`, all in USD.
+#
+# It exists because a vendor changing its price on a Tuesday should be a config
+# edit rather than a deploy — and because an unpriced route is reported as
+# unpriced rather than as free, so the dashboard tells you to come here instead
+# of quietly reading 0.00 (§22.4).
+AI_PRICE_TABLE = env.json("AI_PRICE_TABLE", default={})

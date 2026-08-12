@@ -32,6 +32,8 @@ from rest_framework.serializers import BaseSerializer
 
 from apps.accounts.consent import require_consent
 from apps.accounts.models import User
+from apps.analytics import events
+from apps.analytics.models import Event
 from apps.common.permissions import IsParentOwner, ParentScopedQuerysetMixin
 from apps.media import service as media_service
 from apps.profiles.models import Child
@@ -72,7 +74,22 @@ class ChildViewSet(ParentScopedQuerysetMixin, viewsets.ModelViewSet):
         # `IsAuthenticated` has already run, so this is a real parent.
         parent = cast(User, self.request.user)
         require_consent(parent)
-        serializer.save(parent=parent)
+        child = serializer.save(parent=parent)
+        # Funnel step three (§22.3). `age_band` and not a birthdate, and the count
+        # of seeds rather than the seeds: a child's interests and fears are exactly
+        # the profile §13.8 minimises, and "did the parent fill this in" is the
+        # question analytics has — not "with what".
+        events.track(
+            Event.CHILD_CREATED,
+            child=child,
+            parent=parent,
+            age_band=getattr(child, "age_band", ""),
+            interests=len(child.interests or []),
+            fears=len(child.fears or []),
+            avoid_topics=len(child.avoid_topics or []),
+            intensity_ceiling=child.intensity_ceiling,
+            session_cap_min=child.session_cap_min,
+        )
 
     def perform_destroy(self, instance: Child) -> None:
         """Delete the child, and the objects behind their pictures with them.

@@ -127,8 +127,12 @@ def test_the_plan_call_carries_the_safety_layer_and_the_seeds(auth, aarav, pip, 
     assert "Aarav loves frogs." in system
     # Seeds arrive as DATA, never as instructions (§13.5).
     assert '<memory_bundle kind="data">' in system
-    # The plan call asks for a plan, not a beat.
-    assert '"title": "StoryPlan"' in system
+    # The plan call asks for a plan, not a beat. Written without the space after
+    # the colon since Day 14: `_output_contract` renders the schema compactly,
+    # because at `indent=2` it was about half of every beat prompt (§19.9's
+    # prompt-minimisation lever). The assertion is about which schema, not about
+    # how it is spaced.
+    assert '"title":"StoryPlan"' in system
 
 
 # ---------------------------------------------------------------------------

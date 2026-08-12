@@ -4,7 +4,7 @@ import { useMemories, useTranscript, useTranscripts } from '@/lib/api/queries';
 
 import { DashboardShell } from './DashboardShell';
 import { useDashboardChild, when } from './dashboard';
-import { Card, Section } from './ui';
+import { LINK, Card, Section } from './ui';
 
 /**
  * The transparency log (§12.6) — the headline trust feature, not a footnote.
@@ -64,7 +64,7 @@ function TheLog({ childId, child }: { childId: string | undefined; child: Child 
                 <p className="mt-3">
                   <Link
                     to={`/parent/child/${childId}/transparency/${story.adventureId}`}
-                    className="text-2 text-primary underline underline-offset-4"
+                    className={`text-2 ${LINK}`}
                   >
                     Read it
                   </Link>
@@ -124,15 +124,17 @@ function OneStory({
       }
     >
       <p className="mt-4">
-        <Link
-          to={`/parent/child/${childId}/transparency`}
-          className="text-2 text-primary underline underline-offset-4"
-        >
+        <Link to={`/parent/child/${childId}/transparency`} className={`text-2 ${LINK}`}>
           ← All stories
         </Link>
       </p>
 
-      <Section isLoading={isLoading || child === undefined} error={error} isEmpty={!story}>
+      <Section
+        isLoading={isLoading || child === undefined}
+        error={error}
+        isEmpty={!story}
+        emptyText="This story is no longer stored. Older transcripts are cleared over time; what your child remembers from it is kept."
+      >
         <ol className="grid gap-5">
           {(story?.beats ?? []).map((beat) => (
             <li key={beat.seq}>

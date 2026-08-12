@@ -41,6 +41,8 @@ from apps.accounts.serializers import (
     SignupSerializer,
 )
 from apps.accounts.verification import send_verification_email
+from apps.analytics import events
+from apps.analytics.models import Event
 from apps.common.throttling import AuthAnonThrottle, AuthUserThrottle, SessionRefreshThrottle
 from apps.media import service as media_service
 
@@ -87,6 +89,12 @@ class SignupView(generics.CreateAPIView):
 
         # Stubbed until an email provider lands: the link goes to the console.
         send_verification_email(user)
+
+        # The first step of §22.3's activation funnel, and its denominator: every
+        # other onboarding number is a fraction of the accounts counted here, so
+        # this is the one emission whose absence would make activation look
+        # perfect. No email, no name — an account was created, which is the fact.
+        events.track(Event.PARENT_SIGNED_UP, parent=user)
 
         # `attach` rather than `move_to_cookie`, because the serializer has already
         # dropped `refresh` — it does not declare the field, precisely so that a
@@ -243,12 +251,22 @@ class ConsentView(generics.CreateAPIView):
         return super().post(request, *args, **kwargs)
 
     def perform_create(self, serializer: BaseSerializer) -> None:
-        serializer.save(
+        record = serializer.save(
             parent=self.request.user,
             ip=client_ip(self.request),
             # The client does not get to write its own evidence. A user-agent
             # string is weak evidence, but it is *observed* evidence.
             evidence_ref=self.request.META.get("HTTP_USER_AGENT", "")[:255],
+        )
+        # Funnel step two (§22.3). The consent *type* and nothing about the parent:
+        # `ConsentRecord` is the audit trail (§13.7) and this is a counter, and the
+        # two must not become two copies of the same evidence.
+        events.track(
+            Event.PARENT_CONSENT_RECORDED,
+            # `IsAuthenticated` has already run, so this is a real parent.
+            parent=cast(User, self.request.user),
+            consent_type=getattr(record, "consent_type", ""),
+            method=getattr(record, "method", ""),
         )
 
 

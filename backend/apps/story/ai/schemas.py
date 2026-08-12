@@ -237,6 +237,86 @@ def strip_unsupported_keywords(node: Any) -> Any:
     return node
 
 
+#: A ceiling on one field's description, not a target. The paragraph rule below
+#: does the real work; this only exists so a future docstring with a
+#: twelve-sentence opening paragraph cannot quietly put it all back.
+#:
+#: 400 rather than something tighter because the longest legitimate opening
+#: paragraph in `Beat` — `CastMember.visual_descriptor`, three sentences of what a
+#: permanent appearance may and may not contain — is 330 characters and every one
+#: of them is an instruction. The first version of this capped at 240 and cut that
+#: field off at "Not a human c", which is a worse prompt than the one it shrank.
+MAX_DESCRIPTION_CHARS = 400
+
+
+def trim_descriptions(node: Any) -> Any:
+    """Keep the first paragraph of every `description`, drop the rationale.
+
+    Pydantic turns each model's Python docstring into a schema `description`, and
+    the docstrings in this file are written for the person maintaining them: they
+    open with what the field is and then spend three paragraphs on why it exists,
+    what the alternative was, and which review found the bug. All of that was
+    being sent to the model, on every generation, twice — once inside the
+    assembled system prompt and again as the provider's structured-output schema.
+
+    It is both a cost problem and a quality problem, and the second is the reason
+    to fix it rather than merely shrink it. §19.1 keeps instruction layers and
+    data layers apart precisely so a model knows what it is being *told*; a
+    paragraph explaining that asking a second model "what did that frog look
+    like?" would pay twice is engineering rationale, and a model reading it as
+    guidance about a field is the layering breaking down inside the contract.
+
+    So: the opening paragraph survives, whitespace-collapsed and capped. That is
+    the sentence written *for* the field. Everything after the first blank line is
+    for us.
+
+    Measured on `Beat`, rendered compactly: **6490 characters to 5184**, a fifth
+    of the largest layer in every beat prompt, removing no instruction a model was
+    meant to follow. (The other reduction landing today is
+    `assembler._output_contract` dropping `indent=2`, which takes the same schema
+    from 8775 to 6490 — a separate change, and worth keeping the two numbers
+    apart: one saves whitespace, this one removes text that was actively
+    misleading.)
+
+    Applied in `json_schema_for`, which every schema we send passes through, so a
+    new contract gets the same treatment without anyone remembering it.
+    """
+    if isinstance(node, dict):
+        trimmed: dict[str, Any] = {}
+        for key, value in node.items():
+            if key == "description" and isinstance(value, str):
+                summary = _first_paragraph(value)
+                # A field whose whole docstring is rationale ends up with nothing
+                # useful; drop the key rather than send an empty string.
+                if summary:
+                    trimmed[key] = summary
+                continue
+            trimmed[key] = trim_descriptions(value)
+        return trimmed
+    if isinstance(node, list):
+        return [trim_descriptions(item) for item in node]
+    return node
+
+
+def _first_paragraph(text: str) -> str:
+    """The text up to the first blank line, as one whitespace-collapsed line.
+
+    Over-long paragraphs are cut at the last **sentence** that fits, never at a
+    character count. A description that stops mid-word is a worse instruction than
+    the long one it replaced — the model reads a broken clause as the whole rule —
+    so if not even one sentence fits, the truncation falls back to a word boundary
+    and an ellipsis, which at least reads as incomplete rather than as wrong.
+    """
+    paragraph = " ".join(text.strip().split("\n\n", 1)[0].split())
+    if len(paragraph) <= MAX_DESCRIPTION_CHARS:
+        return paragraph
+
+    head = paragraph[:MAX_DESCRIPTION_CHARS]
+    if (stop := head.rfind(". ")) != -1:
+        return head[: stop + 1]
+    return head.rsplit(" ", 1)[0] + "…"
+
+
 def beat_json_schema() -> dict[str, Any]:
     """JSON Schema for `Beat`, shaped for provider structured-output APIs.
 
@@ -253,6 +333,9 @@ def json_schema_for(model: type[BaseModel]) -> dict[str, Any]:
     Same treatment as `beat_json_schema`, for the other things we ask a model to
     return in a fixed shape — today `StoryPlan`, tomorrow whatever Day 5 needs.
     Sharing one function means a constraint added anywhere is stripped in every
-    schema we send, not only in the beat's.
+    schema we send, not only in the beat's — and, from Day 14, that a docstring
+    written for a maintainer is trimmed to its first paragraph before a model sees
+    it (`trim_descriptions`, §19.9's prompt-minimisation lever).
     """
-    return cast("dict[str, Any]", strip_unsupported_keywords(model.model_json_schema()))
+    schema = strip_unsupported_keywords(model.model_json_schema())
+    return cast("dict[str, Any]", trim_descriptions(schema))

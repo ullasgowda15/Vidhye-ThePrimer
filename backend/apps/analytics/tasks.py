@@ -34,7 +34,7 @@ from typing import Any
 
 from celery import shared_task
 
-from apps.analytics import reports
+from apps.analytics import cost, reports
 from apps.analytics.models import SessionReport
 from apps.story.models import PlaySession
 
@@ -83,7 +83,10 @@ def generate_report(self: Any, session_id: str) -> str:
         )
         raise self.retry(countdown=GATE_RETRY_DELAY_S)
 
-    reports.generate_session_report(session)
+    # The highlight is a model call and it is spent on this sitting (§22.4). Same
+    # re-entry as the other post-session tasks.
+    with cost.trace_ids(child_id=session.child_id, session_id=session.pk):
+        reports.generate_session_report(session)
     if waiting:
         # Worth a warning rather than an info: the snapshot in this report is one
         # sitting behind, so the *next* weekly report will measure movement from

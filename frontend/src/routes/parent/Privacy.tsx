@@ -11,7 +11,7 @@ import {
 } from '@/lib/api/queries';
 
 import { DashboardShell } from './DashboardShell';
-import { Card, Field, Notice, PrimaryButton, QuietButton, Section, TextInput } from './ui';
+import { LINK, Card, Field, Notice, PrimaryButton, QuietButton, Section, TextInput } from './ui';
 
 /**
  * The privacy centre (PRODUCT.md §12.8, §13.7, §13.8).
@@ -254,7 +254,7 @@ function DeleteAccountCard() {
 
         <p className="mt-4 text-1 text-text-muted">
           Changed your mind about something smaller? Each child&rsquo;s limits and topics live in{' '}
-          <Link to="/parent/children" className="text-primary underline underline-offset-4">
+          <Link to="/parent/children" className={LINK}>
             Children
           </Link>
           .

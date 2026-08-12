@@ -47,6 +47,7 @@ export default function Insights() {
         isLoading={isLoading || child === undefined}
         error={error}
         isEmpty={Boolean(data) && (data?.milestones.length ?? 0) === 0}
+        emptyText="Nothing to show yet. Milestones appear here once your child has played a story or two."
       >
         {data ? (
           <div className="grid gap-6">

@@ -359,10 +359,25 @@ def _turn_block(turn: Mapping[str, Any] | None) -> str:
 
 
 def _output_contract(schema: Mapping[str, Any] | None) -> str:
-    # `sort_keys` keeps this layer byte-identical across runs and Python versions,
-    # which is what makes the whole assembly cacheable and testable.
+    """The one layer that is a machine-readable contract rather than prose.
+
+    `sort_keys` keeps this layer byte-identical across runs and Python versions,
+    which is what makes the whole assembly cacheable and testable.
+
+    **Rendered compactly, and that is a cost decision** (§19.9, §22.4). This is
+    the single largest block in a beat prompt — around half of it — and none of
+    the indentation is read by anything: JSON is whitespace-insensitive, models
+    parse it either way, and `indent=2` was costing 2285 characters per beat
+    (8775 → 6490) for legibility nobody was consuming. A human who wants to read
+    it has `beat_json_schema()` in a shell.
+
+    The descriptions *inside* the schema are trimmed one layer down, in
+    `schemas.trim_descriptions`, which takes it further to 5184. The two are
+    deliberately separate changes: this one removes whitespace, that one removes
+    engineering rationale a model should never have been reading as guidance.
+    """
     contract = schema if schema is not None else beat_json_schema()
-    rendered = json.dumps(contract, indent=2, sort_keys=True)
+    rendered = json.dumps(contract, sort_keys=True, separators=(",", ":"))
     return (
         "Reply with a single JSON object matching this schema exactly. No prose "
         "outside the object, no extra keys.\n\n" + rendered

@@ -26,6 +26,7 @@ import logging
 from asgiref.sync import async_to_sync
 from celery import shared_task
 
+from apps.analytics import cost
 from apps.story import orchestrator
 from apps.story.ai.router import AIError
 from apps.story.models import Adventure, Beat
@@ -65,7 +66,14 @@ def generate_beat_media(beat_id: str) -> str:
         return "skipped"
 
     logger.info("story.media_task beat=%s stages=%s", beat_id, ",".join(pending))
-    async_to_sync(orchestrator.attach_media)(beat, stages=pending)
+    # **This is where the cost context has to be re-entered** (§19.9). A
+    # `ContextVar` is per-task, so the trace `create_beat` opened does not follow a
+    # picture into the worker that renders it — and illustration plus voice is most
+    # of what a beat costs. Without this line every media span lands unattributed
+    # and `cost_per_session` reports roughly the LLM half of the true number.
+    # `trace_ids` rather than `trace` because the ids are already on the row.
+    with cost.trace_ids(child_id=beat.adventure.child_id, session_id=beat.adventure.session_id):
+        async_to_sync(orchestrator.attach_media)(beat, stages=pending)
 
     beat.refresh_from_db()
     remaining = orchestrator.pending_media_stages(beat)

@@ -31,6 +31,7 @@ import logging
 from celery import shared_task
 from django.db import transaction
 
+from apps.analytics import cost
 from apps.memory import consolidation, interest
 from apps.story.models import PlaySession
 
@@ -58,7 +59,13 @@ def consolidate(session_id: str) -> str:
         logger.info("memory.consolidate_skipped session=%s reason=deleted", session_id)
         return "missing"
 
-    outcome = consolidation.consolidate_session(session)
+    # Consolidation is a model call plus a handful of embedding calls, and it is
+    # spent *on this sitting* — so it belongs in this sitting's cost/session
+    # (§22.4), not in the unattributed pile. Re-entered here for the same reason
+    # `story.tasks.generate_beat_media` does: a `ContextVar` does not cross a
+    # Celery boundary.
+    with cost.trace_ids(child_id=session.child_id, session_id=session.pk):
+        outcome = consolidation.consolidate_session(session)
     return outcome.status
 
 
