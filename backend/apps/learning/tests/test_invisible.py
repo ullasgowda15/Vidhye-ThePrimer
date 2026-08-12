@@ -198,6 +198,10 @@ def test_the_directive_layer_names_the_objective_and_forbids_saying_it(
     adventure = orchestrator.create_adventure(aarav)
     system = orchestrator.build_beat_context(adventure, seq=2)["system"]
 
+    # The test's own premise: the selector chose something for this child. Without
+    # it the `in` below would read `None in system`, which is the assertion
+    # accidentally passing on a day the catalog had nothing to offer.
+    assert adventure.primary_objective_id is not None
     assert adventure.primary_objective_id in system
     assert "Embed it invisibly" in system
     assert "never name the skill" in system

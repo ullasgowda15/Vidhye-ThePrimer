@@ -277,7 +277,13 @@ def winding_down(adventure: Adventure) -> bool:
             adventure.child_id,
             settings_for(adventure.child).session_cap_min,
         )
-    adventure._winding_down = decided
+    # `setattr` rather than an attribute assignment, and not to dodge mypy: the
+    # read on the way in is already a `getattr` with a default, because this is a
+    # cache stashed on a model instance that has no such field. Writing one half
+    # dynamically and the other half statically is what made mypy flag the pair as
+    # an error rather than as the deliberate memo it is. Both halves now say the
+    # same thing about what this attribute is.
+    setattr(adventure, "_winding_down", decided)  # noqa: B010
     return decided
 
 

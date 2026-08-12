@@ -8,7 +8,7 @@ safety layer.
 """
 
 import datetime
-from typing import Any
+from typing import Any, cast
 
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema_field
@@ -267,7 +267,12 @@ class ChildSettingsSerializer(serializers.ModelSerializer):
         *are* accepted and read as "any time" (`settings.TimeWindow`), because that
         is what a parent who dragged both handles together means.
         """
-        stored = self.instance
+        # DRF types `self.instance` as `Any | Sequence[Any]`, because a serializer
+        # constructed with `many=True` holds a list. This one is always bound to a
+        # single `Child` — it is reached through `ChildSettingsView`, a
+        # `RetrieveUpdateAPIView` — so the annotation says so rather than every
+        # attribute access below reading as a possible list.
+        stored = cast("Child | None", self.instance)
         start = attrs.get("time_window_start", stored.time_window_start if stored else None)
         end = attrs.get("time_window_end", stored.time_window_end if stored else None)
         if (start is None) != (end is None):

@@ -44,9 +44,8 @@ import io
 import json
 import logging
 import zipfile
-from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from django.utils import timezone
 
@@ -59,6 +58,9 @@ from apps.profiles.models import Child
 from apps.profiles.settings import settings_for
 from apps.safety.models import SafetyIncident
 from apps.story.models import Adventure, Beat, Choice, PlaySession
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +80,14 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
 
 
-def _capped(queryset: Iterable[Any]) -> tuple[list[Any], bool]:
-    """`(rows, was_truncated)` — one extra row is fetched to detect the cap."""
+def _capped(queryset: QuerySet[Any]) -> tuple[list[Any], bool]:
+    """`(rows, was_truncated)` — one extra row is fetched to detect the cap.
+
+    A `QuerySet` and not an `Iterable`: the slice below is the whole point, and it
+    is a `LIMIT` in SQL rather than a Python truncation of a list we already paid
+    to build. Every caller passes a queryset; the looser annotation was the reason
+    mypy could not see that the slice was legal.
+    """
     rows = list(queryset[: EXPORT_ROW_CAP + 1])
     return (rows[:EXPORT_ROW_CAP], True) if len(rows) > EXPORT_ROW_CAP else (rows, False)
 

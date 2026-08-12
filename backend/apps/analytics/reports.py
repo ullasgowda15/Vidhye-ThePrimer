@@ -593,7 +593,17 @@ def _week_highlight(reports: list[SessionReport]) -> str:
     """
     if not reports:
         return ""
-    rank = {HighlightSource.MODEL: 2, HighlightSource.DATA: 1, HighlightSource.QUIET: 0}
+    # Keyed on `str` rather than on `HighlightSource`, because the column hands
+    # back a plain string and that is what is looked up. It *worked* keyed on the
+    # enum — `TextChoices` subclasses `str`, so the hashes match — but a reader had
+    # to know that to be sure, and if it ever stopped being true every report
+    # would silently rank 0 and the "best highlight" would degrade to whichever
+    # was most recent. Same values, no cleverness required.
+    rank: dict[str, int] = {
+        HighlightSource.MODEL.value: 2,
+        HighlightSource.DATA.value: 1,
+        HighlightSource.QUIET.value: 0,
+    }
     best = max(
         reports, key=lambda report: (rank.get(report.highlight_source, 0), report.occurred_at)
     )

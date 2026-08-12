@@ -139,6 +139,10 @@ def finish(adventure: Adventure, *, reason: str = PlaySession.EndedReason.COMPLE
     from apps.memory import interest
 
     orchestrator.end_adventure(adventure, reason=reason)
+    # Asserted rather than cast: this helper's contract is that the adventure it
+    # was handed opened a sitting, and if that ever stops being true the test
+    # should say so here rather than fail three lines later on a null lookup.
+    assert adventure.session_id is not None
     session = PlaySession.objects.get(pk=adventure.session_id)
     engine.update_from_adventures(session.child, [adventure])
     session.learning_updated_at = datetime.datetime.now(tz=datetime.UTC)

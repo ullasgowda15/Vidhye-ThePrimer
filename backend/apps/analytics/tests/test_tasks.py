@@ -36,6 +36,10 @@ def _closed(child: Any) -> PlaySession:
     """
     adventure = play(child, correct=True)
     orchestrator.end_adventure(adventure)
+    # Asserted rather than cast: this helper's contract is that the adventure it
+    # was handed opened a sitting, and if that ever stops being true the test
+    # should say so here rather than fail three lines later on a null lookup.
+    assert adventure.session_id is not None
     return PlaySession.objects.get(pk=adventure.session_id)
 
 
