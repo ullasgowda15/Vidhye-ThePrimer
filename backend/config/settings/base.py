@@ -652,7 +652,13 @@ IMAGE_STEPS = env.int("IMAGE_STEPS", default=4)
 # ElevenLabs is the companion's voice.
 ELEVENLABS_API_KEY = env("ELEVENLABS_API_KEY", default="")
 ELEVENLABS_VOICE_ID = env("ELEVENLABS_VOICE_ID", default="")
-ELEVENLABS_MODEL_ID = env("ELEVENLABS_MODEL_ID", default="eleven_multilingual_v2")
+# Flash v2.5 by default, measured against a live key rather than chosen by name:
+# it bills 0.5 credits/character where multilingual_v2 and v3 bill 1.0, so the
+# same quota speaks twice as many lines, and it is the lowest-latency model
+# ElevenLabs offers — which is the part of MEDIA_TURN_BUDGET_S a child spends
+# waiting. Quality is not the axis a 30-word beat is decided on; running out of
+# voice mid-story is.
+ELEVENLABS_MODEL_ID = env("ELEVENLABS_MODEL_ID", default="eleven_flash_v2_5")
 # Optional map from a companion's semantic voice key (§9.1, set from its
 # archetype) to a real ElevenLabs voice id, as JSON:
 #   ELEVENLABS_VOICE_MAP={"warm_low":"21m00Tcm...","bright":"AZnzlk1X..."}
