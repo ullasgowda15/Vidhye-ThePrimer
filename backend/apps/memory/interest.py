@@ -121,11 +121,31 @@ MAX_TOPIC_LENGTH = 64
 #: and deliberately a separate list: that one filters a one-sentence objective
 #: description, this one filters a three-word choice label ("Follow the sparkling
 #: river"), and a shared list would end up being wrong for both.
+#:
+#: The second block is the vocabulary a *choice card* is written in, and it is here
+#: because of what the graph looked like without it. One real sitting — the child
+#: tapping "Follow the sparkling river" and "Ask the dragonflies" — produced a top
+#: six of `river, frog, sparkling, follow, dragonflie, ask`: half of it verbs and
+#: adjectives from our own card copy, sitting at the same weight as the nouns the
+#: child actually reached for. It goes straight into the plan prompt ("This child
+#: is currently in love with: … sparkling, follow, … ask") and it is what §11.7
+#: promises a parent as "a lovely, true window". A topic has to be a *subject*.
+#:
+#: Kept deliberately short of the obvious next words. `sing`, `dance`, `play`,
+#: `magic` and `secret` are card copy nine times out of ten and a child's genuine
+#: love the tenth, and this list is the one place in the module where a mistake is
+#: silent: a topic filtered here can never be reinforced, however often the child
+#: reaches for it. When a word could be either, it stays in.
 _STOPWORDS = frozenset(
     """and are but can for from her his into its let lets not one our out over say
     see the their them then there they this that with what when who why you your
     all any big has have how its more new now off old put too very want went
-    where will yes back down here just like look make take come well
+    where will yes back down here just like look make take come well along onto
+
+    follow ask tell show help find give open close climb jump walk run wait stay
+    hide peek listen touch call carry hold pull push reach follows
+    sparkling shining glowing quiet loud warm cold soft slow fast little tiny huge
+    lovely pretty bright dark tall wide round
     """.split()
 )
 
@@ -153,25 +173,49 @@ class Outcome:
 # ---------------------------------------------------------------------------
 # The vocabulary
 # ---------------------------------------------------------------------------
+#: Plural endings where dropping the trailing "s" alone leaves a non-word:
+#: "foxes" -> "foxe", "beaches" -> "beache". Two letters come off instead.
+#: Deliberately not `-ses`, which would take "horses" to "hors".
+_PLURAL_ES = ("ches", "shes", "sses", "xes", "zes")
+
+
+def _singular(word: str) -> str:
+    """A five-year-old's plural, crudely undone.
+
+    Three rules, and each one exists because dropping the bare "s" produces a
+    string no person would recognise:
+
+    * **"ss" is kept** — "moss" must not become "mos", "grass" not "gras".
+    * **"-ies" becomes "-y"** — this is the one that mattered most in practice.
+      Without it a child who loves *dragonflies, butterflies, bunnies, puppies,
+      ponies* has topics called `dragonflie`, `butterflie`, `bunnie`, `puppie`,
+      `ponie`, none of which matches a world's vocabulary, a parent's seed word, or
+      anything worth showing a parent as what their child loves (§11.7).
+    * **"-ches/-shes/-sses/-xes/-zes" lose both letters** — "foxes" is a fox.
+
+    Still crude on purpose: a stemming dependency for a table whose keys are words
+    a five-year-old would use is a dependency for nothing, and the cost of a miss is
+    one interest counted twice under two spellings, which fades on its own.
+    """
+    if len(word) <= 3 or not word.endswith("s") or word.endswith("ss"):
+        return word
+    if len(word) > 4 and word.endswith("ies"):
+        return f"{word[:-3]}y"
+    if len(word) > 4 and word.endswith(_PLURAL_ES):
+        return word[:-2]
+    return word[:-1]
+
+
 def topic_tokens(text: str) -> frozenset[str]:
     """The subjects named in a phrase, as graph topics.
 
-    Lowercase, letters only, crudely singularised, three letters or more. Crude on
-    purpose — "frogs" has to land on the same row as "frog", and a stemming
-    dependency for a table whose keys are words a five-year-old would use is a
-    dependency for nothing. The cost of a miss is one interest counted twice under
-    two spellings, which fades on its own.
-
-    The one exception is worth its line: a word ending in **"ss"** keeps it. Without
-    that, "moss" becomes "mos" and "grass" becomes "gras" — topics that match no
-    world's vocabulary, no parent's seed word and nothing a person would recognise
-    in a parent-facing list of what their child loves.
+    Lowercase, letters only, crudely singularised (`_singular`), three letters or
+    more, and never one of `_STOPWORDS` — which filters function words *and* the
+    verbs and adjectives a choice card is written in, because a topic has to name a
+    subject rather than describe one.
     """
     letters = "".join(char if char.isalpha() else " " for char in text.casefold())
-    words = (
-        word[:-1] if word.endswith("s") and not word.endswith("ss") and len(word) > 3 else word
-        for word in letters.split()
-    )
+    words = (_singular(word) for word in letters.split())
     return frozenset(
         word[:MAX_TOPIC_LENGTH] for word in words if len(word) >= 3 and word not in _STOPWORDS
     )

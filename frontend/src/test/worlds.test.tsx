@@ -46,6 +46,19 @@ function block(selector: string): Record<string, string> {
   );
 }
 
+/** Relative luminance of a `#rrggbb` value, per WCAG 2.1. */
+function luminance(hex: string): number {
+  const channels = [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16) / 255);
+  const [r, g, b] = channels.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG contrast ratio between two `#rrggbb` values, 1:1 … 21:1. */
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 afterEach(() => {
   document.documentElement.removeAttribute('data-world');
   document.documentElement.removeAttribute('data-theme');
@@ -84,6 +97,29 @@ describe('the world palettes', () => {
     for (const token of ['--bg', '--primary', '--accent', '--text']) {
       const values = palettes.map((palette) => palette[token]);
       expect(new Set(values).size, `${token} is shared between worlds`).toBe(worldKeys.length);
+    }
+  });
+
+  it('keeps body text above WCAG AA in every world, day and night', () => {
+    // §15.1's first rule, computed rather than eyeballed. `--text-muted` is the
+    // token this test exists for: it is the only one in these blocks rendered at
+    // body size (14–18px in the story footer, the waiting line, the home screen),
+    // so it needs 4.5:1 — and tinting a grey toward a world's hue *lightens* it,
+    // which is how three of the four first shipped between 3.87:1 and 4.48:1.
+    // `--text` is checked alongside it because a world that dimmed its headline
+    // colour would fail the same way and nobody would think to look.
+    for (const key of worldKeys) {
+      for (const [when, palette] of [
+        ['day', block(`[data-world='${key}']`)],
+        ['night', block(`[data-theme='night'][data-world='${key}']`)],
+      ] as const) {
+        for (const token of ['--text', '--text-muted'] as const) {
+          const ratio = contrast(palette[token], palette['--bg']);
+          expect(ratio, `${key} ${when} ${token} on --bg is ${ratio.toFixed(2)}:1`).toBeGreaterThan(
+            4.5,
+          );
+        }
+      }
     }
   });
 

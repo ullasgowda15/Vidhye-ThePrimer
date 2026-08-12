@@ -133,6 +133,15 @@
  * accent is the only saturated colour on the screen, and text stays near-black on
  * light and near-white on dark — a world is a shift in hue, not a drop in
  * legibility.
+ *
+ * **`--text-muted` is the one that has to be checked by hand.** It is the only
+ * token in these blocks rendered at body size (14–18px in the story footer, the
+ * waiting line, the home screen), so §15.1's "WCAG AA contrast minimum" means
+ * 4.5:1 against that world's own `--bg` — not against the base cream. Tinting a
+ * grey toward a world's hue lightens it, and three of these first shipped between
+ * 3.87:1 and 4.48:1 because of exactly that. Every value below clears 4.5:1
+ * against its own background, and `worlds.test.tsx` computes the ratio from this
+ * file so the next world cannot ship without clearing it either.
  */
 [data-world='whispering_woods'] {
   --bg: #f1f6ea;
@@ -141,7 +150,7 @@
   --accent: #e0a13c;
   --success: #3f8a52;
   --text: #2f3b28;
-  --text-muted: #66755d;
+  --text-muted: #5a6952;
   --border: #dbe7cd;
   --shadow-card: 0 8px 28px rgb(47 59 40 / 12%);
 }
@@ -153,7 +162,7 @@
   --accent: #e2bb4a;
   --success: #3d7f77;
   --text: #2b3150;
-  --text-muted: #6a7292;
+  --text-muted: #5d6584;
   --border: #dbe0f3;
   --shadow-card: 0 8px 28px rgb(43 49 80 / 14%);
 }
@@ -165,7 +174,7 @@
   --accent: #e8825f;
   --success: #2f8a76;
   --text: #1f4449;
-  --text-muted: #5b7f85;
+  --text-muted: #4c6f75;
   --border: #cee5e3;
   --shadow-card: 0 8px 28px rgb(31 68 73 / 13%);
 }

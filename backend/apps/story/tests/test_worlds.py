@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from apps.companion.models import Character
 from apps.companion.service import create_companion
@@ -295,6 +296,49 @@ def test_somewhere_known_is_left_behind_once_it_is_worn_out(ocean_child: Child) 
 
     assert fourth.returning is False
     assert fourth.name != first_place
+
+
+def test_a_worn_out_world_still_moves_the_child_around_it(ocean_child: Child) -> None:
+    """§8.3's *variation*, once there is nowhere new left to go.
+
+    A child whose interest graph points hard at one world never leaves it —
+    `world_score` wins outright, so `select_world`'s novelty tie-break never fires
+    for them. Once every place in that world is known and worn out, "go somewhere
+    they know" has to mean the one they have not seen for longest, or it is a fixed
+    point: the visit just recorded puts the same row back at the head of the list,
+    and the child spends every remaining adventure in one place — always the last
+    one discovered, which is the most intense place the registry holds.
+    """
+    world = worlds.world_by_key("coral_deep")
+    assert world is not None
+    start = timezone.now() - datetime.timedelta(days=60)
+    day = 0
+
+    def sitting() -> str:
+        """One adventure: choose a place, record the visit, and date it a day on.
+
+        The re-dating is not decoration. `record_visit` stamps `timezone.now()`, and
+        a loop of them can land several visits inside a single clock tick — after
+        which `-last_visited_at` ties and the ordering falls through to `name`,
+        which is not the thing under test. Real visits are an adventure apart, so
+        this is what the ordering actually sees in production.
+        """
+        nonlocal day
+        setting = worlds.select_place(ocean_child, world)
+        place = worlds.record_visit(ocean_child, setting, None)
+        WorldPlace.objects.filter(pk=place.pk).update(
+            last_visited_at=start + datetime.timedelta(days=day)
+        )
+        day += 1
+        return setting.name
+
+    for _ in range(worlds.NOVELTY_AFTER_VISITS * len(world.places)):
+        sitting()
+
+    # Everywhere is known and worn out. The next few sittings must still move.
+    after = [sitting() for _ in range(len(world.places))]
+
+    assert set(after) == {place.name for place in world.places}, f"pinned to {after}"
 
 
 def test_a_character_met_at_a_place_is_remembered_as_living_there(

@@ -58,6 +58,30 @@ def test_a_topic_is_one_word_however_it_was_written() -> None:
     # what their child loves.
     assert "moss" in interest.topic_tokens("moss and grass")
     assert "grass" in interest.topic_tokens("moss and grass")
+    # And the same standard applied to the plurals a five-year-old actually uses.
+    # "dragonflie" and "bunnie" are not words, match no world's vocabulary, and are
+    # not something to show a parent as what their child loves (§11.7).
+    assert "dragonfly" in interest.topic_tokens("the dragonflies")
+    assert "butterfly" in interest.topic_tokens("butterflies")
+    assert "bunny" in interest.topic_tokens("bunnies and puppies")
+    assert "puppy" in interest.topic_tokens("bunnies and puppies")
+    assert "fox" in interest.topic_tokens("foxes and beaches")
+    assert "beach" in interest.topic_tokens("foxes and beaches")
+    assert "horse" in interest.topic_tokens("horses"), "not 'hors'"
+
+
+def test_a_topic_names_a_subject_rather_than_describing_one() -> None:
+    """The words on a choice card are ours; only the nouns on it are theirs.
+
+    Without this the graph fills with the verbs and adjectives of our own card copy
+    — a real sitting produced `river, frog, sparkling, follow, dragonflie, ask` —
+    and those go verbatim into the plan prompt's "This child is currently in love
+    with: …" and into what §11.7 promises a parent as a true window.
+    """
+    topics = interest.topic_tokens("Follow the sparkling river")
+
+    assert topics == {"river"}
+    assert interest.topic_tokens("Ask the dragonflies") == {"dragonfly"}
 
 
 def test_entity_keys_become_topics_only_when_they_name_a_subject() -> None:
@@ -91,8 +115,10 @@ def test_a_played_sitting_raises_what_the_child_chose(played: PlaySession) -> No
     topics = {topic.name: topic.weight for topic in interest.top_interests(played.child, limit=20)}
 
     assert "river" in topics, "they chose the river twice"
-    assert "dragonflie" in topics or "dragonfly" in topics, "and the dragonflies once"
+    assert "dragonfly" in topics, "and the dragonflies once"
     assert "chorus" not in topics, "the card they never took is not an interest"
+    # And what came off the cards is the *nouns* on them, not our verbs (§11.7).
+    assert {"follow", "ask", "sparkling"}.isdisjoint(topics)
 
 
 def test_choosing_something_outweighs_merely_being_shown_it(played: PlaySession) -> None:

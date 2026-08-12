@@ -423,12 +423,23 @@ def select_place(child: Child, world: World) -> Setting:
             return _revisit(world, familiar)
         if not unseen:
             # Every place in this world is known *and* worn out, and there is
-            # nowhere new inside the ceiling. Going back to the most familiar one is
-            # a better answer than inventing somewhere we cannot promise to draw the
-            # same way twice — and `select_world`'s novelty tie-break means the next
-            # sitting will usually pick a different world anyway.
+            # nowhere new inside the ceiling. Going back is still a better answer
+            # than inventing somewhere we cannot promise to draw the same way twice
+            # — but it must be somewhere *else* they know, not the place they were
+            # last time.
+            #
+            # `known[-1]` rather than `known[0]`: the list is newest-visited first,
+            # so this is the place they have not seen for longest. Taking the head
+            # instead is a fixed point — the visit we are about to record puts that
+            # same row back at the head — and a child with a strong interest graph
+            # never leaves the world (`world_score` wins outright every sitting, so
+            # `select_world`'s novelty tie-break never fires for them). The result
+            # was a map that stopped moving: every adventure after the ninth in the
+            # same place, and, because discovery walks the registry in order, always
+            # the *most intense* place in that world. §8.3 asks for
+            # repetition-with-variation; this is the variation.
             logger.info("story.world_exhausted child=%s world=%s", child.pk, world.key)
-            return _revisit(world, familiar)
+            return _revisit(world, known[-1])
 
     if not unseen:
         # Nowhere known and nowhere new: this world holds nothing at or below the
