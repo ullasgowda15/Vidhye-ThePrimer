@@ -54,7 +54,15 @@ The one blocking row locally is `spend.breaker` (no budget cap set on a laptop) 
 | 3 | `embed()` width guard passes; a wrong `output_dimensionality` fails loudly | ✅ tested — and there are now **two** guards: `embed()` compares against the column, the provider compares against what it asked for, so "the model ignored us" and "somebody changed `EMBEDDING_DIMENSIONS`" read differently |
 | 4 | Model confirmed served at the deployment's `GOOGLE_CLOUD_LOCATION` by a live call | ✅ **live** — `global`, plus three other regions |
 | 5 | No OpenAI account needed; `privacy.provider_terms` still `OK` | ✅ **live** — see above |
-| 6 | lint / test / evals green, mypy clean, pip-audit clean, docs updated, `OPENAI_API_KEY` gone from required config | ✅ — **1464** backend (14 new) + **183** frontend + **44 passed / 1 skipped** evals; ruff clean both sides; mypy 0 issues in 262 source files; `pip-audit` no known vulnerabilities (no new dependency — the Gemini build already added the SDK); `makemigrations --check` clean |
+| 6 | lint / test / evals green, mypy clean, pip-audit clean, docs updated, `OPENAI_API_KEY` gone from required config | ✅ — **1464** backend (14 new) + **183** frontend + **44 passed / 1 skipped** evals; ruff clean both sides; mypy 0 issues in 262 source files; `pip-audit` no known vulnerabilities (no new dependency — the Gemini build already added the SDK); `makemigrations --check` clean. **CI green, run `31729138215`** — all five jobs, counts matching the local run exactly |
+
+## CI
+
+Build commit `3841e38`, recorded run **`31729138215`** on `0ac4ec6` — Backend, Backend image, Dependencies, Evals and Frontend all green.
+
+The build commit's own run (`31722071810`) was **red on the Dependencies job and nothing else**, for a reason that has nothing to do with embeddings: `npm audit` picked up an advisory published against `nanoid <3.3.18` (GHSA-2v37-7h3g-55p8) some time between the previous green run and this one. `nanoid` reaches this tree only as `postcss -> nanoid` under the Vite build, so it is dev-only and nothing in it is served to a browser — but `--audit-level=high` is the blocking bar and the advisory is a high, which is the gate behaving correctly rather than a gate to argue with.
+
+`0ac4ec6` is `npm update nanoid`: one package, one patch version, a three-line lockfile diff. It is recorded as this build's run because it is the last commit in this work, the same convention used for the Gemini build's pair. Worth stating plainly so a later reader does not mistake the red run for an embeddings failure: on `3841e38` the other four jobs — including the full backend suite and the evals — were already green, and `pip-audit` had passed inside the failing job before `npm audit` ran.
 
 ## Two judgement calls
 
