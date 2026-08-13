@@ -194,7 +194,7 @@ All seven P1s. Six in one pass; P1-7 in a second, after CI on the first fix comm
 
 **Re-verification, in full.** `make lint` → ruff check clean, `ruff format --check` clean (215 files), eslint clean, prettier clean. `make typecheck` → **mypy: 0 issues in 243 source files**, `tsc --noEmit` clean. `make schema` → `frontend/openapi.json` **byte-identical** (`git diff --stat` empty), as expected: none of the six touches a serializer or a route. Backend `pytest -q` → **exit 0, 1240 tests** (1231 + 9 new). Frontend `vitest run` → **171 passed, 12 files** (170 + 1 new).
 
-**CI.** Run **`31654512385`** on the first fix commit `75bc533` — **frontend green, backend red**, on P1-7 and nothing else (`1 failed, 1239 passed`; the failure is the metrics test above, not one of the six fixes). Run id for the second fix commit is recorded in the follow-up docs commit, once it has actually finished.
+**CI.** Run **`31654512385`** on the first fix commit `75bc533` — **frontend green, backend red**, on P1-7 and nothing else (`1 failed, 1239 passed`; the failure is the metrics test above, not one of the six fixes). Run **`31655842931`** on `12f93a2` — **green**, all three jobs, `1240 passed in 382.30s`, matching the local run exactly. That run executed at 00:53–00:59 UTC, i.e. **inside** the window P1-7 fails in, which is what makes it evidence rather than another lucky hour.
 
 **Re-measured after the fix, not assumed:** the deletion probe that produced Phase 1's two survivors now reports **0 events, 0 cost spans**, as a permanent test rather than a scratch file.
 
