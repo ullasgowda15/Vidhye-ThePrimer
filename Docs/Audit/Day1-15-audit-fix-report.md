@@ -24,6 +24,14 @@
 
 Out of scope and untouched, as the brief directs: the confirmed known-open items in report §6 (weekly-report sitting count, `Personalization.fear_ceiling` docstring, the server-local daily window, the staff-tier `search_fields`).
 
+**CI run [`31687261960`](https://github.com/ullasgowda15/Vidhye-ThePrimer/actions/runs/31687261960) on `54bb563` — green, all five jobs.** 1389 backend passed · 44 evals + 1 skipped · 183 frontend · mypy 0/260 · `pip-audit` and `npm audit` clean. Details in §5.
+
+### Three things to look at before anything else
+
+1. **One deviation from the brief, on evidence.** It asked for "Django to the 5.1.x tip (at least)". `pip-audit` shows six advisories (`CVE-2026-48587`, `-6873`, `-8404`, `-48588`, `-53877`, `-53878`) fixed only in **5.2.15+/6.0.6+** — the 5.1 series is end-of-life and never received them — so 5.1.15 would have left six open. Taken to the **5.2 LTS** instead. §3.
+2. **One deliberate exception to "nothing referencing the parent survives a delete".** The new `DeletionReceipt` holds an opaque id pointing at nothing, a non-reversible keyed hash of the email and three counts, and it is outside the FK-cascade rule *on purpose* — otherwise the record of a deletion would be deleted by the deletion it records. Asserted as intent by `test_a_receipt_survives_the_cascade_it_records`, and disclosed to parents in `privacy.py`. §3, §5.
+3. **One line beyond the letter of the brief.** `CharacterRef.render()` scrubs `expression` as well as `name` and `descriptor`. It is model output landing in the same block as the other two; leaving it as the one unguarded field in the function whose whole point is that guarding happens there would have been the shape of the original bug. §2.
+
 ---
 
 ## 2. The three P0s
