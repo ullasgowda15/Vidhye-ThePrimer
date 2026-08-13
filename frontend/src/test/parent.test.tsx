@@ -25,10 +25,7 @@ function renderApp(initialPath: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter
-        initialEntries={[initialPath]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path="/" element={<p>storybook</p>} />
           <Route path="/parent/gate" element={<ParentGate />} />

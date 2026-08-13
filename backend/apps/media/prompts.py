@@ -37,8 +37,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from apps.media.style import style_tokens
+from apps.safety.scrub import scrub_instruction_text
 
 logger = logging.getLogger(__name__)
+
+#: Prompt-side caps for the two untrusted fields of a `CharacterRef`. A name is a
+#: name; a canonical descriptor is a sentence and a half. Same numbers as
+#: `prompting.assembler`'s `NAME_CHARS` / `LINE_CHARS`, for the same reason: the
+#: cap says what the field is *for*, and is not the defence.
+NAME_CHARS = 60
+DESCRIPTOR_CHARS = 400
 
 SCENE_LABEL = "SCENE"
 CHARACTERS_LABEL = "CHARACTERS"
@@ -75,8 +83,48 @@ class CharacterRef:
     reference_url: str | None = None
     expression: str = ""
 
+    @property
+    def safe_name(self) -> str:
+        """The name as it is allowed to reach an image model (§13.5).
+
+        `Companion.name` is a text box a child filled in and is barely validated
+        on purpose. Everything else in the product scrubbed it; this path did
+        not, which is the audit's F-2.
+        """
+        return scrub_instruction_text(self.name, cap=NAME_CHARS) or "the companion"
+
+    @property
+    def safe_descriptor(self) -> str:
+        """The canonical descriptor as it is allowed to reach an image model.
+
+        **Model output**, and therefore untrusted in exactly the way
+        `assembler._plan_block` describes: a directive that survived one
+        generation would otherwise be laundered into the next by being written
+        into a descriptor, and a descriptor is replayed into every picture of
+        this character for the life of the friendship.
+        """
+        return scrub_instruction_text(self.descriptor, cap=DESCRIPTOR_CHARS)
+
+    @property
+    def safe_expression(self) -> str:
+        """What this character is doing in this picture, scrubbed.
+
+        Also model output — a beat writes it — and it lands in the same block as
+        the two fields above, so it goes through the same door rather than being
+        the one field on this line that did not.
+        """
+        return scrub_instruction_text(self.expression, cap=NAME_CHARS)
+
     def render(self) -> str:
         """Who this character is, and what they are doing right now, in words.
+
+        **Every untrusted field on this line is scrubbed here, in one place**, so
+        that every caller is covered by construction: the reference set, a story
+        beat, the dev commands and the smoke tests all build their prompt through
+        this method, and `character_signature` derives the cache key from the same
+        scrubbed text. That is the fix for the audit's F-2, and the shape of it is
+        the point — a scrub applied at each call site is a scrub the next call
+        site will not have.
 
         The anchor image is *not* here. The reference handle lives in its own
         section because it is metadata about the render, not part of the
@@ -85,8 +133,8 @@ class CharacterRef:
         reads a prompt back (the offline adapter, a debugging tool) then sees the
         same character whether or not an anchor image exists yet.
         """
-        line = f"{self.name}: {self.descriptor.strip()}"
-        if expression := self.expression.strip():
+        line = f"{self.safe_name}: {self.safe_descriptor}"
+        if expression := self.safe_expression:
             return f"{line} In this picture: {expression}"
         return line
 
@@ -111,10 +159,17 @@ def character_signature(characters: Sequence[CharacterRef]) -> str:
     would hand the second beat the first one's face. A character with no
     expression hashes exactly as it did before this field existed, so no cached
     render was invalidated by adding it.
+
+    **Built from the scrubbed text**, like `render()`, so the key names the
+    picture that will actually be asked for. The alternative — hashing the raw
+    descriptor while prompting with the scrubbed one — would let two different
+    prompts share a key. A descriptor the scrub does not touch, which is every
+    ordinary one, hashes exactly as it did before, so this invalidated only the
+    cache entries whose text was carrying an injection.
     """
     parts = [
-        f"{ref.key}={ref.descriptor.strip()}"
-        + (f"@{expression}" if (expression := ref.expression.strip()) else "")
+        f"{ref.key}={ref.safe_descriptor}"
+        + (f"@{expression}" if (expression := ref.safe_expression) else "")
         for ref in sorted(characters, key=_sort_key)
     ]
     return " | ".join(parts) if parts else "(no characters)"
@@ -171,10 +226,14 @@ def _reachable_anchors(characters: Sequence[CharacterRef]) -> list[tuple[str, st
             # In development the media backend is the local disk and this is a
             # `/media/...` path. Nothing off-box can resolve it.
             logger.debug(
-                "Dropping anchor for %s: %r is not a provider-reachable URL.", ref.name, url
+                "Dropping anchor for %s: %r is not a provider-reachable URL.", ref.key, url
             )
             continue
-        reachable.append((ref.name, url))
+        # The scrubbed name, because this block is part of the same prompt: a
+        # capable provider would read `REFERENCES` as words as well as fetching
+        # the URL, and there is no reason for the one line of a prompt that names
+        # a character to be the line that names them unguarded.
+        reachable.append((ref.safe_name, url))
     return reachable
 
 

@@ -27,7 +27,7 @@ What keeps us portable, piece by piece:
 | Component | Vendor | What it does | Pilot tier | Pilot cost | Cost after free tier |
 |---|---|---|---|---|---|
 | **Hosting / compute** | Google Cloud (Compute Engine) | One VM runs the entire `docker-compose` (Django ASGI, Celery worker, Postgres+pgvector, Redis) | e2-medium (4 GB), on the **$300 / 90-day credit** | **$0** | ~$24–27/mo on GCP *(reason to migrate to Hetzner ~$5)* |
-| **Story beats (LLM)** | Google — Gemini API (AI Studio) | Writes the story beats | Gemini **Flash — free tier** (~1,500 req/day; our load ≈90–120/day) | **$0** | ~$1.50/$7.50 per 1M tokens if we outgrow free RPM |
+| **Story beats (LLM)** | Google — Gemini API (**paid**, data-excluded) | Writes the story beats | Gemini **Flash, paid tier** — *not* the AI Studio free tier (§3) | ~$2–5/mo *(from credit)* | ~$1.50/$7.50 per 1M tokens |
 | **Safety grader + memory digest (LLM)** | Google — Gemini API (**paid**, data-excluded) | Independent output classifier (§13.3) + memory consolidation | Gemini **Flash-Lite**, paid tier | ~$1–3/mo *(from credit)* | ~$0.10/$0.40 per 1M tokens |
 | **Embeddings** | OpenAI | Semantic memory vectors for recall (the moat) | `text-embedding-3-small` | **<$1/mo** | ~$0.02 per 1M tokens |
 | **Images** | Cloudflare — Workers AI | Companion reference set + scene art (FLUX-1-schnell) | 10,000 neurons/day **free** | **$0** | $0.011 per 1,000 neurons |
@@ -46,11 +46,23 @@ What keeps us portable, piece by piece:
 
 **Children's data must never train someone else's model.**
 
-- The **free** Gemini tier (AI Studio) **trains on your prompts.** That is acceptable **only** for the **beat** model (story text).
-- The **safety grader, memory digest, and embeddings** see the child's actual history and must run on a **paid, data-excluded** tier (Gemini paid / Vertex, and the OpenAI *API*, both exclude API inputs from training).
-- Never point safety/memory/embeddings at a free prompt-reselling route.
+**All four LLM/embedding routes run paid + data-excluded. Including beats.** That is a change from the first version of this document, made after the Day 1–15 audit (F-3), and the reason is that the earlier split was wrong on the facts:
 
-This is why the table above splits "beats (free)" from "safety+memory (paid)" even though both are Gemini.
+- A **beat prompt is not "just story text".** It carries the child's first name, their age band, the full avoid-topics list, the full fears list and the retrieved memory bundle. There is no version of "the free tier may train on this" that a parent would recognise as acceptable.
+- The **memory digest** carries the *verbatim* session digest — `The child said "…"` for every turn of the sitting. That is the least-processed child speech in the system.
+- The **safety grader** is handed the beat and the child's controls; the **embeddings** are handed each memory's sentence.
+- `apps/accounts/privacy.py` tells parents, in the present tense and with no qualification: *"We never use your child's data to train anybody's AI models — not ours, and not our providers."* A carve-out for beats would make that sentence false, and the disclosure is the thing this rule exists to keep true.
+
+So: never a free prompt-reselling route for **any** of them. On OpenRouter that means never a `:free` suffix; on Gemini it means the paid API / Vertex rather than the AI Studio free tier. Also set the account-level data policy (OpenRouter: disallow prompt logging/training) — the suffix is what code can check, the account setting is the other half.
+
+**This is now enforced, not just written down** (that is the other half of F-3 — the rule had been in `PROGRESS.md` since §13.8 was written and every model was on a `:free` route anyway):
+
+- `apps/common/model_ids.py` owns the rule (`is_free_route` / `permits_training` / `training_error`).
+- `config/settings/prod.py` **refuses to boot** if any of `AI_BEAT_MODEL`, `AI_SAFETY_MODEL`, `AI_MEMORY_MODEL`, `EMBEDDING_MODEL` is a `:free` route.
+- `manage.py launch_check` has a **blocking** `privacy.provider_terms` row. It used to report only that the grader was *reachable*, which is how a `:free` grader passed the preflight.
+- `flags._validate_beat_model` rejects one too, so the no-deploy rollback lever cannot reach a state the boot guard forbids.
+
+What none of that proves is that a given *paid* route's terms actually exclude training — that is a purchasing decision, and it belongs to whoever signs up. The guard catches the specific cheap mistake that has already happened once.
 
 ---
 
@@ -59,16 +71,16 @@ This is why the table above splits "beats (free)" from "safety+memory (paid)" ev
 Set in `.env` (never commit it — it's gitignored). Values are the pilot targets.
 
 ```dotenv
-# --- Provider routing ---
+# --- Provider routing: ALL FOUR paid + data-excluded (§3) ---
 AI_PROVIDER_ORDER=gemini            # (see note) or route Gemini via openrouter
-AI_BEAT_MODEL=<gemini-flash-slug>            # FREE tier — beats only
+AI_BEAT_MODEL=<gemini-flash-slug>            # PAID/data-excluded (no ':free' suffix)
 AI_SAFETY_MODEL=<gemini-flash-lite-slug>     # PAID/data-excluded — must differ from beat model
-# AI_MEMORY_MODEL inherits AI_SAFETY_MODEL
+AI_MEMORY_MODEL=<gemini-flash-lite-slug>     # PAID/data-excluded — carries the verbatim digest
 
 # --- Embeddings (semantic recall) ---
 EMBEDDING_PROVIDER=openai
 EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_API_KEY=<key>                 # pennies; or drop to local-hash for $0 (weaker recall)
+OPENAI_API_KEY=<key>                 # pennies; the OpenAI API excludes inputs from training
 
 # --- Images ---
 IMAGE_PROVIDER=cloudflare
@@ -96,7 +108,7 @@ MEDIA_CDN_BASE_URL=<r2-public-or-custom-domain>
 
 > **Router note:** if the app's `AI_PROVIDER_ORDER` doesn't yet have a native `gemini` provider implemented, route Gemini **through OpenRouter** (OpenAI-compatible) as an interim — set `AI_PROVIDER_ORDER=openrouter` with Gemini slugs. Confirm which is wired before launch; Django refuses to boot on a provider/model-form mismatch. **The exact model slugs must be filled in from each provider's current model list at setup time.**
 
-> **Boot guards to expect (all correct, don't disable):** `prod.py` refuses to start with the safety classifier off, with `IMAGE_MODERATION=off`, or with `MEDIA_STORAGE=local`. These are safety rails, not bugs.
+> **Boot guards to expect (all correct, don't disable):** `prod.py` refuses to start with the safety classifier off, with `IMAGE_MODERATION=off`, with `MEDIA_STORAGE=local`, or with any child-data model on a `:free` route (§3). These are safety rails, not bugs.
 
 ---
 
@@ -105,7 +117,7 @@ MEDIA_CDN_BASE_URL=<r2-public-or-custom-domain>
 Non-negotiable at a tight budget:
 
 1. **GCP billing budget + alert.** Set a budget on the billing account with email alerts at **$50 / $150 / $250** of the $300, so the credit can't silently drain. (Note: GCP alerts *notify*, they don't hard-stop — see #4.)
-2. **Keep beats on the free Gemini tier.** The credit should only be touched by the small paid safety/memory calls and the VM. If beat volume ever approaches the free RPM cap, that's a signal to revisit, not to silently overspend.
+2. **Beats are a paid line item now** (§3), so the credit covers the VM *and* the LLM calls. At ~90–120 beats/day on Flash that is a few dollars a month against a $300 credit — the privacy rule costs roughly one month of the credit's tail, which is the trade the audit's F-3 made deliberately. Watch it in `manage.py metrics` (cost/session) rather than assuming a free tier absorbs it.
 3. **OpenAI usage hard-limit.** Set a low monthly cap (e.g. $5) in the OpenAI dashboard — embeddings won't come close, so this is pure insurance.
 4. **Hard-stop billing (optional but recommended).** A small Cloud Function tied to the budget pub/sub topic that disables billing at 100% of credit prevents any post-credit charge. Ask me to add this if you want a true hard ceiling.
 5. **Cloudflare & Google free tiers are self-capping** — they degrade or 429 rather than bill you, and the app handles that gracefully (see #6).
@@ -158,7 +170,7 @@ Because Postgres/Redis were always our containers and media was always on R2, **
 
 | Phase | Users | Host | LLM | Notes |
 |---|---|---|---|---|
-| **Pilot** | 15 | GCP VM on $300 credit | Gemini Flash free + Flash-Lite paid | ≈$0 out of pocket |
+| **Pilot** | 15 | GCP VM on $300 credit | Gemini Flash paid + Flash-Lite paid (§3) | ≈$0 out of pocket (credit) |
 | **Post-credit** | 15–50 | Hetzner CX22 (~$5/mo) | same | trivial migration; costs stay tiny |
 | **Growth** | 100s | Bigger Hetzner VPS | same, watch free-tier caps | per-user costs scale ~linearly; still self-hosted, no re-architecture |
 | **Scale** | 1,000s | Multi-VM or managed PG + autoscaling + edge CDN | negotiate/optimize model mix | a good problem, months away; revisit managed services *then*, deliberately |
@@ -192,7 +204,7 @@ The architecture doesn't change between pilot and growth — only the size of th
 ## 12. Accounts to create / keys to obtain (checklist)
 
 - [ ] Google Cloud account + project + billing enabled (unlocks $300 credit, TTS, Gemini paid)
-- [ ] Gemini API key — free tier (beats)
+- [ ] Gemini API key — **paid**, data-excluded (beats) (§3)
 - [ ] Gemini API — paid/data-excluded access for safety + memory (Vertex or paid AI Studio)
 - [ ] Google Cloud Text-to-Speech API enabled + key
 - [ ] OpenAI account + API key (embeddings) — with a low usage cap

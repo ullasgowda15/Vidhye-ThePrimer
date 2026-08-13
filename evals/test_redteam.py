@@ -213,6 +213,112 @@ def test_no_injected_instruction_reaches_a_prompt_layer(
     score.assert_at_least(thresholds.gate_for("redteam.injection"))
 
 
+#: The two surfaces that do **not** travel through `assembler.assemble`, and the
+#: prompt builder each of them really reaches.
+#:
+#: This is the audit's F-10 and it is the meta-finding of the whole Day 1-15 pass.
+#: Day 15 found that a 1.00 gate measured over one of eight surfaces was worth
+#: nothing and widened the measurement to four; the *list* being measured was
+#: still short by two, and four commits later those two were F-1 and F-2. So the
+#: sweep is no longer "every surface x the assembler" — it is "every surface x
+#: every prompt builder", and a builder outside it is a builder with no gate.
+COMPANION_SURFACES = ("companion_name", "companion_descriptor")
+
+
+def _companion_prompts(child: Any, surface: str, attack: str) -> str:
+    """The descriptor brief and the illustration prompt, as one string.
+
+    Both are built from the live companion row, through the product's own
+    functions, so this grades what a provider would actually be handed rather
+    than a reconstruction of it.
+    """
+    from apps.companion import descriptor as companion_descriptor
+    from apps.companion import service as companion_service
+
+    companion = child.companion
+    if surface == "companion_name":
+        # Truncated to the serializer's own cap, because the finding was that a
+        # payload fits inside it — not that the cap can be exceeded.
+        companion.name = attack[:40]
+    else:
+        companion.visual_descriptor = attack
+    companion.save(update_fields=["name", "visual_descriptor", "updated_at"])
+
+    context = companion_descriptor.build_context(companion)
+    illustration = companion_service.illustration_prompt(companion, "sitting by a river")
+    return "\n".join([context["system"], context["user"], illustration]).lower()
+
+
+def test_no_injection_reaches_the_companion_prompt_builders(child: Any, corpus: Any) -> None:
+    """§13.5 at the two surfaces that art-direct a child's imaginary friend.
+
+    The descriptor is generated **once and persisted forever** and is the single
+    string holding a companion's look together; the illustration prompt replays it
+    into every picture for the life of the account. An injection landing in either
+    is not one bad beat — it is a permanently frightening friend for a
+    four-year-old, re-rendered identically every day (§23.1).
+
+    Needs no provider: both are pure prompt builders, which is why this can be a
+    1.00 gate on every commit rather than something only a live run sees.
+
+    **Nothing is excused here.** `corpus.INSTRUCTION_RESIDUE` covers `kind="data"`
+    layers of the *beat* prompt. These two fields go through
+    `scrub.scrub_instruction_text`, which drops everything from the redaction
+    onward, so the expectation is nothing at all.
+    """
+    original_name = child.companion.name
+    original_descriptor = child.companion.visual_descriptor
+
+    score = Score("redteam.injection")
+    for surface in COMPANION_SURFACES:
+        for attack in corpus.INJECTION:
+            child.companion.name = original_name
+            child.companion.visual_descriptor = original_descriptor
+            prompt = _companion_prompts(child, surface, attack)
+
+            leaked = [phrase for phrase in DIRECTIVES if phrase in prompt]
+            score.record(
+                not leaked,
+                f"{surface}={attack[:50]!r} -> {leaked} reached a companion prompt",
+            )
+
+    child.companion.name = original_name
+    child.companion.visual_descriptor = original_descriptor
+    child.companion.save(update_fields=["name", "visual_descriptor", "updated_at"])
+
+    score.assert_at_least(thresholds.gate_for("redteam.injection"))
+
+
+def test_every_declared_injection_surface_is_driven_by_some_builder(corpus: Any) -> None:
+    """The guard on the guard, and the direct answer to F-10.
+
+    `INJECTION_SURFACES` is the list a reader takes as the coverage claim. Day 15
+    proved a declared surface nobody drives is worse than an undeclared one — it
+    reads as a gate and is not one. So the two suites' surface coverage is asserted
+    against the declaration itself: add a surface without driving it and this goes
+    red, which is the failure mode that produced F-1 and F-2.
+    """
+    driven = (
+        set(PROFILE_SURFACES)
+        | set(COMPANION_SURFACES)
+        | {
+            # Driven elsewhere: the turn block and the retrieved bundle, in this file
+            # and in `backend/apps/safety/redteam/test_redteam.py`.
+            "child_utterance",
+            "choice_label",
+            "next_hint",
+            "memory",
+        }
+    )
+
+    undriven = sorted(set(corpus.INJECTION_SURFACES) - driven)
+    assert not undriven, (
+        f"{undriven} are declared in corpus.INJECTION_SURFACES and driven by no "
+        f"prompt builder in this suite. A surface with no gate on it is how F-1 "
+        f"and F-2 survived fifteen days of review."
+    )
+
+
 def test_the_known_open_attacks_are_still_only_those(corpus: Any) -> None:
     """The honest half of the injection story, kept honest.
 

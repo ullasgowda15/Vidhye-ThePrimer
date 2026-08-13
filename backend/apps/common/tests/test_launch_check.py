@@ -34,17 +34,28 @@ def run(**options: Any) -> tuple[str, int]:
 
 
 @pytest.fixture
-def launchable(settings: Any, db: Any) -> None:
+def launchable(settings: Any, db: Any, tmp_path: Any) -> None:
     """A deployment that should pass: every check's happy path.
 
     Assembled rather than mocked, so a new check added to the command shows up
     here as a failure to be thought about rather than as a silently-passing one.
     """
+    # A fresh dump in a directory of its own. Pointed at `tmp_path` rather than
+    # the repository's real `backups/` because a check that reads a file's age
+    # would otherwise start failing on the developer's machine a day and a half
+    # after they last ran `make backup`.
+    (tmp_path / "primer-20260813T000000Z.dump").write_bytes(b"x" * 2048)
+    settings.BACKUP_DIR = str(tmp_path)
     settings.SAFETY_CLASSIFIER_ENABLED = True
     settings.ANTHROPIC_API_KEY = "test-key"
     settings.AI_PROVIDER_ORDER = ["anthropic"]
     settings.AI_BEAT_MODEL = "claude-opus-5"
     settings.AI_SAFETY_MODEL = "claude-haiku-4-5-20251001"
+    # Pinned rather than inherited from the developer's `.env`: `privacy.provider_terms`
+    # reads all four child-data models, and a test whose answer depended on the
+    # machine it ran on would be the opposite of a preflight.
+    settings.AI_MEMORY_MODEL = "claude-haiku-4-5-20251001"
+    settings.EMBEDDING_MODEL = "text-embedding-3-small"
     settings.IMAGE_MODERATION = "auto"
     settings.MEMORY_ENCRYPTION_KEY = "6H0y0AGRTP-cKQ0RRW9x8p2yh4Y3iCJqQyLwLQ4qSAI="
     settings.MEDIA_STORAGE = "s3"
@@ -83,6 +94,102 @@ class TestEachCheckCatchesItsOwnFailure:
         output, code = run()
         assert "FAIL  safety.grader_is_separate" in output
         assert code == 1
+
+    def test_the_rollback_flag_pinning_the_writer_to_the_grader_blocks_the_launch(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """The audit's F-4, at the preflight end.
+
+        `grader_is_separate` used to compare `AI_SAFETY_MODEL` against
+        `AI_BEAT_MODEL` — the *settings*. The router reads the `ai.beat_model`
+        flag first, so a flag pinning the writer to the grader's model left the
+        preflight green while the same weights wrote and graded every beat. The
+        write-side half of the fix refuses the flag; this is the half that would
+        have caught a row already in the table.
+        """
+        from apps.common import flags
+        from apps.common.models import FeatureFlag
+
+        # Written straight to the table, bypassing the validator, because the
+        # question here is what the preflight says about a bad row that already
+        # exists — an admin edit from before the validator, or a hand-run UPDATE.
+        FeatureFlag.objects.create(name="ai.beat_model", value=settings.AI_SAFETY_MODEL)
+        flags.invalidate()
+
+        output, code = run()
+        assert "FAIL  safety.grader_is_separate" in output
+        assert code == 1
+
+    @pytest.mark.parametrize(
+        "setting", ("AI_BEAT_MODEL", "AI_SAFETY_MODEL", "AI_MEMORY_MODEL", "EMBEDDING_MODEL")
+    )
+    def test_a_training_permitted_route_blocks_the_launch(
+        self, launchable: None, settings: Any, setting: str
+    ) -> None:
+        """The audit's F-3. A blocking row, not a reachability one.
+
+        Before this existed the preflight printed
+
+            OK    safety.grader_reachable  a provider is configured for
+                                           google/gemma-4-26b-a4b-it:free
+
+        — true, and silent about the fact that `:free` is the variant whose terms
+        permit the gateway to log and train on the prompt. Every one of the four
+        settings carries a child's words or profile, so every one of them is
+        checked, and each is asserted separately: a guard that covered three of
+        four is how this product got here.
+        """
+        setattr(settings, setting, "vendor/some-model:free")
+        output, code = run()
+
+        assert "FAIL  privacy.provider_terms" in output
+        assert setting in output
+        assert code == 1
+
+    def test_a_clean_route_set_reports_ok(self, launchable: None) -> None:
+        output, _ = run()
+        assert "OK    privacy.provider_terms" in output
+
+    def test_a_dump_older_than_the_disclosure_promises_blocks_the_launch(
+        self, launchable: None, settings: Any, tmp_path: Any
+    ) -> None:
+        """The audit's F-5, at the end where a promise becomes checkable.
+
+        `apps.accounts.privacy` tells parents a nightly copy is taken and expires
+        after `BACKUP_RETENTION_DAYS`. A dead cron is the failure that looks
+        exactly like a healthy deployment from every other angle — and it makes
+        the disclosure false in the direction that matters most, because the
+        sentence about deletions reaching every copy assumes copies keep rolling.
+        """
+        import os
+        import time
+
+        stale = tmp_path / "primer-20260101T000000Z.dump"
+        stale.write_bytes(b"x" * 2048)
+        ancient = time.time() - (settings.BACKUP_MAX_AGE_HOURS + 24) * 3600
+        for dump in tmp_path.glob("primer-*.dump"):
+            os.utime(dump, (ancient, ancient))
+
+        output, code = run()
+        assert "FAIL  durability.backup_freshness" in output
+        assert code == 1
+
+    def test_no_dump_at_all_is_a_warning_rather_than_a_refusal(
+        self, launchable: None, settings: Any, tmp_path: Any
+    ) -> None:
+        """A brand-new box and a laptop both look like this, and a preflight that
+        failed on them would stop being run — which is the failure mode this
+        command's docstring is most worried about. `--strict`, which a release
+        pipeline uses, still refuses."""
+        for dump in tmp_path.glob("primer-*.dump"):
+            dump.unlink()
+
+        output, code = run()
+        assert "WARN  durability.backup_freshness" in output
+        assert code == 0
+
+        _, strict_code = run(strict=True)
+        assert strict_code == 1
 
     def test_no_spend_cap_blocks_the_launch(self, launchable: None, settings: Any) -> None:
         settings.INFERENCE_BUDGET_USD_PER_WINDOW = 0.0

@@ -237,10 +237,7 @@ describe('the story page applying that rule', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     return render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter
-          initialEntries={['/story/child-1']}
-          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-        >
+        <MemoryRouter initialEntries={['/story/child-1']}>
           <Routes>
             <Route path="/story/:childId" element={<StoryPage />} />
           </Routes>

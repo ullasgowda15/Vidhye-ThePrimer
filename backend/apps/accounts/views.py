@@ -30,7 +30,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from apps.accounts import cookies, export, privacy
-from apps.accounts.models import ConsentRecord, User
+from apps.accounts.models import ConsentRecord, DeletionReceipt, User
 from apps.accounts.serializers import (
     AccessTokenSerializer,
     AccountDeleteSerializer,
@@ -228,7 +228,13 @@ class MeView(generics.RetrieveAPIView):
         return super().get(request, *args, **kwargs)
 
     def get_object(self) -> User:
-        return User.objects.filter(pk=self.request.user.pk).prefetch_related("children").get()
+        # `cast` rather than `self.request.user` directly: DRF types the attribute
+        # as `AbstractBaseUser | AnonymousUser`, whose `pk` is optional, and this
+        # view is `IsAuthenticated` so it is neither anonymous nor unsaved. The
+        # re-query is for the `prefetch_related`, which is what keeps `/me` one
+        # query for the parent and one for the children.
+        parent = cast(User, self.request.user)
+        return User.objects.filter(pk=parent.pk).prefetch_related("children").get()
 
 
 class ConsentView(generics.CreateAPIView):
@@ -405,14 +411,29 @@ class AccountDeleteView(APIView):
 
         parent_id, email = parent.pk, parent.email
         parent.delete()
-        # After the delete, so a failed delete cannot produce a log line claiming
-        # a family was erased. The email is recorded because a deletion is the one
-        # event we may need to prove happened, and there is no row left to prove it
-        # with.
+        # After the delete, so a failed delete cannot produce a record claiming a
+        # family was erased. A deletion is the one event we may need to prove
+        # happened and there is no row left to prove it with — so it is recorded,
+        # in `DeletionReceipt`, holding a keyed hash of the address rather than the
+        # address.
+        #
+        # It used to be a log line carrying `email=family@example.com`, which the
+        # Day 1-15 audit's F-7 caught: the log stream has no retention, no
+        # rotation and no delete path, so the one action a family takes to remove
+        # themselves from this product left their address in it permanently. The
+        # accountability need was real; the retained address was not part of it.
+        receipt = DeletionReceipt.record(
+            parent_id=parent_id,
+            email=email,
+            children=len(children),
+            media_rows=media_rows,
+            media_objects=media_objects,
+        )
         logger.warning(
-            "privacy.account_deleted parent=%s email=%s children=%d media_rows=%d media_objects=%d",
+            "privacy.account_deleted parent=%s receipt=%s children=%d media_rows=%d "
+            "media_objects=%d",
             parent_id,
-            email,
+            receipt.pk,
             len(children),
             media_rows,
             media_objects,

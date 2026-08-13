@@ -122,16 +122,9 @@ export const router = createBrowserRouter(
       ],
     },
   ],
-  // Opt in to the v7 behaviours now, while there are a handful of routes to
-  // check rather than a whole story surface. (`v7_startTransition` is a
-  // RouterProvider flag, not a router one — it lives in App.tsx.)
-  {
-    future: {
-      v7_relativeSplatPath: true,
-      v7_fetcherPersist: true,
-      v7_normalizeFormMethod: true,
-      v7_partialHydration: true,
-      v7_skipActionErrorRevalidation: true,
-    },
-  },
+  // No `future` block any more: this is react-router **7**, where every one of
+  // the v7_* behaviours this router used to opt into is simply how it works.
+  // Opting in early on v6 is the reason the security upgrade (F-8) was a version
+  // bump and two prop deletions rather than a routing migration in the middle of
+  // a child-safety fix pass.
 );

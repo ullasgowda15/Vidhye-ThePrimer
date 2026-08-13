@@ -464,15 +464,18 @@ def personalize(child: Child) -> Personalization:
         fear_ceiling=child_settings.settings_for(child).intensity_ceiling,
         setting=worlds.setting_for(child, interests),
     )
+    # `interests=` is a count, not a list (§13.8, the audit's F-7): the sibling
+    # line in `worlds.select_world` says why. `place=` stays — it is a name from
+    # our own shipped setting catalogue, not anything a family typed.
     logger.info(
         "story.personalized child=%s world=%s place=%r returning=%d ceiling=%d "
-        "interests=%s known_places=%d cast=%d",
+        "interests=%d known_places=%d cast=%d",
         child.pk,
         personalization.setting.world.key,
         personalization.setting.name,
         int(personalization.setting.returning),
         personalization.fear_ceiling,
-        ",".join(personalization.interest_names[:3]) or "-",
+        len(personalization.interest_names),
         len(personalization.known_places),
         len(personalization.recurring_characters),
     )

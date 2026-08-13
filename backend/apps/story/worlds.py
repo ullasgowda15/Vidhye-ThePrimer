@@ -386,12 +386,20 @@ def select_world(child: Child, interests: Sequence[Topic]) -> World:
             -WORLDS.index(world),
         ),
     )
+    # The *count*, not the topics (§13.8, the audit's F-7). This line used to
+    # write a child's uuid next to the three things they love, on every adventure
+    # start, into the one store no delete path reaches — while the disclosure said
+    # raw activity logs are kept briefly and discarded. The count and the world key
+    # carry the whole operational signal: they say whether the selection had
+    # anything to go on and which way it went. `manage.py memories --child <id>`
+    # is where a person who genuinely needs the topics reads them, from the
+    # database, which a deletion does reach.
     logger.info(
-        "story.world_selected child=%s world=%s score=%.2f interests=%s",
+        "story.world_selected child=%s world=%s score=%.2f interests=%d",
         child.pk,
         chosen.key,
         world_score(chosen, interests),
-        ",".join(topic.name for topic in interests[:3]) or "-",
+        len(interests),
     )
     return chosen
 

@@ -76,10 +76,7 @@ function renderWith(ui: React.ReactElement, path = '/welcome/child-1') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter
-        initialEntries={[path]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/" element={ui} />
           <Route path="/welcome/:childId" element={ui} />
@@ -205,10 +202,7 @@ describe('the way in', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter
-          initialEntries={['/']}
-          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-        >
+        <MemoryRouter initialEntries={['/']}>
           <Routes>
             <Route path="/" element={<ChildHome />} />
             <Route path="/welcome/:childId" element={<ReturningGreeting />} />

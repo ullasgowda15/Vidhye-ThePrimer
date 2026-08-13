@@ -144,3 +144,104 @@ def test_no_credentials_at_all_is_not_a_pairing_error(pairing: Any) -> None:
     """CI has no keys. Nothing will be called, so nothing can be mispaired —
     and `select_provider` raises its own, clearer error if anything tries."""
     pairing(order=["openrouter", "anthropic"], beat="claude-opus-5")
+
+
+# ---------------------------------------------------------------------------
+# No child data down a route that may train on it (§13.8) — the audit's F-3
+# ---------------------------------------------------------------------------
+#: The minimum environment `config.settings.prod` will start under. Every value
+#: is a boot guard that predates this test and is not what is being tested here;
+#: they are set so the *one* guard under test is the only thing that can fail.
+PROD_ENV = {
+    "DJANGO_SETTINGS_MODULE": "config.settings.prod",
+    "SECRET_KEY": "test-secret-not-a-real-one-0123456789",
+    "ALLOWED_HOSTS": "primer.example",
+    "CORS_ALLOWED_ORIGINS": "https://primer.example",
+    "DATABASE_URL": "postgres://primer:primer@localhost:5432/primer",
+    "REDIS_URL": "redis://localhost:6379/0",
+    "MEDIA_STORAGE": "s3",
+    "AWS_STORAGE_BUCKET_NAME": "primer-media",
+    "AWS_ACCESS_KEY_ID": "test",
+    "AWS_SECRET_ACCESS_KEY": "test",
+    "SAFETY_CLASSIFIER_ENABLED": "1",
+    "IMAGE_MODERATION": "auto",
+    "MEMORY_ENCRYPTION_KEY": "6H0y0AGRTP-cKQ0RRW9x8p2yh4Y3iCJqQyLwLQ4qSAI=",
+    "INFERENCE_BUDGET_USD_PER_WINDOW": "25",
+    # Paired for `anthropic`, which is what the shipping defaults are.
+    "AI_PROVIDER_ORDER": "anthropic",
+    "ANTHROPIC_API_KEY": "test-key",
+    "OPENROUTER_API_KEY": "",
+    "AI_BEAT_MODEL": "claude-opus-5",
+    "AI_SAFETY_MODEL": "claude-haiku-4-5-20251001",
+    "AI_MEMORY_MODEL": "claude-haiku-4-5-20251001",
+    "EMBEDDING_MODEL": "text-embedding-3-small",
+}
+
+
+def _boot_prod(**overrides: str) -> tuple[int, str]:
+    """Import `config.settings.prod` in a fresh interpreter. Returns (code, stderr).
+
+    A subprocess rather than an import, because the guard runs at module import
+    and a settings module cannot be imported twice in one process — and because
+    what is being asserted is precisely that *the process does not start*, which
+    is not something a monkeypatched function call can demonstrate.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    environment = {
+        **{key: value for key, value in os.environ.items() if key.startswith(("SYSTEM", "PATH"))},
+        "PATH": os.environ.get("PATH", ""),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+        "PYTHONPATH": str(backend),
+        **PROD_ENV,
+        **overrides,
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", "import django; django.setup()"],
+        cwd=str(backend),
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stderr
+
+
+def test_the_shipping_production_configuration_boots() -> None:
+    """The control. Without it, the four tests below would pass on any error."""
+    code, stderr = _boot_prod()
+    assert code == 0, stderr
+
+
+@pytest.mark.parametrize(
+    "setting", ("AI_BEAT_MODEL", "AI_SAFETY_MODEL", "AI_MEMORY_MODEL", "EMBEDDING_MODEL")
+)
+def test_prod_refuses_to_boot_on_a_training_permitted_route(setting: str) -> None:
+    """§13.8, and the sentence in `apps.accounts.privacy` it exists to keep true.
+
+    An OpenRouter `:free` route is the same weights under terms that permit the
+    gateway to log and train on the prompt. The audit found *every* child-data
+    model on one, with `launch_check` reporting the grader as healthy because it
+    only asked whether the route was reachable.
+
+    Each of the four is asserted separately and on purpose: the beat model is in
+    the list because a beat prompt carries the child's first name, age band,
+    avoid list, fears and retrieved memories, and a guard that covered three of
+    the four would be the same shape of gap the audit was written about.
+    """
+    code, stderr = _boot_prod(**{setting: "vendor/some-model:free"})
+
+    assert code != 0, "prod booted with child data pointed at a training-permitted route"
+    assert "ImproperlyConfigured" in stderr
+    assert setting in stderr
+    assert ":free" in stderr
+
+    # The message is what somebody meets at their least patient moment, in a
+    # terminal. The Windows console renders a section sign or an em dash as a
+    # replacement character, so the guard says so in ASCII — the same rule
+    # `launch_check` holds itself to.
+    problem = next(line for line in stderr.splitlines() if setting in line)
+    assert problem.isascii(), problem

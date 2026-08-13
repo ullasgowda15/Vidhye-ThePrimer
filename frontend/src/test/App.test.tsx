@@ -13,12 +13,7 @@ function renderWithProviders(ui: React.ReactElement, initialPath = '/') {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter
-        initialEntries={[initialPath]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        {ui}
-      </MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>{ui}</MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -55,7 +50,7 @@ describe('child route', () => {
 
     renderWithProviders(<ChildHome />);
 
-    expect(await screen.findByText('ok')).toBeInTheDocument();
+    expect(await screen.findByText('the story is awake')).toBeInTheDocument();
   });
 
   it('never surfaces a raw error to the child when the API is down', async () => {
@@ -65,7 +60,15 @@ describe('child route', () => {
 
     // The story shell stays up; only the quiet dot changes.
     expect(screen.getByRole('heading', { name: 'The Primer' })).toBeInTheDocument();
-    expect(await screen.findByText('offline')).toBeInTheDocument();
+
+    // §14.5, and the Day 1-15 audit's F-9: this used to assert the word
+    // 'offline', three lines below a docstring promising the child no error
+    // state. A failed health check is now indistinguishable, on this screen,
+    // from a slow one — both say the same thing, in story words.
+    expect(await screen.findByText('the story is dreaming')).toBeInTheDocument();
+    for (const word of ['offline', 'error', 'failed', 'network', 'unavailable']) {
+      expect(screen.queryByText(new RegExp(word, 'i'))).toBeNull();
+    }
   });
 });
 

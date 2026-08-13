@@ -112,10 +112,7 @@ function renderWith(ui: React.ReactElement, path = '/') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter
-        initialEntries={[path]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/" element={ui} />
           <Route path="/meet/:childId" element={ui} />

@@ -177,6 +177,66 @@ class TestTheDisclosure:
 
         assert "withdrawing consent" in text.lower()
 
+    def test_every_sentence_about_backups_is_true_of_the_code(self, api) -> None:
+        """The audit's F-5, and the third disclosure over-claim found in this repo.
+
+        The old text said *"We do not keep backups yet, so today there is no copy
+        anywhere for a deletion to miss"* while a 205 KB dump of every family sat
+        in the working tree, and `Docs/Runbooks/Launch.md` made the dump cron a
+        launch checklist item — so the sentence was already false and was about to
+        become structurally false.
+
+        What replaces it is checkable, which is the point: the retention number in
+        the prose is `settings.BACKUP_RETENTION_DAYS`, the same number
+        `infra/backup/backup.sh` prunes to and `launch_check` reads.
+        """
+        sections = {s["id"]: s["body"] for s in api.get(PRIVACY_URL).data["sections"]}
+        retention = sections["retention"]
+
+        assert "do not keep backups" not in retention.lower()
+        assert f"after {django_settings.BACKUP_RETENTION_DAYS} days" in retention
+        # And the two things a parent actually needs to know about a copy.
+        assert "never to restore one family" in retention
+        # The commitment that is *not* yet true is still marked as a commitment
+        # rather than stated as a fact.
+        assert "before we take on families beyond our pilot" in retention
+
+    def test_the_log_retention_sentence_promises_only_what_is_implemented(self, api) -> None:
+        """The audit's F-6. Nothing in this product discards a log line.
+
+        `prod.py` sends everything at INFO to stdout with no rotation, no
+        retention window and no scrubbing filter, so *"raw activity logs are kept
+        briefly and then discarded"* was a claim with no implementation — the exact
+        sibling of the one the Day-13 review removed.
+
+        The replacement is the honest shape: retention is the platform's setting
+        and is not claimed, and what *is* claimed is the thing F-7 made true —
+        there is no child content in the log to retain.
+        """
+        retention = {s["id"]: s["body"] for s in api.get(PRIVACY_URL).data["sections"]}["retention"]
+
+        assert "kept briefly and then discarded" not in retention.lower()
+        assert "no child's name" in retention
+
+    def test_it_says_what_actually_leaves_the_building(self, api) -> None:
+        """The audit's F-12.
+
+        *"nothing identifying beyond that first name"* was defensible on its
+        literal terms and misleading in context: every generation also carries the
+        avoid list, the fears list and the retrieved memories. Naming them is a
+        stronger sentence for the product, not a weaker one — it is §12.6's thesis
+        applied to the disclosure itself.
+        """
+        who = {s["id"]: s["body"] for s in api.get(PRIVACY_URL).data["sections"]}["who_sees_it"]
+
+        assert "asked us to avoid" in who
+        assert "frightened of" in who
+        assert "companion remembers" in who
+        # F-3's other half: the training promise now has something enforcing it,
+        # and the disclosure says so in the present tense rather than the future.
+        assert "before launch we will only use providers" not in who.lower()
+        assert "refuses to start" in who
+
     def test_it_is_written_in_sentences_rather_than_clauses(self, api) -> None:
         """ "Plain-language" is the criterion, so the cheap mechanical proxy is
         asserted: no section is one unbroken wall, and none uses the vocabulary a
@@ -430,6 +490,107 @@ class TestDeletingTheAccount:
                     offenders.append(name)
 
         assert offenders == []
+
+
+class TestWhatTheLogIsAllowedToKnow:
+    """§13.8's data minimisation, applied to the one store no delete reaches.
+
+    The audit's F-7. The database honoured deletion perfectly — a full-schema
+    survivor walk found zero rows — and the application log did not: it kept a
+    child-uuid-to-interests mapping and a parent's email address indefinitely, in
+    a stream with no retention, no rotation and no delete path. A disclosure that
+    says identifying activity is discarded, over a log that retains it forever.
+    """
+
+    def test_starting_an_adventure_never_writes_what_a_child_loves(
+        self, child, caplog, settings
+    ) -> None:
+        """The two lines that used to read `interests=zzquuxmarkerbinterest`.
+
+        A distinctive marker rather than "frogs", for the reason the audit used
+        one: an ordinary word would appear in the log for a dozen innocent
+        reasons and the assertion would be measuring nothing.
+        """
+        import logging
+
+        from apps.story import orchestrator
+
+        child.interests = ["zzquuxmarkerinterest", "zzquuxmarkerbinterest"]
+        child.save(update_fields=["interests"])
+
+        with caplog.at_level(logging.DEBUG):
+            orchestrator.personalize(child)
+
+        assert "zzquuxmarker" not in caplog.text, (
+            "a child's interests reached the application log; the log is the one "
+            "store no deletion reaches (13.8)"
+        )
+        # And the operational signal is still there — this is not a fix that made
+        # the log useless, which is the way this regresses.
+        assert "story.personalized" in caplog.text
+        assert "interests=2" in caplog.text
+
+    def test_deleting_the_account_writes_a_receipt_and_not_an_address(
+        self, auth, played, parent, caplog
+    ) -> None:
+        """The accountability need, kept; the retained address, gone.
+
+        The old log line carried `email=family-b@example.com` and was argued for
+        in a comment — a deletion is the one event we may need to prove happened,
+        and every row that could prove it is gone by definition. That argument is
+        right, which is why this is a receipt rather than a deletion.
+        """
+        import logging
+
+        from apps.accounts.models import DeletionReceipt
+
+        email = parent.email
+
+        with caplog.at_level(logging.DEBUG):
+            response = auth.delete(ACCOUNT_URL, {"password": PASSWORD}, format="json")
+
+        assert response.status_code == 204
+        assert not User.objects.filter(pk=parent.pk).exists()
+
+        assert email not in caplog.text, "the parent's address is still in the log stream"
+        assert "privacy.account_deleted" in caplog.text
+
+        receipt = DeletionReceipt.objects.get()
+        assert receipt.email_fingerprint == DeletionReceipt.fingerprint(email)
+        assert email not in receipt.email_fingerprint
+        assert receipt.children == 1
+
+    def test_a_receipt_survives_the_cascade_it_records(self, auth, played, parent) -> None:
+        """Otherwise it would be deleted by the thing it exists to record.
+
+        `test_every_fk_to_a_child_or_a_parent_cascades_by_declaration` requires
+        every FK to a parent to cascade; the receipt holds a plain `UUIDField` and
+        no FK precisely so that rule and this one do not collide. That is a
+        deliberate exception to "nothing referencing the parent survives", and it
+        is asserted here so a future audit reads it as intent rather than as a
+        regression: what survives is an opaque id pointing at nothing, a
+        non-reversible hash and three counts.
+        """
+        from apps.accounts.models import DeletionReceipt
+
+        auth.delete(ACCOUNT_URL, {"password": PASSWORD}, format="json")
+
+        receipt = DeletionReceipt.objects.get()
+        assert receipt.parent_id_at_deletion == parent.pk
+        assert not User.objects.filter(pk=receipt.parent_id_at_deletion).exists()
+        # Nothing on the row is a name, an address, or anything a child said.
+        stored = {
+            field.name: getattr(receipt, field.name) for field in DeletionReceipt._meta.fields
+        }
+        assert set(stored) == {
+            "id",
+            "parent_id_at_deletion",
+            "email_fingerprint",
+            "children",
+            "media_rows",
+            "media_objects",
+            "deleted_at",
+        }
 
 
 class TestDeletingLeavesNothingInStorage:

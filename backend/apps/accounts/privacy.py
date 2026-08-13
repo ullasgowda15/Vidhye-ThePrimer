@@ -29,10 +29,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.conf import settings
+
 #: Bumped whenever a claim below changes, so a parent can tell whether what they
 #: read last month is what is true now — and so a future consent version can point
 #: at the disclosure it was granted against.
-DISCLOSURE_VERSION = "2026-08-12"
+DISCLOSURE_VERSION = "2026-08-13"
+
+#: Read from settings rather than written into the prose, because the prose is a
+#: promise and the setting is what keeps it: `infra/backup/backup.sh` prunes to
+#: this number and `manage.py launch_check` reads the newest dump against it. The
+#: audit's F-5 was a retention sentence with nothing behind it; a sentence with a
+#: hard-coded number would have been the same bug one refactor later.
+_BACKUP_RETENTION_DAYS = settings.BACKUP_RETENTION_DAYS
 
 SECTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -85,12 +94,19 @@ SECTIONS: tuple[dict[str, Any], ...] = (
             "provider, and reading it aloud needs a voice provider. When your child "
             "plays, the words needed for that beat go to those companies and come "
             "back. That includes their first name, because the companion says it.\n\n"
-            "It does not include your email, your account, or anything identifying "
-            "beyond that first name. Before launch we will only use providers whose "
-            "terms forbid training on what we send them, and we will name them "
-            "here. What we cannot promise is anything about a provider's own "
-            "internal logs, because that is not ours to control — and we would "
-            "rather say so plainly than imply a guarantee we do not have."
+            "It does not include your email or your account, and nothing "
+            "identifying beyond that first name. It does include the things you "
+            "asked us to avoid, the things your child is frightened of, and what "
+            "the companion remembers about them — because those are the rules the "
+            "story has to be written against, and a provider that was not told "
+            "them could not keep them.\n\n"
+            "Every one of those providers is on terms that forbid training on what "
+            "we send them, and the software now refuses to start if one of them is "
+            "not: a cheaper route that reserves the right to learn from your "
+            "child's words cannot be configured by accident. What we cannot promise "
+            "is anything about a provider's own internal logs, because that is not "
+            "ours to control — and we would rather say so plainly than imply a "
+            "guarantee we do not have."
         ),
     },
     {
@@ -140,16 +156,32 @@ SECTIONS: tuple[dict[str, Any], ...] = (
         "body": (
             "What the companion remembers is kept for as long as you keep the "
             "account, because losing it would mean losing the friendship your child "
-            "has built. Raw activity logs are kept briefly and then discarded.\n\n"
+            "has built.\n\n"
+            "The server writes an operational log of what it did — which page was "
+            "asked for, which story was generated, how long it took. It carries no "
+            "child's name and none of the things they love or fear; it identifies a "
+            "child only by the same meaningless id the database uses. How long our "
+            "hosting provider keeps that log is their setting rather than ours, so "
+            "we will not put a number on it here that we cannot enforce. What we "
+            "can say, and have made true, is that there is nothing in it worth "
+            "keeping about your child.\n\n"
             "When you delete a child or your account, the data goes at once — the "
             "records, what the companion remembered, and the pictures and recorded "
-            "narration too.\n\n"
-            "We do not keep backups yet, so today there is no copy anywhere for a "
-            "deletion to miss. When we start taking them — before we take on "
-            "families beyond our pilot, because losing your child's memories would "
-            "be unforgivable — they will be encrypted, they will expire on a "
-            "schedule we will state here, and a deleted family will never be "
-            "restored from one."
+            "narration too. One thing is deliberately kept: a dated line saying that "
+            "a deletion happened, so we can prove it did. It holds a scrambled form "
+            "of your email address that cannot be turned back into it, and nothing "
+            "else about you.\n\n"
+            "We take a daily copy of the whole database, because losing your "
+            "child's memories would be unforgivable. Each copy deletes itself "
+            f"after {_BACKUP_RETENTION_DAYS} days, so a deletion you make today is "
+            "gone from every copy we hold within that window. A copy is only ever "
+            "used to bring the whole service back after a disaster, never to "
+            "restore one family, and anything deleted before the disaster is "
+            "deleted again immediately afterwards — that step is written into the "
+            "procedure, not left to somebody's memory. Today those copies sit on "
+            "the same machine as the database and are not separately encrypted; "
+            "before we take on families beyond our pilot they will be encrypted "
+            "and held somewhere else, and this paragraph will say so."
         ),
     },
     {

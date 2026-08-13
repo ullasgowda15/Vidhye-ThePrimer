@@ -58,6 +58,7 @@ class Command(BaseCommand):
     def handle(self, *args: Any, **options: Any) -> None:
         checks: list[Check] = [
             *self._safety(),
+            *self._privacy(),
             *self._durability(),
             *self._spend(),
             *self._monitoring(),
@@ -123,13 +124,23 @@ class Command(BaseCommand):
             )
         )
 
+        # **The effective model, not the setting.** `ai.beat_model` is the
+        # no-deploy rollback lever (§16.10) and the router reads it in preference
+        # to `AI_BEAT_MODEL`, so a preflight that compared the settings was
+        # answering a question about a value nothing uses — green while the same
+        # weights wrote and graded every beat. That is the audit's F-4, and the
+        # write-side half of the fix lives in `flags._validate_beat_model`.
+        writer = _effective_beat_model()
+        separate = settings.AI_SAFETY_MODEL != writer
         checks.append(
             Check(
                 "safety.grader_is_separate",
-                OK if settings.AI_SAFETY_MODEL != settings.AI_BEAT_MODEL else FAIL,
-                "the grader is a different model from the writer"
-                if settings.AI_SAFETY_MODEL != settings.AI_BEAT_MODEL
-                else "the beat model is grading its own output (13.3).",
+                OK if separate else FAIL,
+                f"the grader ({settings.AI_SAFETY_MODEL}) is a different model from the "
+                f"writer ({writer})"
+                if separate
+                else f"the beat model is grading its own output: writer and grader are "
+                f"both '{writer}' (13.3).",
             )
         )
 
@@ -176,6 +187,59 @@ class Command(BaseCommand):
         )
         return checks
 
+    # -- privacy (§13.8) --------------------------------------------------
+    def _privacy(self) -> list[Check]:
+        """Is every route that carries a child's words one that may not train on them?
+
+        **A blocking row, not a reachability one**, and that distinction is the
+        whole finding. Before this existed the preflight said
+
+            OK  safety.grader_reachable  a provider is configured for
+                                         google/gemma-4-26b-a4b-it:free
+
+        which is true, and says nothing about the thing that mattered: `:free` is
+        the variant whose terms permit the gateway to log and train on the
+        prompt, and the memory prompt carries the verbatim session digest of what
+        a child said out loud. A parent reads a page promising the opposite.
+
+        `prod.py` refuses to boot on this too. Both, because they catch it at
+        different moments: the boot guard stops the deployment existing, and this
+        row is what a person reads *before* letting a family in — including on a
+        development box, where `prod.py` never runs and where the audit found it.
+        """
+        from apps.common import model_ids
+
+        problems = [
+            problem
+            for setting in model_ids.CHILD_DATA_MODEL_SETTINGS
+            if (
+                problem := model_ids.training_error(
+                    setting=setting, model=str(getattr(settings, setting, "") or "")
+                )
+            )
+        ]
+        offenders = [
+            f"{setting}={getattr(settings, setting, '')}"
+            for setting in model_ids.CHILD_DATA_MODEL_SETTINGS
+            if model_ids.permits_training(str(getattr(settings, setting, "") or ""))
+        ]
+        configured = ", ".join(
+            str(getattr(settings, setting, "") or "")
+            for setting in model_ids.CHILD_DATA_MODEL_SETTINGS
+        )
+        return [
+            Check(
+                "privacy.provider_terms",
+                OK if not problems else FAIL,
+                f"every child-data model is on a route whose terms exclude "
+                f"training ({configured})"
+                if not problems
+                else "child data is going to prompt-reselling routes: "
+                + ", ".join(offenders)
+                + ". The privacy disclosure says this never happens (13.8).",
+            )
+        ]
+
     # -- durability (§16.10, §11.10) --------------------------------------
     def _durability(self) -> list[Check]:
         checks = []
@@ -203,6 +267,34 @@ class Command(BaseCommand):
                 ),
             )
         )
+
+        # The dump the disclosure now describes (§12.8, the audit's F-5).
+        #
+        # `apps.accounts.privacy` tells parents that a dump is taken and held for
+        # `BACKUP_RETENTION_DAYS` days. This is the row that makes that a checkable
+        # claim rather than a hopeful one: it reads the newest dump's age against
+        # the number the sentence states. A dead cron is the failure that looks
+        # exactly like a healthy one from every other angle.
+        newest = _newest_dump_age_hours()
+        if newest is None:
+            verdict, detail = (
+                WARN,
+                f"no dump in {settings.BACKUP_DIR}. Docs/Runbooks/Launch.md makes the "
+                f"dump cron a launch item; the disclosure says one is taken.",
+            )
+        elif newest > settings.BACKUP_MAX_AGE_HOURS:
+            verdict, detail = (
+                FAIL,
+                f"the newest dump is {newest:.0f}h old (limit {settings.BACKUP_MAX_AGE_HOURS}h). "
+                f"The cron is not running, and the disclosure says dumps are taken.",
+            )
+        else:
+            verdict, detail = (
+                OK,
+                f"newest dump is {newest:.0f}h old, kept {settings.BACKUP_RETENTION_DAYS} days "
+                f"(what the disclosure states)",
+            )
+        checks.append(Check("durability.backup_freshness", verdict, detail))
 
         # The one thing this command genuinely cannot determine: whether a restore
         # has ever been *done*. It reports the honest answer rather than a
@@ -340,6 +432,39 @@ def _pricing_covers_configured_providers() -> bool:
             pricing.tts_cost(settings.TTS_PROVIDER, characters=1) is not None,
         )
     )
+
+
+def _newest_dump_age_hours() -> float | None:
+    """Hours since the newest `primer-*.dump`, or `None` if there is not one.
+
+    Matches `infra/backup/backup.sh`'s own naming, so a directory holding
+    something else is not read as a backup — the mirror of the script only ever
+    pruning files it could have written.
+    """
+    import time
+    from pathlib import Path
+
+    directory = Path(str(settings.BACKUP_DIR or ""))
+    if not str(settings.BACKUP_DIR) or not directory.is_dir():
+        return None
+
+    dumps = [path for path in directory.glob("primer-*.dump") if path.is_file()]
+    if not dumps:
+        return None
+    return (time.time() - max(path.stat().st_mtime for path in dumps)) / 3600.0
+
+
+def _effective_beat_model() -> str:
+    """The model the router will actually generate with (§16.10).
+
+    `apps.story.ai.router` reads the `ai.beat_model` flag first and falls back to
+    the setting, so this is what "the writer" means at the moment the preflight
+    runs. A flag read here is cheap and cannot fail the command: a flag backend
+    that is unreachable resolves to the declared default, which is empty.
+    """
+    from apps.common import flags
+
+    return str(flags.value("ai.beat_model") or settings.AI_BEAT_MODEL)
 
 
 def _selected_provider() -> str:

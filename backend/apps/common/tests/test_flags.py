@@ -94,6 +94,37 @@ def test_no_flag_can_switch_off_a_safety_guard() -> None:
     )
 
 
+def test_no_flag_can_reach_a_state_a_boot_guard_forbids(settings: Any) -> None:
+    """The same rule, one level down — a flag's *value*, not its name.
+
+    The Day 1-15 audit found the naming rule holding perfectly while the one
+    flag we do have could be set to two values a deploy could not: the safety
+    grader's own model id (F-4, §13.3 collapsed into self-grading) and a `:free`
+    prompt-reselling route (F-3, §13.8's promise broken at runtime). A registry
+    with no safety-shaped *names* in it is not the same thing as a registry with
+    no safety-shaped *reachable states*, and this asserts the second.
+
+    Every declared flag with a validator is driven, so a flag added later with a
+    validator that forgets one of these fails here rather than in production.
+    """
+    settings.AI_PROVIDER_ORDER = ["openrouter"]
+    settings.OPENROUTER_API_KEY = "test-key"
+    settings.ANTHROPIC_API_KEY = ""
+    settings.AI_SAFETY_MODEL = "vendor/some-grader"
+
+    validated = [flag for flag in flags.REGISTRY.values() if flag.validate is not None]
+    assert validated, "no flag has a validator; this test would prove nothing"
+
+    for flag in validated:
+        assert flag.validate is not None  # narrowed for the type checker
+        assert flag.validate(
+            settings.AI_SAFETY_MODEL
+        ), f"{flag.name} accepts the safety grader's own model id (13.3)"
+        assert flag.validate(
+            "vendor/some-model:free"
+        ), f"{flag.name} accepts a training-permitted route (13.8)"
+
+
 class TestTheRuleIsStructural:
     """The same rule as a fact about the import graph (Day 15 review, P2-1).
 
@@ -290,6 +321,57 @@ class TestTheModelRollbackLever:
 
         # And the shape that *is* right for this deployment goes through.
         FeatureFlag(name="ai.beat_model", value="anthropic/claude-opus-5").full_clean()
+
+    def test_the_grader_s_own_model_is_refused_on_write(self, settings: Any) -> None:
+        """The audit's F-4. The one value this lever must never accept.
+
+        `test_it_cannot_touch_the_safety_grader` above proves the flag cannot
+        *repoint* the classifier. This is the other direction, and it was open:
+        set the flag to the grader's own model id and the same weights write the
+        beat and grade it — §13.3 collapsed into self-grading, with nothing
+        logged, nothing refused, and `launch_check` green throughout because it
+        compared the settings rather than the effective model.
+
+        The moment it would happen is the moment the lever exists for: a bad model
+        in production at 3am, with the safety model's slug the nearest known-good
+        id to hand.
+        """
+        settings.ANTHROPIC_API_KEY = "test-key"
+        settings.AI_PROVIDER_ORDER = ["anthropic"]
+        settings.AI_BEAT_MODEL = "claude-opus-5"
+        settings.AI_SAFETY_MODEL = "claude-haiku-4-5-20251001"
+
+        row = FeatureFlag(name="ai.beat_model", value=settings.AI_SAFETY_MODEL)
+        with pytest.raises(ValidationError) as caught:
+            row.full_clean()
+        message = str(caught.value)
+        assert "13.3" in message
+        # Read in an admin form and in a terminal during an incident; the Windows
+        # console mangles anything that is not ASCII.
+        assert message.isascii(), message
+
+        # Any *other* reachable model still rolls back, which is the whole point
+        # of the lever — this must not become a flag that refuses everything.
+        FeatureFlag(name="ai.beat_model", value="claude-sonnet-5").full_clean()
+
+    def test_a_training_permitted_route_is_refused_on_write(self, settings: Any) -> None:
+        """§13.8, at the one place a model id can be set without a deploy.
+
+        `prod.py` refuses to boot on a `:free` child-data model. A runtime lever
+        that could reach the state the boot guard forbids would be a hole in the
+        boot guard — the deployment would be in it until the next restart, and
+        the restart would then fail for reasons nobody connects to the flag.
+        """
+        settings.OPENROUTER_API_KEY = "test-key"
+        settings.ANTHROPIC_API_KEY = ""
+        settings.AI_PROVIDER_ORDER = ["openrouter"]
+
+        row = FeatureFlag(name="ai.beat_model", value="vendor/some-model:free")
+        with pytest.raises(ValidationError) as caught:
+            row.full_clean()
+        assert ":free" in str(caught.value)
+
+        FeatureFlag(name="ai.beat_model", value="vendor/some-model").full_clean()
 
     def test_clearing_the_flag_returns_to_the_setting(self, settings: Any) -> None:
         from apps.story.ai.router import ModelRouter, model_label

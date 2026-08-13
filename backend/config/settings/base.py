@@ -734,6 +734,28 @@ INFERENCE_BUDGET_USD_PER_WINDOW = env.float("INFERENCE_BUDGET_USD_PER_WINDOW", d
 # trip clears itself the same evening rather than taking the product out for a day.
 INFERENCE_BUDGET_WINDOW_S = env.int("INFERENCE_BUDGET_WINDOW_S", default=3600)
 
+# ---------------------------------------------------------------------------
+# Database dumps (PRODUCT.md §16.10, §12.8)
+# ---------------------------------------------------------------------------
+# Three numbers, and they exist because a *sentence in the privacy disclosure*
+# depends on them. `apps.accounts.privacy` used to say "we do not keep backups
+# yet, so today there is no copy anywhere for a deletion to miss" while a 205 KB
+# dump of every family sat in the repository working tree (the audit's F-5). The
+# disclosure now says what is true — dumps are taken, and held for this many days
+# — and these are the values it states, read by `infra/backup/backup.sh` and
+# checked by `manage.py launch_check`.
+#
+# Written down here rather than only in the shell script so that the claim and
+# the enforcement are one number. A promise about retention that nothing reads is
+# how the sentence became false in the first place.
+BACKUP_DIR = env("BACKUP_DIR", default=str(REPO_ROOT / "backups"))
+# Long enough to survive a corruption nobody noticed for a few days, short enough
+# that a family who left is not still sitting in a dump a month later.
+BACKUP_RETENTION_DAYS = env.int("BACKUP_RETENTION_DAYS", default=7)
+# How stale the newest dump may be before the preflight says the cron is dead.
+# Daily dumps plus a margin for a missed run and a timezone.
+BACKUP_MAX_AGE_HOURS = env.int("BACKUP_MAX_AGE_HOURS", default=36)
+
 # Deployment-level defaults for `apps.common.flags` (§16.10). A `FeatureFlag` row
 # still wins over anything here — the point of the row is that it outruns a
 # deploy — so this is the baseline a box starts from, not an override.

@@ -52,8 +52,9 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    # THE LINE. `gate` is the whole of `ci.yml` — Evals, Backend, Frontend and
-    # the image build — re-run on this tag's own commit, and GitHub will not start
+    # THE LINE. `gate` is the whole of `ci.yml` — Evals, Backend, Dependencies,
+    # Frontend and the image build — re-run on this tag's own commit, and GitHub
+    # will not start
     # a job whose `needs` has failed. A red eval therefore means this job is
     # *skipped*, not passed. Removing or weakening this line is the change a
     # reviewer should stop, and `evals/test_gate.py` fails if it is.

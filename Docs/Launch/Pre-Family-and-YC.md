@@ -27,7 +27,7 @@
 
 ### Cost & spend safety
 - [ ] `INFERENCE_BUDGET_USD_PER_WINDOW` set to a real number; the budget breaker trips to warm content, and a `budget.tripped` alert exists.
-- [ ] GCP budget alerts (`$50/$150/$250`) and an OpenAI usage cap are set. Beats are on the free Gemini tier; safety/memory/embeddings on paid data-excluded routes (§13.8).
+- [ ] GCP budget alerts (`$50/$150/$250`) and an OpenAI usage cap are set. **All four child-data routes — beats, safety, memory, embeddings — are on paid, data-excluded tiers** (§13.8, `Hosting.md §3`); `launch_check`'s `privacy.provider_terms` row is `OK`.
 
 ### Deploy & security hygiene
 - [ ] HTTPS with a valid cert; `DEBUG=0`; `ALLOWED_HOSTS`/`CORS` correct; HSTS + secure cookies on.

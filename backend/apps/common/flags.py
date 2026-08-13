@@ -95,11 +95,44 @@ def _validate_beat_model(value: str) -> str | None:
 
     Empty is always valid and means "use `AI_BEAT_MODEL`" — that is how the
     rollback is undone.
+
+    **Three rules, and the last two were added by the Day 1-15 audit** (F-3, F-4).
+    Reachability was never the only thing that can be wrong with a value typed
+    into this box:
+
+    * *Pairing.* An id the selected provider will answer `400` to breaks the
+      product at the moment the lever is being used to fix it.
+    * *Independence (§13.3).* The one value that must never be accepted here is
+      the safety grader's own model id — it collapses the independent guard into
+      self-grading, silently, with nothing logged and no dashboard row changed.
+      The lever's own moment is a bad model in production at 3am, and the safety
+      model's slug is the nearest known-good id to hand. §13.3's guarantee is a
+      fact "about the weights and not only of the request"; after that flip it is
+      a fact about neither.
+    * *Provider terms (§13.8).* A beat prompt carries the child's first name,
+      fears, avoid list and memory bundle, so the rollback lever must not be able
+      to route them down a `:free` prompt-reselling route that `prod.py` would
+      refuse at boot. A runtime lever that can reach a state the boot guard
+      forbids is a hole in the boot guard.
     """
     if not value:
         return None
 
-    from apps.common.model_ids import pairing_error
+    from apps.common.model_ids import pairing_error, training_error
+
+    if value.strip() == str(settings.AI_SAFETY_MODEL).strip():
+        return (
+            # ASCII, like `model_ids.training_error` and for the same reason: this
+            # is read in an admin form and in a terminal during an incident.
+            f"ai.beat_model='{value}' is the safety grader's own model "
+            f"(AI_SAFETY_MODEL). 13.3 requires the output classifier to be an "
+            f"independent model - a model grading its own output is not a guard. "
+            f"Roll back to a different writer, or change AI_SAFETY_MODEL first (a "
+            f"deploy, on purpose, with somebody watching)."
+        )
+
+    if problem := training_error(setting="ai.beat_model", model=value):
+        return problem
 
     order = list(settings.AI_PROVIDER_ORDER)
     credentials = {

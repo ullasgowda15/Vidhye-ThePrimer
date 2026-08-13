@@ -43,6 +43,15 @@ A dump under 1KB is refused and deleted: that is an error message with a `.dump`
 extension, and a backup job that reports success on one is worse than no backup
 job at all.
 
+**Dumps expire after `BACKUP_RETENTION_DAYS` (default 7).** The script prunes its
+own `primer-*.dump` files after a *successful* dump — never before one, so a
+failed run cannot be the run that deletes the history. That number is not
+housekeeping: `apps/accounts/privacy.py` states it to parents, so a copy of a
+family who deleted their account is gone within that window, and
+`manage.py launch_check`'s `durability.backup_freshness` row reads the newest
+dump's age against `BACKUP_MAX_AGE_HOURS` so a dead cron is visible before a
+family is let in. Keep the shell default, the setting and the sentence in step.
+
 On a machine with no Postgres client tools (a Windows dev box, for instance),
 point the script at the ones in the compose stack:
 
@@ -124,6 +133,37 @@ onboarded, not after.
 3. **Run `manage.py restore_drill` before repointing.** Same command, same
    questions. If memories do not decrypt, the problem is the key and not the
    dump, and repointing would make it everybody's problem.
-4. **Then `manage.py launch_check`** against the restored deployment before
+4. **Re-apply every deletion the dump predates. This step is not optional.**
+   A restore brings back families who asked to be erased between the dump and the
+   disaster, and `apps/accounts/privacy.py` tells parents in writing that a
+   deleted family is never restored from a copy. That sentence is true because
+   this step exists, so skipping it makes the disclosure false rather than merely
+   making the ops work sloppy.
+
+   The receipts are how you know who: `accounts_deletionreceipt` is append-only,
+   is *not* cascaded by a parent delete, and every row carries the deleted
+   parent's id and the timestamp.
+
+   ```sql
+   -- Every account deleted after the dump was taken. Re-delete each one.
+   SELECT parent_id_at_deletion, deleted_at
+     FROM accounts_deletionreceipt
+    WHERE deleted_at > '<the dump's timestamp>'
+    ORDER BY deleted_at;
+   ```
+
+   Delete each parent through the ordinary path (`manage.py shell` →
+   `User.objects.get(pk=…).delete()`, having first run
+   `media_service.delete_child_media` for each child, exactly as
+   `AccountDeleteView` does) so the object storage goes too. Then record the
+   re-deletions in the drill log below.
+
+   *Caveat, stated rather than glossed:* the receipt table is restored **from the
+   same dump**, so receipts written after the dump are not in the restored
+   database. Take the list from the surviving production database or from the
+   receipts in the newest dump *before* you repoint, and keep it outside the
+   database while you work.
+5. **Then `manage.py launch_check`** against the restored deployment before
    letting a child back in.
-5. **Write down what happened**, here, with the timestamps.
+6. **Write down what happened**, here, with the timestamps — including the
+   re-applied deletions from step 4.

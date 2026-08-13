@@ -27,7 +27,9 @@ import { useHealth, useMe } from '@/lib/api/queries';
  */
 export default function ChildHome() {
   const navigate = useNavigate();
-  const { data, isError } = useHealth();
+  // Only `data` is read. Whether the health check *failed* or is merely slow is
+  // a distinction this screen deliberately does not draw — see the footer.
+  const { data } = useHealth();
   const { data: me } = useMe();
   const ok = data?.status === 'ok';
 
@@ -66,7 +68,18 @@ export default function ChildHome() {
           className="inline-block h-3 w-3 rounded-full"
           style={{ background: ok ? 'var(--success)' : 'var(--accent)' }}
         />
-        <span data-testid="health-status">{ok ? 'ok' : isError ? 'offline' : 'waking up'}</span>
+        {/* Two words from the story world, never from the network stack (§14.5,
+            and the Day 1–15 audit's F-9). This used to render `offline` when the
+            health check failed — three lines below a docstring promising no error
+            state — and the objection is not that a pre-reader would read it. It is
+            that a system failure had been given a place on the child's own screen,
+            and the next person debugging a connectivity problem makes that place
+            bigger. `isError` and "still loading" now say the same thing on
+            purpose: the difference between them is a grown-up's question, and the
+            grown-ups' door is the link beside this one. */}
+        <span data-testid="health-status">
+          {ok ? 'the story is awake' : 'the story is dreaming'}
+        </span>
         <Link to="/parent" className="ml-4 underline underline-offset-4">
           Grown-ups
         </Link>

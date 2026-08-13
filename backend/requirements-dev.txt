@@ -3,9 +3,21 @@
 # Lint / format / typecheck
 ruff==0.8.6
 mypy==1.13.0
-django-stubs[compatible-mypy]==5.1.1
-djangorestframework-stubs==3.15.2
+django-stubs[compatible-mypy]==5.2.9
+djangorestframework-stubs==3.16.0
 
 # Test
 pytest==8.3.4
 pytest-django==4.9.0
+
+# Dependency advisories (PRODUCT.md §16.1; the Day 1-15 audit's F-8).
+#
+# CI pins every version in `requirements.txt`, which is correct and is exactly
+# what turns "reproducible" into "reproducibly stale" without something that
+# asks. Fifteen build-days ran on Django 5.1.5 with 26 open advisories, on the
+# `cryptography` that encrypts `Memory.content` with 8, and on the `simplejwt`
+# that is the whole auth story with 1 — and nothing in the pipeline said a word.
+#
+# `ci.yml`'s `deps` job runs this against `requirements.txt` (the runtime
+# surface, and what the image installs) as a blocking check.
+pip-audit==2.10.1

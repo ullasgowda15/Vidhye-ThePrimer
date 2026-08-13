@@ -412,8 +412,17 @@ class TestNoChildDirectedPullMechanics:
     #: Where a child's eyes actually land. The parent surface is excluded on
     #: purpose — a parent seeing "sessions this week" is a report, not a pull, and
     #: §12.9 permits parent-directed summaries explicitly.
+    #:
+    #: `frontend/src/components` is here because of the audit's F-11: `SafeBoundary
+    #: .tsx` was added on Day 15 specifically to control what a child sees when the
+    #: React tree crashes, and it lives in `components/` rather than
+    #: `routes/child/`, so the scan the day's own note called "the most important
+    #: test in the day" never read the newest child-facing component in the
+    #: product. `SceneTransition.tsx` is the same shape. A directory-shaped scan
+    #: decays by directory, which is why the floor below moved up with it.
     CHILD_SURFACES = (
         REPO / "frontend/src/routes/child",
+        REPO / "frontend/src/components",
         REPO / "backend/apps/safety/fallbacks.py",
         REPO / "backend/apps/story/ai/prompts",
         REPO / "backend/apps/story/wellbeing.py",
@@ -438,7 +447,21 @@ class TestNoChildDirectedPullMechanics:
     def test_the_surfaces_a_child_sees_are_actually_being_read(self) -> None:
         # A guard on the guard: a test that silently scanned nothing would pass
         # forever, which is the failure mode of every source-inspection test.
-        assert len(self._child_facing_sources()) > 12
+        #
+        # The floor is raised whenever `CHILD_SURFACES` grows, and that is the
+        # whole mechanism: `> 12` stayed true after `SafeBoundary.tsx` was added
+        # *outside* the scan, so the number proved the scan was running and not
+        # that it was complete (the audit's F-11). Naming the files this expects
+        # would be brittle; a floor that has to move with the list is the version
+        # that catches the next component added somewhere new.
+        scanned = self._child_facing_sources()
+        assert len(scanned) > 14, sorted(path.name for path in scanned)
+
+        # And the two that F-11 was actually about are in it by name, because
+        # "more than fourteen files" would also be satisfied by fourteen of the
+        # wrong ones.
+        names = {path.name for path in scanned}
+        assert {"SafeBoundary.tsx", "SceneTransition.tsx"} <= names, sorted(names)
 
     #: Words that turn a mention into a prohibition.
     #:

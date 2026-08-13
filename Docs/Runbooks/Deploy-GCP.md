@@ -127,12 +127,16 @@ Start from `DEPLOY.md`'s env table (the full prod list) and `Hosting.md §4` (th
 | `IMAGE_PROVIDER=cloudflare` + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | Step 5 | never `local`. |
 | `TTS_PROVIDER=google` + `GOOGLE_TTS_API_KEY` | Step 1 | `TTS_FALLBACK_PROVIDERS=elevenlabs` + `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`. Never add `local`. |
 | `EMBEDDING_PROVIDER=openai` + `OPENAI_API_KEY` | your OpenAI key | pennies; semantic recall. |
-| **LLM (beats/safety/memory)** | Gemini per `Hosting.md §4` | Beats on the **free** Gemini tier; safety+memory on a **paid, data-excluded** tier (§13.8). **Confirm the router has a native `gemini` provider** — if not, route via OpenRouter (`AI_PROVIDER_ORDER=openrouter` + Gemini slugs). Django refuses to boot on a provider/model-form mismatch. |
+| **LLM (beats/safety/memory)** | Gemini per `Hosting.md §4` | **All three on a paid, data-excluded tier** (§13.8) — beats included; set `AI_MEMORY_MODEL` explicitly rather than letting it inherit. **Confirm the router has a native `gemini` provider** — if not, route via OpenRouter (`AI_PROVIDER_ORDER=openrouter` + Gemini slugs, **no `:free` suffix**). Django refuses to boot on a provider/model-form mismatch, and now also on a `:free` child-data model. |
 | `SECURE_SSL_REDIRECT=1`, `DEBUG=0` | | |
 
 ⬜ `.env` assembled on the server with real values, **not committed**, permissions `600`.
 
-> **Privacy rule (don't skip):** the beats can use the free Gemini tier, but safety, memory, and embeddings must be on paid/data-excluded routes (§13.8). Never point those three at a free prompt-reselling route.
+> **Privacy rule (don't skip):** beats, safety, memory **and** embeddings all run on paid/data-excluded routes. Never a free prompt-reselling route for any of them — on OpenRouter that means never a `:free` suffix, and set the account's data policy to disallow prompt logging/training as well.
+>
+> This changed after the Day 1–15 audit (F-3). The earlier version of this line said beats could use the free tier; that was wrong on the facts — a beat prompt carries the child's first name, age band, avoid list, fears and retrieved memories — and it contradicted the disclosure parents actually read. `Hosting.md §3` is the full reasoning.
+>
+> It is now enforced rather than remembered: `prod.py` refuses to boot on a `:free` child-data model, `manage.py launch_check` blocks on one (`privacy.provider_terms`), and the `ai.beat_model` rollback flag rejects one. If the boot fails here with `ImproperlyConfigured` naming a model, that guard is working — drop the `:free` suffix, do not disable the check.
 
 ---
 

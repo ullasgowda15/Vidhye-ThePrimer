@@ -204,6 +204,63 @@ jobs:
       - name: Eval suite (golden + red-team + age rubric + regression)
         run: pytest evals/ -q
 
+  deps:
+    # PRODUCT.md §16.1, and the Day 1–15 audit's F-8.
+    #
+    # Pinning every version is correct and is also exactly what turns
+    # "reproducible" into "reproducibly stale". Fifteen build-days shipped on
+    # Django 5.1.5 with 26 open advisories, on the `cryptography` release that
+    # encrypts `Memory.content` (§11.10) with 8, and on the `simplejwt` that is
+    # the whole auth story with 1 — while CI linted, type-checked, tested,
+    # ran the eval gate and built an image, and never once asked whether the
+    # dependencies were safe.
+    #
+    # **Blocking, both halves.** The brief that commissioned this job said
+    # "non-blocking for a sprint and blocking before families"; the sprint is
+    # over and families are next, so it starts blocking. A dependency job that
+    # only warns is a dependency job whose output nobody reads.
+    #
+    # Its own job rather than a step in `backend`, for the reason `evals` is one:
+    # a red dependency audit means something different from a red test, is fixed
+    # by a different action (a version bump, not a code change), and should be
+    # distinguishable at a glance.
+    name: Dependencies
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install pip-audit
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Audit backend dependencies (pip-audit)
+        # `requirements.txt` and not `-dev.txt`: this is the runtime surface —
+        # what `infra/Dockerfile.backend` installs and what a family's data
+        # actually passes through. A test-runner advisory is a real thing to fix
+        # but it is not a reason to block a deploy at 3am, and a gate that goes
+        # red for reasons unrelated to the risk is a gate somebody disables.
+        run: pip-audit -r backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Audit frontend dependencies (npm audit)
+        working-directory: frontend
+        # `--audit-level=high` is the blocking bar. Moderate findings still print
+        # and are still worth taking; blocking on them would mean the build going
+        # red for a transitive dev-tool advisory in a package that never reaches
+        # a browser.
+        run: npm audit --audit-level=high
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

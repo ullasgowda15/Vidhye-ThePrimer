@@ -23,8 +23,16 @@ class BeatInline(admin.TabularInline):
     model = Beat
     extra = 0
     can_delete = False
-    fields: list[str] = ["seq", "emotion", "narration", "safety_status", "media", "audio"]
-    readonly_fields: list[str] = fields
+    # Unannotated, and written out twice rather than aliased. `django-stubs`
+    # declares `fields` and `readonly_fields` as class variables of two *different*
+    # union types on `BaseModelAdmin` — `fields` may hold a row-grouping tuple,
+    # `readonly_fields` may not — so a `list[str]` annotation re-declares them as
+    # instance variables and `readonly_fields = fields` hands the wider type to
+    # the narrower field. The duplication is the honest version: everything shown
+    # here is read-only, and a beat is what a model generated and a child was
+    # shown, so the two lists must not be able to drift into disagreeing.
+    fields = ["seq", "emotion", "narration", "safety_status", "media", "audio"]
+    readonly_fields = ["seq", "emotion", "narration", "safety_status", "media", "audio"]
     ordering = ["seq"]
 
     def has_add_permission(self, request: object, obj: object = None) -> bool:

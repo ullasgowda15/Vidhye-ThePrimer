@@ -2,6 +2,7 @@
 
 from django.core.exceptions import ImproperlyConfigured
 
+from apps.common import model_ids
 from config.settings.base import *  # noqa: F403
 from config.settings.base import env
 
@@ -67,6 +68,35 @@ if IMAGE_MODERATION == "off":  # noqa: F405
         "'auto' and give the deployment an ANTHROPIC_API_KEY so generated "
         "illustrations are actually looked at before a child sees them (§13.8)."
     )
+
+# ---------------------------------------------------------------------------
+# No child data down a route that may train on it (PRODUCT.md §13.8)
+# ---------------------------------------------------------------------------
+# `apps.accounts.privacy` tells every parent, in the present tense and without
+# qualification: *"We never use your child's data to train anybody's AI models —
+# not ours, and not our providers."* Until the Day 1-15 audit nothing enforced
+# that sentence. Every one of the four models below was pointed at an OpenRouter
+# `:free` route — the variant whose terms permit prompt logging and training, and
+# which is free precisely because of that trade — and the preflight reported the
+# safety grader as `OK` because it only asked whether the route was reachable.
+#
+# All four are named, including the beat model. The beat prompt carries the
+# child's first name, their age band, the avoid list, the fears list and the
+# retrieved memory bundle; the memory prompt carries the verbatim session digest.
+# "Only the safety and memory models see child data" was never true here.
+#
+# A boot failure rather than a warning, for the same reason the three checks
+# around it are: a deployment that breaks a promise the product makes in writing
+# to a parent about their four-year-old is worse than a deployment that will not
+# start. `manage.py launch_check` blocks on the same rule, so the person running
+# the preflight sees it before the boot does.
+_training_problems = [
+    problem
+    for _setting in model_ids.CHILD_DATA_MODEL_SETTINGS
+    if (problem := model_ids.training_error(setting=_setting, model=globals().get(_setting, "")))
+]
+if _training_problems:
+    raise ImproperlyConfigured("\n".join(_training_problems))
 
 # ---------------------------------------------------------------------------
 # Child memory needs a key of its own (PRODUCT.md §11.10, §13.8)

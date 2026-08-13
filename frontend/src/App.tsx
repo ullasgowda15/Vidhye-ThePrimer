@@ -44,7 +44,12 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} future={{ v7_startTransition: true }} />
+      {/* No `future` flags: on react-router 7 every v7_* opt-in this app had
+          turned on is the default, and the props no longer exist. The upgrade
+          was taken for GHSA-wrjc-x8rr-h8h6 / GHSA-337j-9hxr-rhxg (the Day 1–15
+          audit's F-8); opting in early on v6 is why it was a version bump and a
+          prop deletion rather than a migration. */}
+      <RouterProvider router={router} />
     </QueryClientProvider>
   );
 }

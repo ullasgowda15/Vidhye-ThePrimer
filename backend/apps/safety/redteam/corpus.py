@@ -174,6 +174,18 @@ INSTRUCTION_RESIDUE: tuple[tuple[str, str], ...] = (
 #: because the profile fields reach an *instruction* layer (the safety policy is
 #: built from them) while the turn reaches a *data* layer — and the profile route
 #: is the one that was easy to miss.
+#:
+#: **The last two are the audit's F-10**, and they are the meta-finding of the
+#: whole Day 1-15 pass. Day 15 discovered that a 1.00 gate measured over one of
+#: eight surfaces was worth nothing and widened the *measurement*; the list being
+#: measured was still short by two, so the same failure mode produced F-1 and F-2
+#: four commits later. `companion_name` is a text box a child fills in that
+#: art-directs their own companion forever; `companion_descriptor` is model output
+#: replayed into every picture of that companion for the life of the account.
+#: Neither reaches `prompting.assembler` on the path that matters — they reach
+#: `companion.descriptor.build_context` and `media.prompts`, which is why "every
+#: surface x the assembler" was never the right sweep and "every surface x every
+#: prompt builder" is.
 INJECTION_SURFACES: tuple[str, ...] = (
     "interests",
     "fears",
@@ -183,6 +195,8 @@ INJECTION_SURFACES: tuple[str, ...] = (
     "choice_label",
     "next_hint",
     "memory",
+    "companion_name",
+    "companion_descriptor",
 )
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ from apps.profiles.models import AGE_BAND_OLDER, AGE_BAND_YOUNGER, Child
 from apps.profiles.settings import settings_for
 from apps.safety.models import SYSTEM_IDENTITY, PromptVersion
 from apps.safety.prompting.layers import LayerKind, PromptLayer
-from apps.safety.scrub import INJECTION, REDACTION, scrub, scrub_text
+from apps.safety.scrub import scrub_instruction_text, scrub_text
 from apps.story.ai.schemas import beat_json_schema
 
 #: How much of one untrusted field may reach the prompt. A name is a name; a
@@ -173,13 +173,15 @@ def _instruction_text(value: Any, *, cap: int) -> str:
     Nothing here weakens the enforcement half of §13.4: `safety.policy` matches an
     avoid-topic against the child's **stored** term, not this rendering, so a topic
     dropped from the prompt is still blocked in the output guard.
-    """
-    result = scrub(str(value), cap=cap)
-    if not any(finding.startswith(INJECTION) for finding in result.findings):
-        return result.text
 
-    head, marker, _ = result.text.partition(REDACTION)
-    return " ".join(head.split()) if marker else result.text
+    **The rule itself now lives in `scrub.scrub_instruction_text`**, unchanged, and
+    this is the thin caller. The audit that followed Day 15 found two more places
+    that build an instruction out of untrusted text and were never given this
+    treatment — the companion descriptor prompt and the illustration prompt — so
+    the rule had to be somewhere all three could reach rather than private to the
+    module that happened to need it first.
+    """
+    return scrub_instruction_text(value, cap=cap)
 
 
 def _safe_bullets(items: Sequence[Any], *, cap: int) -> str:

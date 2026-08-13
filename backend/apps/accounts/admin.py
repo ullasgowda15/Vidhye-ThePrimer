@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.utils.translation import gettext_lazy as _
 
-from apps.accounts.models import ConsentRecord, User
+from apps.accounts.models import ConsentRecord, DeletionReceipt, User
 
 
 @admin.register(User)
@@ -63,4 +63,46 @@ class ConsentRecordAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request) -> bool:
         # Consent is granted by a parent through the product, never typed in by us.
+        return False
+
+
+@admin.register(DeletionReceipt)
+class DeletionReceiptAdmin(admin.ModelAdmin):
+    """The record that a family left. Read-only in every direction (§13.7, §13.8).
+
+    Deliberately searchable by **fingerprint and not by address**: answering "was
+    this family deleted?" means pasting in the hash you computed from the address
+    you were given, which is a deliberate act. `search_fields` on an email would
+    have quietly rebuilt the thing this table exists to avoid holding — and
+    `analytics/admin.py` already argues that convention for events.
+    """
+
+    list_display = [
+        "id",
+        "deleted_at",
+        "parent_id_at_deletion",
+        "children",
+        "media_rows",
+        "media_objects",
+    ]
+    date_hierarchy = "deleted_at"
+    search_fields = ["email_fingerprint", "parent_id_at_deletion"]
+    readonly_fields = [
+        "parent_id_at_deletion",
+        "email_fingerprint",
+        "children",
+        "media_rows",
+        "media_objects",
+        "deleted_at",
+    ]
+
+    def has_add_permission(self, request) -> bool:
+        # Written by the deletion endpoint, after the cascade, and nowhere else.
+        return False
+
+    def has_change_permission(self, request, obj=None) -> bool:
+        return False
+
+    def has_delete_permission(self, request, obj=None) -> bool:
+        # Append-only. A receipt somebody can remove proves nothing.
         return False
