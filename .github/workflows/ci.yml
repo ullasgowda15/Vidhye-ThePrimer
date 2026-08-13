@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # `deploy.yml` calls this workflow so the gating jobs are re-run on the tagged
+  # commit itself, rather than the deploy trusting that some ancestor was green.
+  # A tag can point anywhere, including at a commit that was never on main.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -125,6 +129,78 @@ jobs:
           done
           celery -A config inspect ping --timeout 5 || { cat /tmp/celery.log; exit 1; }
           python manage.py shell -c "from apps.common.tasks import ping; assert ping.delay().get(timeout=30) == 'pong'"
+
+  evals:
+    # PRODUCT.md §19.7's ship gate. **This is a required check on the deploy
+    # workflow** (see deploy.yml's `needs:`), which is what makes "a change that
+    # regresses safety or coherence beyond threshold cannot deploy" a fact about
+    # the pipeline rather than an intention.
+    #
+    # Its own job rather than a step in `backend`, for two reasons: it is the
+    # status check a human points at and a branch protection rule names, and a
+    # red eval must be distinguishable at a glance from a red unit test — they
+    # mean different things and are fixed by different people.
+    name: Evals
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: primer
+          POSTGRES_PASSWORD: primer
+          POSTGRES_DB: primer
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U primer -d primer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      SECRET_KEY: ci-secret-not-used-in-production
+      DEBUG: '1'
+      DATABASE_URL: postgres://primer:primer@localhost:5432/primer
+      REDIS_URL: redis://localhost:6379/0
+      # The gate runs against the scripted provider and spends nothing. Empty keys
+      # are the guard as well as the configuration: a grader that tried to reach a
+      # real model would fail on configuration instead of on a vendor's bad
+      # afternoon, which is what keeps this gate worth having.
+      ANTHROPIC_API_KEY: ''
+      OPENROUTER_API_KEY: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: |
+          ruff check evals
+          ruff format --check evals
+
+      - name: Migrate
+        working-directory: backend
+        run: python manage.py migrate
+
+      - name: Eval suite (golden + red-team + age rubric + regression)
+        run: pytest evals/ -q
 
   frontend:
     name: Frontend

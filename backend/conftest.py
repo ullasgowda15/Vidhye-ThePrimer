@@ -65,6 +65,32 @@ def no_live_providers(settings: Any) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_flag_cache() -> Any:
+    """Forget every feature flag around each test.
+
+    `apps.common.flags` caches a resolved value for `CACHE_TTL_S` seconds in
+    Django's cache, which is **process-global and survives between tests** — the
+    same hazard `tests/conftest.py` documents for the throttle counters, and it
+    bites harder here because the leak outlives the row that caused it.
+
+    A test that sets `media.illustrations=off` gets its `FeatureFlag` row rolled
+    back at teardown, but the *cached* `"off"` stays for ten seconds — so the next
+    ten seconds of tests generate no illustrations and fail in their fixtures,
+    with nothing in the failing test to explain why. It is order-dependent, it is
+    clock-dependent, and it is invisible when the file is run on its own.
+
+    Found exactly that way: `apps/story/tests/test_degradation.py` sorts before
+    `test_orchestrator.py`, and the full suite errored in eight media fixtures
+    that passed in isolation.
+    """
+    from apps.common import flags
+
+    flags.invalidate()
+    yield
+    flags.invalidate()
+
+
+@pytest.fixture(autouse=True)
 def offline_media(tmp_path: Path, settings: Any) -> Path:
     """Local storage, local providers, for every test."""
     settings.MEDIA_ROOT = str(tmp_path)

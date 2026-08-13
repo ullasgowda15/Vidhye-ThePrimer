@@ -31,7 +31,8 @@ COMPOSE := docker compose -f infra/docker-compose.yml
 .PHONY: help venv install up down logs migrate migrations run worker front build \
         test test-backend test-frontend lint lint-backend lint-frontend format \
         typecheck schema client superuser hello-beat smoke smoke-media smoke-story \
-        render-companion render-consistency redteam memories ping clean
+        render-companion render-consistency redteam evals evals-live memories ping clean \
+        backup restore-drill launch-check flags prompts
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -129,11 +130,36 @@ test-frontend:
 redteam: ## Run the safety red-team suite (§19.7) — injection, ceilings, unsafe bait
 	cd backend && $(ABS_PY) -m pytest apps/safety/redteam -q
 
+evals: ## The ship gate (§19.7): golden + red-team + age rubric + regression. No spend.
+	$(ABS_PY) -m pytest evals/ -q
+
+evals-live: ## The same scenarios against the real provider. Spends money. Never in CI.
+	$(ABS_PY) -m pytest evals/ -q --live --spotcheck
+
+# --- operations (§16.10, §18.8) --------------------------------------------
+
+backup: ## Dump the database (§16.10). DATABASE_URL required; PG_RUN for docker.
+	sh infra/backup/backup.sh $(BACKUP_DIR)
+
+restore-drill: ## Restore the latest dump into a scratch DB and prove the data came back
+	sh infra/backup/restore-drill.sh $(DUMP)
+
+launch-check: ## Preflight a deployment before a child touches it. Add STRICT=--strict
+	cd backend && $(ABS_PY) manage.py launch_check $(STRICT)
+
+flags: ## Show or pull a feature flag: make flags ARGS="set media.illustrations off"
+	cd backend && $(ABS_PY) manage.py flags $(ARGS)
+
+prompts: ## Show or roll back a prompt version: make prompts ARGS="rollback system_identity 1.0.0"
+	cd backend && $(ABS_PY) manage.py prompts $(ARGS)
+
 lint: lint-backend lint-frontend ## Lint + format-check everything
 
 lint-backend:
 	cd backend && $(ABS_PY) -m ruff check .
 	cd backend && $(ABS_PY) -m ruff format --check .
+	$(ABS_PY) -m ruff check evals
+	$(ABS_PY) -m ruff format --check evals
 
 lint-frontend:
 	cd frontend && $(NPM) run lint
@@ -145,8 +171,11 @@ typecheck: ## Type-check both sides
 format: ## Autoformat everything
 	cd backend && $(ABS_PY) -m ruff format .
 	cd backend && $(ABS_PY) -m ruff check --fix .
+	$(ABS_PY) -m ruff format evals
+	$(ABS_PY) -m ruff check --fix evals
 	cd frontend && $(NPM) run format
 
 clean: ## Remove build artifacts and caches
 	rm -rf frontend/dist backend/staticfiles
 	rm -rf backend/.pytest_cache backend/.ruff_cache backend/.mypy_cache
+	rm -rf evals/.pytest_cache evals/__pycache__ evals/.ruff_cache

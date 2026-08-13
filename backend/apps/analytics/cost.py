@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 from django.db.models import Count, Sum
 from django.utils import timezone
 
-from apps.analytics import pricing
+from apps.analytics import budget, pricing
 from apps.analytics.models import CostKind, GenerationCost
 
 if TYPE_CHECKING:
@@ -195,6 +195,13 @@ def _record(
         row.priced,
         attribution.session_id,
     )
+    # The breaker's counter is fed from here rather than from the two spending
+    # seams, so it counts exactly what the cost table counts — including the spans
+    # a *failed* generation leaves behind (§22.4's expensive failures). A second
+    # place that decided what to count would eventually disagree with this one,
+    # and a breaker that disagrees with the table it protects is one nobody acts
+    # on. Never raises; see `budget.spend`.
+    budget.spend(row.cost_usd)
     return row
 
 

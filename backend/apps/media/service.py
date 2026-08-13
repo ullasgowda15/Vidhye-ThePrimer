@@ -35,10 +35,11 @@ from typing import TYPE_CHECKING, Any
 
 from django.db import IntegrityError, transaction
 
+from apps.common import flags
 from apps.media import storage
 from apps.media.adapters import image as image_adapters
 from apps.media.adapters import tts as tts_adapters
-from apps.media.exceptions import MediaBlocked
+from apps.media.exceptions import MediaBlocked, MediaBudgetExceeded, MediaSwitchedOff
 from apps.media.hashing import hashes_for, sha16
 from apps.media.models import Media, MediaType, SafetyStatus
 from apps.media.safety import scan
@@ -217,6 +218,11 @@ def get_or_generate_stock(
         scene_hash=scene_hash,
         prompt_hash=sha16(f"{provider_name}:{scene_hash}"),
         produce=lambda: (data, provider_name),
+        # Not a purchase, so the spend guards do not apply (`_guard_spend`): a
+        # tripped budget breaker and a switched-off illustration flag must both
+        # still let the safety substitution through, because this is the picture a
+        # child gets when the image gate has just refused a generated one.
+        paid=False,
         # No `cost_units`, and no image count: a stock file was not generated and
         # billing it as a picture would put spend on the safety fallback path,
         # which is the one place a rising cost number must never discourage use.
@@ -270,6 +276,40 @@ OPERATION_FOR_TYPE: dict[str, str] = {
 }
 
 
+def _guard_spend(media_type: str) -> None:
+    """The two reasons we decline to buy a *new* asset (§18.8, §16.10).
+
+    Both raise a `MediaError`, so both land in the degradation the orchestrator
+    has had since Day 5. Neither can reach a cached asset: this is called after
+    the two lookups, deliberately.
+
+    Neither can reach the **safety substitution** either — `get_or_generate_stock`
+    passes `paid=False`, so this is not called for it at all. Stock art is bytes
+    we already hold, billed by nobody, and it is the picture a child gets when the
+    image gate has just refused a generated one. Letting a spend control gate the
+    safety fallback would put a cost number in the way of the one path that exists
+    to keep a child's screen safe, which is the trade this product does not make.
+
+    The flag only governs pictures. Voice is not an enhancement for a pre-reader —
+    it is how the story is delivered at all (see `TTS_FALLBACK_PROVIDERS` in
+    settings, and the outage that put that comment there) — so there is no flag
+    that switches it off, and the breaker is the only thing that can decline a
+    line of narration.
+    """
+    from apps.analytics import budget
+
+    if media_type == MediaType.IMAGE and not flags.enabled("media.illustrations"):
+        raise MediaSwitchedOff(
+            "New illustrations are switched off (flag media.illustrations). "
+            "Cached art is unaffected."
+        )
+
+    try:
+        budget.check(operation=OPERATION_FOR_TYPE.get(media_type, media_type))
+    except budget.BudgetExceeded as exc:
+        raise MediaBudgetExceeded(str(exc)) from exc
+
+
 def _get_or_generate(
     *,
     child: Child,
@@ -280,6 +320,7 @@ def _get_or_generate(
     prompt_hash: str,
     produce: Callable[[], tuple[bytes, str]],
     cost_units: dict[str, Any] | None = None,
+    paid: bool = True,
 ) -> Media:
     tuple_filter = {
         "type": media_type,
@@ -341,6 +382,14 @@ def _get_or_generate(
     # writes nothing because a hit costs nothing. `units` is what the vendor bills
     # for — a picture is per image, a spoken line is per character — and
     # `cost_units` is passed down by the caller that knows which.
+    #
+    # It is also therefore the right line for the spend guards (§18.8) — *below*
+    # both cache lookups, so a tripped breaker and a switched-off illustration
+    # flag both still serve every asset we already hold. That is what "degrade to
+    # cached content" means here.
+    if paid:
+        _guard_spend(media_type)
+
     started = time.monotonic()
     raw, provider_name = produce()
     STATS.record_generation(provider_name, media_type)

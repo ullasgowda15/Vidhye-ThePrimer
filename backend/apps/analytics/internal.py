@@ -188,14 +188,31 @@ def as_text(window_days: int = DEFAULT_DAYS, *, now: datetime.datetime | None = 
         lines.append(f"    {row['kind']:<6} ${row['total_usd']:.4f}  ({row['spans']} spans)")
 
     guardrails = snapshot["guardrails"]
+    length = guardrails["session_minutes"]
     lines += [
         "",
         "Wellbeing guardrails (22.5) — watched, never maximised",
         f"  sittings                {guardrails['sessions']}",
         f"  ended reasons           {guardrails['ended_reasons'] or '-'}",
+        (
+            f"  sitting length          median {length['median_min']}min  "
+            f"p90 {length['p90_min']}min  "
+            f"over {length['over_long_threshold_min']}min: {length['over_long']}"
+            f"  (measured {length['measured']})"
+            if length["measured"]
+            else "  sitting length          no durations recorded in this window"
+        ),
         f"  max sittings/child/day  {guardrails['max_sessions_per_child_day']}",
         f"  safety incidents        {guardrails['safety_incidents']}"
         f" ({guardrails['serious_safety_incidents']} serious)",
+        "",
+        # §18.8's breaker, on the page it protects. It belongs next to the cost
+        # numbers above rather than in a log, because "cost/session looks great
+        # this week" and "the breaker has been open since Tuesday and children
+        # have been getting cached art" are the same figure with opposite
+        # meanings, and only one of these lines can tell them apart.
+        "Inference budget breaker (18.8)",
+        _breaker_line(),
         "",
         "Events seen",
     ]
@@ -206,6 +223,31 @@ def as_text(window_days: int = DEFAULT_DAYS, *, now: datetime.datetime | None = 
         lines.append(f"  never emitted: {', '.join(silent)}")
 
     return "\n".join(lines)
+
+
+def _breaker_line() -> str:
+    """The breaker's state, in one line, distinguishing all three of them.
+
+    "Under cap", "tripped" and **"not enforcing"** are three different situations
+    and the third is the one worth a word: a Redis the breaker cannot read means
+    there is no cap in force at all, and a dashboard that rendered that as
+    `$0.00 of $50.00` would be reporting the safest-looking number precisely when
+    nothing is being protected.
+    """
+    from apps.analytics import budget
+
+    state = budget.state()
+    if not state.available:
+        return "  NOT ENFORCING - the spend counter is unreadable (Redis). No cap is in force."
+    if not state.cap_usd:
+        return "  no cap set (INFERENCE_BUDGET_USD_PER_WINDOW=0). Not enforcing."
+
+    label = "TRIPPED" if state.tripped else "ok"
+    return (
+        f"  {label:<8} ${state.spent_usd:.4f} of ${state.cap_usd:.2f} "
+        f"({state.fraction * 100:.0f}%) this {state.window_s}s window, "
+        f"resets in {state.resets_in_s}s"
+    )
 
 
 def _rate_line(label: str, rate: metrics.Rate, target: float) -> str:

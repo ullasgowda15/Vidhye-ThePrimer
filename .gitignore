@@ -64,6 +64,19 @@ static_root/
 # be the quietest possible privacy incident.
 /backend/exports/
 
+# Database dumps (`infra/backup/backup.sh`, §16.10). The default destination is
+# inside the repo so the restore drill works on a fresh checkout with no setup —
+# which makes this line the only thing between a routine drill and a complete
+# copy of every family's data, including their encrypted memories, in a git
+# history that cannot be rewritten. Real backups belong off this machine
+# entirely; see Docs/Runbooks/Backup-Restore.md.
+/backups/
+
+# The eval suite's human spot-check output (`pytest evals/ --spotcheck`, §19.7).
+# Generated stories, written for a person to read once. Nothing to review in a
+# diff, and it accumulates a file per run.
+/evals/spotcheck/
+
 # Django migrations: KEEP these in git (they are source of truth for the schema).
 # Do NOT ignore migrations/*.py — they must be committed.
 

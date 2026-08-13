@@ -376,8 +376,64 @@ def weekly_adventures(window: Window) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+#: The session length §22.5 asks us to flag. Not a target and not a cap — the cap
+#: is the parent's own `session_cap_min` (§13.6) and it is enforced elsewhere.
+#: This is the number that says "a child sat for over half an hour", which is the
+#: shape of thing §22.5 wants a human to *notice*, whether it came from a
+#: generous parental limit or from the cap failing to fire.
+OVER_LONG_SESSION_MIN = 30
+
+
+def _session_length_distribution(ended: Any) -> dict[str, Any]:
+    """§22.5's first guardrail: the session-length *distribution*.
+
+    A distribution rather than a mean, and the reason is the same one that makes
+    `max_sessions_per_child_day` a maximum: the pattern §22.5 wants flagged
+    belongs to one child on one evening, and an average over a healthy cohort is
+    precisely the statistic that hides it. So this reports the median, the p90 and
+    a count over `OVER_LONG_SESSION_MIN` — the last of which is the one that gets
+    read, because it is a number of *children's evenings* and not a summary.
+
+    Read off `session.ended`'s own `duration_s`, so this stays inside the module's
+    one rule: every §22 number comes from `Event` and from nothing else. Sessions
+    with no duration recorded (a sitting closed by a path that never stamped one)
+    are excluded rather than counted as zero — a missing measurement is not a
+    short session, and averaging it in as one would make the guardrail read safer
+    the more often the stamp failed.
+    """
+    durations = sorted(
+        int(value)
+        for value in ended.values_list("props__duration_s", flat=True)
+        if isinstance(value, int | float) and value >= 0
+    )
+    total = len(durations)
+    if not total:
+        # Same keys as the populated case. A dict whose shape depends on whether
+        # there was data is a `KeyError` waiting for a quiet week.
+        return {
+            "measured": 0,
+            "median_min": None,
+            "p90_min": None,
+            "over_long": 0,
+            "over_long_threshold_min": OVER_LONG_SESSION_MIN,
+        }
+
+    def minutes(index: int) -> float:
+        return round(durations[min(index, total - 1)] / 60, 1)
+
+    return {
+        # Reported next to the numbers it produced: a distribution over three
+        # sittings and one over three hundred read identically without it.
+        "measured": total,
+        "median_min": minutes(total // 2),
+        "p90_min": minutes(int(total * 0.9)),
+        "over_long": sum(1 for value in durations if value >= OVER_LONG_SESSION_MIN * 60),
+        "over_long_threshold_min": OVER_LONG_SESSION_MIN,
+    }
+
+
 def guardrails(window: Window) -> dict[str, Any]:
-    """§22.5's three: how sittings ended, how often, and safety incidents.
+    """§22.5's three: how long and how often children sat, and safety incidents.
 
     Guardrails are *watched and capped*, never maximised, and they sit next to the
     growth numbers on the same page for that reason: §22.5 gives them a veto, and
@@ -408,6 +464,7 @@ def guardrails(window: Window) -> dict[str, Any]:
         # `cap` here is the wellbeing control working, not a failure: §13.6's warm
         # close landed a story at the parent's limit.
         "ended_reasons": {str(reason): count for reason, count in reasons.items()},
+        "session_minutes": _session_length_distribution(ended),
         "max_sessions_per_child_day": max(per_child_day.values(), default=0),
         "safety_incidents": incidents.count(),
         # Must trend to ~0 (§22.5). Any serious one is a stop-the-line event, so it

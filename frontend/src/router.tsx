@@ -1,5 +1,6 @@
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, Outlet } from 'react-router-dom';
 
+import { ChildBoundary, ParentBoundary } from './components/SafeBoundary';
 import ChildHome from './routes/child/ChildHome';
 import MeetCompanion from './routes/child/MeetCompanion';
 import ReturningGreeting from './routes/child/ReturningGreeting';
@@ -33,28 +34,53 @@ import WeeklyReport from './routes/parent/WeeklyReport';
  *      is behind it, including login, so a child cannot even reach a form.
  *   2. `ProtectedRoute` — a signed-in parent. Login, signup and onboarding sit
  *      outside it, because they are how you become signed in.
+ *
+ * **Each tree also has its own error boundary** (`components/SafeBoundary`, Day
+ * 15). Not one shared boundary at the root, and the split is the point: a render
+ * failure on the child surface must become the companion having a rest (§13 —
+ * a child is never shown an error), and the same failure on the parent surface
+ * must become a sentence a parent can act on (§12 — a parent is never lied to).
+ * One boundary could only be one of those, and it would be the wrong one for
+ * somebody. Wrapped at the *element* level rather than around the router so a
+ * throw inside a page still leaves the surrounding route tree intact.
  */
+
+/**
+ * Wrap a child-tree element in the boundary that never shows a child an error.
+ *
+ * A helper because it goes on every child route, and a route that quietly did
+ * not get it would be the only route in the app that can still white-screen a
+ * four-year-old — invisible in a diff, and the exact failure this exists to
+ * prevent.
+ */
+const forChild = (element: React.ReactElement) => <ChildBoundary>{element}</ChildBoundary>;
+
 export const router = createBrowserRouter(
   [
-    { path: '/', element: <ChildHome /> },
+    { path: '/', element: forChild(<ChildHome />) },
     // The imprint scene sits in the child tree, deliberately outside the parent
     // guards: the parent hands the tablet over here, and a child must never be
     // asked an adult challenge to meet their friend. It shows nothing an
     // unauthenticated request could obtain — without a session it stays a
     // sleeping companion.
-    { path: '/meet/:childId', element: <MeetCompanion /> },
+    { path: '/meet/:childId', element: forChild(<MeetCompanion />) },
     // Coming back (§4.5). A sibling of `/meet` rather than a mode of it: the two
     // scenes answer different questions — "who is this?" and "do you remember
     // me?" — and the second is the one the whole retention thesis rests on. Same
     // place in the tree, outside the parent guards, for the same reason: the child
     // is holding the tablet.
-    { path: '/welcome/:childId', element: <ReturningGreeting /> },
+    { path: '/welcome/:childId', element: forChild(<ReturningGreeting />) },
     // The story, in the child tree and outside the parent guards for the same
     // reason: the child is the one holding the tablet. It runs under the parent's
     // restored session; without one it stays a companion thinking, never a form.
-    { path: '/story/:childId', element: <StoryPage /> },
+    { path: '/story/:childId', element: forChild(<StoryPage />) },
     {
       path: '/parent',
+      element: (
+        <ParentBoundary>
+          <Outlet />
+        </ParentBoundary>
+      ),
       children: [
         { path: 'gate', element: <ParentGate /> },
         {

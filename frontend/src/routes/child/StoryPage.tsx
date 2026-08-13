@@ -403,7 +403,22 @@ export default function StoryPage() {
   // server states the same rule in `ChildSettings.words_on_screen`, and a rule
   // written in two places has to be testable in both.
   const voiceOn = settings?.voice_on ?? true;
-  const showWords = wordsOnScreen(settings);
+  /**
+   * The second argument is the Day-15 half of rule 3 (`wordsOnScreen`).
+   *
+   * A beat can reach this screen with no `audioUrl` for reasons nobody chose — a
+   * voice vendor out of quota with no fallback configured, the inference-budget
+   * breaker declining a new line (§18.8). Without telling the rule that, a
+   * parent who had turned the story text off would get a beat that is neither
+   * heard nor read, which is not a beat at all.
+   *
+   * The `status` check is what stops that becoming a flicker. Audio arrives in a
+   * later `media` frame than the narration, so "no audio yet" is the normal state
+   * for the first second of every beat; only once `done` has landed is the voice
+   * genuinely not coming. Until then the words are treated as spoken-for, and a
+   * parent who chose no text does not see a paragraph appear and vanish.
+   */
+  const showWords = wordsOnScreen(settings, status === 'thinking' || audioUrl !== null);
 
   const question = askedSeparately(beat);
   const options: ChoiceOption[] = (beat?.choices ?? []).map((option) => ({

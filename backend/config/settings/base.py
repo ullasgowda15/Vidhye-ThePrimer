@@ -9,6 +9,10 @@ from pathlib import Path
 
 import environ
 
+# Django is not configured yet at this point, so this import is only safe because
+# `model_ids` imports nothing but the standard library — see its docstring.
+from apps.common import model_ids
+
 # backend/
 BASE_DIR = Path(__file__).resolve().parents[2]
 # repo root
@@ -565,6 +569,12 @@ OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 # Deliberately narrow. It checks the *shape* of the id against the provider that
 # will actually be selected — a slug has a vendor prefix, a Claude id does not —
 # and nothing else. Whether the model exists is the provider's answer to give.
+#
+# The rule itself lives in `apps.common.model_ids` rather than here, because Day
+# 15's `ai.beat_model` feature flag (§16.10's no-deploy rollback) has to apply the
+# same rule when a model id is set at runtime — and a boot check and a runtime
+# check that disagree about what a valid model id is would let the rollback lever
+# set something the next boot refuses to start on.
 def _selected_ai_provider() -> str:
     """The provider `ModelRouter.select_provider` will pick: first in order with a key."""
     credentials = {"anthropic": ANTHROPIC_API_KEY, "openrouter": OPENROUTER_API_KEY}
@@ -598,28 +608,14 @@ def _check_model_pairing() -> None:
         "AI_MEMORY_MODEL": AI_MEMORY_MODEL,
     }
     for _setting, _model in models.items():
-        looks_like_slug = "/" in _model
-        if provider == "openrouter" and not looks_like_slug:
-            raise ImproperlyConfigured(
-                f"{_setting}='{_model}' is not an OpenRouter model slug, but "
-                f"openrouter is the provider that will be selected "
-                f"(AI_PROVIDER_ORDER={list(AI_PROVIDER_ORDER)}). OpenRouter will "
-                f"answer 400 to every call. Set {_setting} to a 'vendor/model' "
-                f"slug valid for your gateway."
-                + (
-                    " AI_SAFETY_MODEL is the independent safety grader (§13.3) — "
-                    "give it a capable model, not the cheapest free one on the list."
-                    if _setting == "AI_SAFETY_MODEL"
-                    else ""
-                )
-            )
-        if provider == "anthropic" and looks_like_slug:
-            raise ImproperlyConfigured(
-                f"{_setting}='{_model}' looks like an OpenRouter slug, but "
-                f"anthropic is the provider that will be selected "
-                f"(AI_PROVIDER_ORDER={list(AI_PROVIDER_ORDER)}). Use a Claude "
-                f"model id, or put openrouter first in AI_PROVIDER_ORDER."
-            )
+        problem = model_ids.pairing_error(
+            setting=_setting,
+            model=_model,
+            provider=provider,
+            order=list(AI_PROVIDER_ORDER),
+        )
+        if problem:
+            raise ImproperlyConfigured(problem)
 
 
 _check_model_pairing()
@@ -718,6 +714,31 @@ EVENT_EXPORT_DIR = env("EVENT_EXPORT_DIR", default=str(BASE_DIR / "exports"))
 # Nothing applies it on a timer — `drain_events --prune` is deliberate and manual,
 # and it never deletes a row that has not reached the export.
 EVENT_RETENTION_DAYS = env.int("EVENT_RETENTION_DAYS", default=90)
+
+# The global inference-budget circuit breaker (§18.8, §19.9, `apps.analytics.budget`).
+#
+# **What it protects against is not one abusive caller** — the throttle scopes
+# above do that — but the whole product spending more in an hour than it should,
+# which is what a price change, a prompt regression or a retry storm looks like
+# from here. Over the cap, new paid generations are refused and the child gets
+# cached art and a pre-vetted warm beat instead of an error (§13.3).
+#
+# Defaulted to **0.00, meaning "do not enforce"**, and that is deliberate rather
+# than lazy: a cap is a number somebody has to choose from their own cost/session
+# figure (`manage.py metrics`), and a plausible-looking default would be a
+# throttle on a real family's story chosen by nobody. `prod.py` refuses to boot
+# without one, so the choice cannot be skipped where it matters — see DEPLOY.md
+# and Docs/Runbooks/Launch.md for how to size it.
+INFERENCE_BUDGET_USD_PER_WINDOW = env.float("INFERENCE_BUDGET_USD_PER_WINDOW", default=0.0)
+# An hour. Long enough that a busy bedtime does not trip it, short enough that a
+# trip clears itself the same evening rather than taking the product out for a day.
+INFERENCE_BUDGET_WINDOW_S = env.int("INFERENCE_BUDGET_WINDOW_S", default=3600)
+
+# Deployment-level defaults for `apps.common.flags` (§16.10). A `FeatureFlag` row
+# still wins over anything here — the point of the row is that it outruns a
+# deploy — so this is the baseline a box starts from, not an override.
+#   FEATURE_FLAGS={"media.illustrations":"off"}
+FEATURE_FLAGS = env.json("FEATURE_FLAGS", default={})
 
 # Per-generation prices, merged over `apps.analytics.pricing`'s built-in table.
 # Shaped `{"llm": {"provider:model": [in_per_1m, out_per_1m]}, "image":

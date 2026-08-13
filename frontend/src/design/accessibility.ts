@@ -64,16 +64,32 @@ export function withDefaults(settings: Accessibility | undefined): Required<Acce
  * 3. a silent voice outranks both, because a beat delivered as neither sound nor
  *    text is not a beat.
  *
+ * `hasAudio` is rule 3's second half, and it was missing until Day 15. Rule 3
+ * was written against the *setting* — a parent who switched the voice off — and
+ * a beat can also arrive with no voice for reasons nobody chose: a TTS vendor
+ * out of quota with no fallback key, or the inference-budget breaker declining a
+ * new line (§18.8). For a parent whose `text_on` is off, that combination
+ * produced a screen with no words and no sound — a beat delivered as neither,
+ * which is exactly the state this rule exists to forbid, arriving through the
+ * one door it was not watching.
+ *
+ * Defaulted to `true` so every caller that genuinely has no opinion (the parent
+ * settings preview, the server-side mirror of this rule) behaves as before, and
+ * only the story surface — which knows whether the audio actually landed — passes
+ * it.
+ *
  * A function rather than an expression inside the JSX because the same rule is
  * written down server-side in `ChildSettings.words_on_screen`, and a rule stated
  * in two places has to be testable in both. This is the half that renders.
  */
 export function wordsOnScreen(
   settings: { text_on?: boolean; voice_on?: boolean; accessibility?: Accessibility } | undefined,
+  hasAudio = true,
 ): boolean {
   const textOn = settings?.text_on ?? true;
   const voiceOn = settings?.voice_on ?? true;
-  return textOn || withDefaults(settings?.accessibility).captions || !voiceOn;
+  const spoken = voiceOn && hasAudio;
+  return textOn || withDefaults(settings?.accessibility).captions || !spoken;
 }
 
 /**

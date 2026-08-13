@@ -1,0 +1,84 @@
+name: Deploy
+
+# The gate (PRODUCT.md §19.7, §16.10).
+#
+# > *"Ship-gating: a change that regresses safety or coherence beyond threshold
+# > cannot deploy."*
+#
+# This workflow is where that sentence becomes true. The `needs:` below is the
+# whole mechanism: GitHub will not start `release` until all four jobs in `CI`
+# have succeeded on this exact commit, and a failed eval is a failed job. There is
+# no path through this file that reaches a deploy with a red eval. The flag that
+# would soften a failing job into a passing one is deliberately absent from this
+# file entirely — `evals/test_gate.py` asserts its absence by name, which is why
+# it is not written out here.
+#
+# **It runs on a tag, not on a push to main.** Deploying every green commit would
+# make the gate the only thing between a Tuesday afternoon refactor and a
+# four-year-old, and §19.7's "ship behind a flag" wants a deliberate act in
+# between. Tag a release and this runs; merge to main and it does not.
+#
+# **The release step is deliberately a placeholder.** The founder's hosting
+# decision lands with the production provision (DEPLOY.md, Docs/Hosting.md), and
+# a workflow that guessed at it would either be wrong or would sit here holding a
+# credential nobody had issued yet. What is *not* a placeholder is the gate: the
+# ordering, the required checks and the preflight below are the parts that have to
+# be right before there is anything to deploy, and they are real now.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the tag you intend to deploy'
+        required: true
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Re-runs the gating suites on the tagged commit rather than trusting that some
+  # ancestor was green. A tag can point anywhere, including at a commit that was
+  # never on main.
+  gate:
+    name: Gate
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    # THE LINE. `gate` is the whole of `ci.yml` — Evals, Backend, Frontend and
+    # the image build — re-run on this tag's own commit, and GitHub will not start
+    # a job whose `needs` has failed. A red eval therefore means this job is
+    # *skipped*, not passed. Removing or weakening this line is the change a
+    # reviewer should stop, and `evals/test_gate.py` fails if it is.
+    needs: [gate]
+    # Requires a GitHub environment named `production`. Deliberate: it is where a
+    # required reviewer or a deployment secret goes, and it is the one place left
+    # to put a human between a tag and a four-year-old.
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm the gate really passed
+        # Belt and braces on the thing that matters most. `needs:` already
+        # guarantees this, and stating it again costs a second and makes the
+        # failure legible if someone ever restructures the workflow and breaks
+        # the dependency without noticing.
+        if: ${{ needs.gate.result != 'success' }}
+        run: |
+          echo "The eval gate did not pass. Deploy blocked (PRODUCT.md §19.7)." >&2
+          exit 1
+
+      - name: Release
+        run: |
+          echo "Gate green for ${{ github.ref_name }}."
+          echo "Hosting target is not wired yet — see DEPLOY.md and Docs/Runbooks/Launch.md."
+          echo "Run the launch preflight against production before promoting:"
+          echo "  python manage.py launch_check --strict"

@@ -30,9 +30,15 @@ over SSE from async views (PRODUCT.md §16.4). Don't swap `make run` for a WSGI 
 ```
 backend/    Django project — config/ (settings, asgi, celery) + apps/*
 frontend/   React + Vite SPA/PWA
-infra/      docker-compose, Dockerfiles
-docs/       PRODUCT.md (source of truth) + Build/ + Review/
+evals/      The ship gate (PRODUCT.md §19.7) — golden, red-team, age rubric, regression
+infra/      docker-compose, Dockerfiles, backup + restore-drill scripts
+Docs/       PRODUCT.md (source of truth) + Build/ + Review/ + Runbooks/
 ```
+
+`evals/` is deliberately outside `backend/`: it is not a unit-test suite for the
+backend, it is the gate that grades the *product's output*, and the day it also
+grades the frontend's rendering of a beat it should not have to move. It has its
+own pytest config, so `pytest evals/ -q` works from the repo root.
 
 Each Django app under `backend/apps/` is one service boundary from PRODUCT.md §5.2.
 Most are empty shells today; they exist so later work has a stable home and so the
@@ -102,6 +108,12 @@ make help
 | `smoke-story` | Live story smoke test: plan + beat + art + voice for one child. Never in CI |
 | `render-companion` | Render a companion's reference set + 3 scenes |
 | `redteam` | The safety red-team suite: injection, fear ceilings, unsafe bait |
+| `evals` | **The ship gate** (§19.7): golden + red-team + age rubric + regression. No keys, no spend |
+| `evals-live` | The same scenarios against the real provider, with a spot-check dump. Spends money |
+| `launch-check` | Preflight a deployment before a child touches it (`STRICT=--strict` to refuse warnings) |
+| `backup` / `restore-drill` | Dump the database; restore it into a scratch copy and prove the data came back |
+| `flags` | Show or pull a feature flag — the no-deploy levers (§16.10) |
+| `prompts` | Show or roll back a system prompt version (§19.2) |
 | `ping` | Round-trip a task through Celery |
 
 ## Verifying the pieces
@@ -419,6 +431,19 @@ Two things to know about the pipeline itself:
   include real smoke tests — ASGI over HTTP, a Celery `ping` round trip, and staleness
   gates on both generated artifacts (`frontend/openapi.json`, `src/lib/api/schema.ts`).
   A red staleness gate means you changed the API and didn't run `make client`.
+
+## Runbooks
+
+Three, in `Docs/Runbooks/`, and each exists because the thing it describes is done
+under pressure by somebody who should not be reading source at the time:
+
+| | For |
+|---|---|
+| `Eval-Gate.md` | Running the gate, **proving it blocks a deploy**, changing a threshold, adding a case |
+| `Backup-Restore.md` | Taking a backup, the restore drill (and its log), and what differs when it is a real restore |
+| `Launch.md` | The closed-alpha sequence, what to watch daily, and the three stop-the-line conditions |
+
+---
 
 ## Deployment
 

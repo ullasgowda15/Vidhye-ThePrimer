@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast, runtime_checkabl
 from django.conf import settings
 from pydantic import BaseModel, ValidationError
 
+from apps.common import flags
 from apps.story.ai.schemas import Beat, beat_json_schema, json_schema_for
 
 if TYPE_CHECKING:
@@ -84,6 +85,23 @@ class ProviderError(AIError):
 
 class StructuredOutputError(AIError):
     """A response came back but never satisfied the requested schema."""
+
+
+class BudgetExceededError(ProviderError):
+    """The global inference budget for this window is spent (§18.8, `analytics.budget`).
+
+    A `ProviderError` on purpose, and this is the whole design of the breaker: the
+    orchestrator has caught `AIError` and answered with a pre-vetted warm fallback
+    beat since Day 7, and `safety.classifier` has turned one into a recorded
+    degradation for just as long. Giving the breaker its own error type *outside*
+    that hierarchy would have meant writing a second degradation path on launch
+    day — untested, on the one surface where an unhandled exception is a child
+    looking at a dead screen.
+
+    It is a distinct subclass so an operator reading a log can tell "we ran out of
+    budget" from "Anthropic returned a 500", which are the same experience for a
+    child and completely different work for a person.
+    """
 
 
 class BeatValidationError(StructuredOutputError):
@@ -221,6 +239,24 @@ def _trace_llm_cost(
 _CHARS_PER_TOKEN = 4
 
 
+def _check_budget(operation: str) -> None:
+    """Refuse a paid generation when the window's budget is gone (§18.8).
+
+    Translated into `BudgetExceededError` here — see that class: the breaker's
+    whole design is that it lands in a degradation path that already exists and
+    is already tested, rather than in a new one written on launch day.
+
+    Import-local for the same reason `_trace_llm_cost`'s is: the AI layer's
+    importability must not depend on the app registry being ready.
+    """
+    from apps.analytics import budget
+
+    try:
+        budget.check(operation=operation)
+    except budget.BudgetExceeded as exc:
+        raise BudgetExceededError(str(exc)) from exc
+
+
 def _generate_traced(
     provider: StructuredProvider,
     *,
@@ -246,7 +282,15 @@ def _generate_traced(
     under-reporting spend that does. `last_usage is not None` is the difference
     between "the model answered and we did not like the answer" and "we never got
     there", and it is the provider's own report either way.
+
+    **The budget breaker is checked here** (§18.8), which is to say: at the one
+    line in this module that actually pays a provider, and therefore on the repair
+    attempt as well as the first call — a repair is a second billed generation,
+    and a cap that only counted first attempts would have a hole in it exactly
+    where the expensive generations are.
     """
+    _check_budget(operation)
+
     started = time.monotonic()
     try:
         completion = provider.generate_json(system=system, messages=messages, schema=schema)
@@ -641,8 +685,18 @@ class ModelRouter:
         about the weights rather than about the request: the safety classifier
         builds its router with `AI_SAFETY_MODEL`, so the guard and the generator
         can never be the same model unless someone configures them to be. Empty
-        means "whatever `AI_BEAT_MODEL` says", which is every other caller.
+        means "whatever `AI_BEAT_MODEL` says", which is every other caller — and
+        *that* is the one the `ai.beat_model` flag may override, so a bad model
+        change can be rolled back in seconds without a deploy (§16.10).
+
+        The flag is deliberately not consulted when a caller has pinned a model.
+        The safety grader's model is a §13.3 guarantee about the weights, not a
+        knob, and a runtime override of it is exactly the kind of switch
+        `apps.common.flags` refuses to have.
         """
+        if not model:
+            model = flags.value("ai.beat_model")
+
         order = list(settings.AI_PROVIDER_ORDER) or [AnthropicProvider.name]
         providers: list[StructuredProvider] = []
         for name in order:

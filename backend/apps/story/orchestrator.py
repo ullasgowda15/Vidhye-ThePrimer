@@ -99,6 +99,7 @@ from django.utils import timezone
 from apps.analytics import cost, events
 from apps.analytics.models import Event
 from apps.analytics.tasks import generate_report
+from apps.common import flags
 from apps.companion import cast
 from apps.companion import scenes as companion_scenes
 from apps.companion import service as companion_service
@@ -2776,6 +2777,11 @@ ADVANCE_READY = "ready"
 ADVANCE_QUEUED = "queued"
 ADVANCE_BRANCHING = "branching"
 ADVANCE_FINAL = "final"
+#: The prefetch is switched off by `story.prefetch_next_beat` (§19.9). Its own
+#: reason rather than reusing `branching`, because "we chose not to" and "we
+#: cannot know yet" are the same latency for a child and completely different
+#: things to see in a log while working out why the app got slower.
+ADVANCE_OFF = "prefetch_off"
 
 
 def schedule_advance(adventure: Adventure, *, after: Beat) -> str:
@@ -2810,6 +2816,19 @@ def schedule_advance(adventure: Adventure, *, after: Beat) -> str:
         return ADVANCE_READY
     if not after.choices.exists() and (after.interaction or {}).get("type") != InteractionType.NONE:
         return ADVANCE_BRANCHING
+
+    if not flags.enabled("story.prefetch_next_beat"):
+        # §19.9's prefetch-discipline lever, pullable without a deploy. Checked
+        # *after* `ADVANCE_READY` on purpose: switching the prefetch off must not
+        # make an already-written beat report as unready, or the client would sit
+        # through a wait for a beat that is sitting in the database.
+        #
+        # The cost of pulling it is honest and bounded: the next beat is generated
+        # when the stream reopens instead of before it, so the child waits for it.
+        # The wait is covered by the same thinking companion that covers every
+        # other gap (§4.9) — slower, never an error.
+        logger.info("story.advance_skipped adventure=%s reason=flag_off", adventure.id)
+        return ADVANCE_OFF
 
     from apps.story.tasks import advance_adventure
 

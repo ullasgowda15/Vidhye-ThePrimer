@@ -1,0 +1,32 @@
+# The eval suite's own tooling config (PRODUCT.md §19.7).
+#
+# `evals/` sits at the repo root rather than under `backend/`, because it is not a
+# unit-test suite for the backend — it is the ship gate that grades the *product's
+# output*, and the day it also grades the frontend's rendering of a beat it should
+# not have to move. Having its own config is what makes the brief's
+# `pytest evals/ -q` work verbatim from the repo root: pytest takes this file's
+# directory as the rootdir, and `pythonpath` puts the Django project on sys.path
+# without a `manage.py` or a second settings module.
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.dev"
+pythonpath = ["../backend"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# The red-team eval drives the corpus, which is deliberately full of characters
+# that look like ASCII and are not — same reason `backend/pyproject.toml` exempts
+# `corpus.py` and the tests beside it.
+"test_redteam.py" = ["RUF001", "RUF002"]
+"scenarios.py" = ["RUF001", "RUF002"]
+
+[tool.ruff.format]
+quote-style = "double"

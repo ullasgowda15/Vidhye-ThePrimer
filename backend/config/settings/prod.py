@@ -86,6 +86,29 @@ if not MEMORY_ENCRYPTION_KEY:  # noqa: F405
         'print(Fernet.generate_key().decode())"'
     )
 
+# ---------------------------------------------------------------------------
+# The spend cap has to be a number somebody chose (PRODUCT.md §18.8, §22.4)
+# ---------------------------------------------------------------------------
+# `base.py` defaults it to 0.00 = "do not enforce", which is the right default for
+# a development box and the wrong state for a deployment holding real families'
+# accounts and a real payment method. There is no safe default value to pick here
+# — the right cap comes from this deployment's own cost/session and how many
+# children it serves (`manage.py metrics`) — so this asks for the number rather
+# than inventing one.
+#
+# It is a *cost* control and not a safety one, and the failure mode is mild by
+# construction: over the cap, children get cached art and pre-vetted warm beats
+# (§13.3), never an error. That is exactly why it fails the boot instead of
+# warning — an unset cap is invisible until the invoice arrives.
+if not INFERENCE_BUDGET_USD_PER_WINDOW:  # noqa: F405
+    raise ImproperlyConfigured(
+        "INFERENCE_BUDGET_USD_PER_WINDOW must be set outside development — the "
+        "global inference-budget circuit breaker (§18.8) does not enforce a cap "
+        "of zero. Size it from `manage.py metrics` (cost/session x sessions per "
+        f"{INFERENCE_BUDGET_WINDOW_S}s, with headroom); see "  # noqa: F405
+        "Docs/Runbooks/Launch.md."
+    )
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
