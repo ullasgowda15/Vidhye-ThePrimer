@@ -185,16 +185,33 @@ a child's own words or profile (13.8). …
 | `manage.py migrate` on the dev database | `accounts.0003_deletionreceipt` applied |
 | backend `pytest --collect-only` | **1389 tests** (was 1304) |
 
-**One honest gap in this local run, stated rather than glossed.** The full backend suite
-(`pytest` over all 1389) did **not** complete on this machine. Every module the change
-touches was run and is green — `apps/companion`, `apps/media/tests/test_prompts.py`,
-`apps/safety/redteam` (66 companion cases), `apps/common` (flags + launch_check),
-`tests/test_privacy.py`, `tests/test_settings_validation.py`, `tests/test_wellbeing.py` —
-and the run that *did* go end-to-end on the upgraded Django (5.2.17) before the last round
-of edits exited **0**. But the box degraded to roughly two tests a minute part-way through
-the final pass, and a run that has not finished is not a green run, so it is not claimed as
-one. **CI is the authority for the whole-suite result** — see the run id in the commit,
-which re-runs everything on clean hardware including the new blocking `Dependencies` job.
+### CI — the authoritative whole-suite run
+
+**Run [`31687261960`](https://github.com/ullasgowda15/Vidhye-ThePrimer/actions/runs/31687261960) on `54bb563` — green, all five jobs.**
+
+```
+Evals           success    1m20s    ...s......................................... [100%]
+Frontend        success    1m02s    13 files, 183 passed
+Backend         success    9m57s    ruff clean · mypy: no issues in 260 source files
+                                    makemigrations --check: clean · migrate: clean
+                                    1389 passed in 469.67s
+                                    OpenAPI schema not stale · ASGI + Celery smoke up
+Backend image   success      37s
+Dependencies    success      48s    pip-audit: No known vulnerabilities found
+                                    npm audit:  found 0 vulnerabilities
+```
+
+The new **Dependencies** job is inside `ci.yml`, which `deploy.yml`'s `release --needs--> gate`
+re-runs on the tagged commit, so it gates a release from its first run rather than from
+some later tightening.
+
+**Stated plainly:** the full backend suite did *not* finish on the founder's machine — the
+box degraded to roughly two tests a minute part-way through the final local pass, and a run
+that has not finished is not a green run. Every module this change touches was run locally
+and is green (`apps/companion`, `apps/media/tests/test_prompts.py`, `apps/safety/redteam`
+including all 66 companion cases, `apps/common`, `tests/test_privacy.py`,
+`tests/test_settings_validation.py`, `tests/test_wellbeing.py`, and the whole eval suite),
+but **1389 passed** is CI's number, on clean hardware, and that is the one to quote.
 
 ### The audit's §4 (what was proved clean) — untouched
 
