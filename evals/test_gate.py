@@ -175,9 +175,22 @@ class TestTheDrillIsReal:
             "include the eval suite"
         )
 
-        # The flag that turns a gate into a decoration. `ci.yml` uses it once, on
-        # mypy, with a comment saying so; the deploy must not use it at all.
-        assert "continue-on-error" not in deploy, (
-            "the deploy workflow contains `continue-on-error`, which can only ever "
-            "weaken the gate"
-        )
+        # The flag that turns a gate into a decoration. Neither workflow may use
+        # it: a softened job in `ci.yml` is a softened job in the gate, because the
+        # deploy's `gate` *is* `ci.yml`.
+        #
+        # `ci.yml` had exactly one — on mypy, while annotations were still being
+        # added — and it was removed in the Day-15 review (P2-3) once the suite had
+        # been clean for a run of days. Asserting it here rather than trusting the
+        # note: "temporarily advisory" is the most permanent state in CI.
+        # Comment lines are stripped first, because both workflows *discuss* the
+        # flag at length — including the note in `ci.yml` recording that its one
+        # use was removed. A guard that read its own explanation as a breach is
+        # the same trap `tests/test_analytics_pipeline.py` uses an AST walk to
+        # avoid; here the file is YAML and dropping `#` lines is enough.
+        for name, text in (("deploy.yml", deploy), ("ci.yml", ci_path.read_text(encoding="utf-8"))):
+            steps = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+            assert "continue-on-error" not in "\n".join(steps), (
+                f"{name} contains `continue-on-error`, which can only ever weaken "
+                f"the gate. If a step genuinely must not block, say why here."
+            )

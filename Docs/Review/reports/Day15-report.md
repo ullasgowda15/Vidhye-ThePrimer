@@ -74,7 +74,7 @@ So the residue is not defended by the thing it is recorded as being defended by.
 
 `infra/backup/restore-drill.sh:27,78-86`. Under `set -eu`, a non-zero `manage.py restore_drill` exits the script at line 78, so `STATUS=$?` is unreachable on failure (it can only ever be `0` when evaluated) and the scratch database is never dropped. Observed directly: after my wrong-key run, `primer_restore_drill` was still on the server and I dropped it by hand. The drill still *fails* correctly, so this is hygiene rather than a false pass — but a drill that leaves a stale scratch DB behind is one whose next run starts with `DROP DATABASE` on a database somebody may since have looked at. Capture the status without `set -e` aborting first.
 
-### P2 — recorded, not fixed
+### P2 — recorded in the audit, **all three fixed** (see *P2 fixes* below)
 
 - **P2-1 — the "no safety switch" guarantee is lexical, not structural.** `test_flags.py:48` blocks flag *names* containing `safety|classifier|guard|moderation|scrub|fallback|ceiling`. The test is honest about being crude and says why; the Day-15 note's phrasing ("a registry that cannot contain a safety switch") is stronger than what is enforced. A flag named `media.illustrations` that gated the safety substitution would pass this test — it does not, because `get_or_generate_stock` passes `paid=False`, which is a property of the call site and not of the registry. Worth knowing which of the two is load-bearing.
 - **P2-2 — `showWords`' wiring is untested.** `degradation.test.tsx` covers the pure `wordsOnScreen(settings, hasAudio)` function in four cases, but nothing covers `StoryPage.tsx:421`'s `status === 'thinking' || audioUrl !== null`. The comment argues that the `status` check prevents a flicker, which depends on a `media` frame carrying audio always arriving before the `done` frame — true of the current stream, asserted nowhere.
@@ -128,7 +128,19 @@ Fix commit **`fea5aba`** · CI run **`31668733450` green on all four jobs** (Eva
 
 **Full re-verification:** `make lint` clean · `mypy` 0 issues in 260 files · **1301** backend · **180** frontend · **42 passed / 1 skipped** evals (41 before the new case) · no missing migrations · OpenAPI byte-identical · CI `31668733450` green.
 
-**Not touched:** everything marked ✅ in the scorecard, and the three P2s, which remain recorded.
+**Not touched:** everything marked ✅ in the scorecard.
+
+## P2 fixes
+
+Fixed in a follow-up commit at the founder's request. Each was verified the same way as the P0 — by breaking the thing it guards and watching the guard fire.
+
+| Item | What changed | Proof it bites |
+|---|---|---|
+| **P2-1** | `TestTheRuleIsStructural` in `apps/common/tests/test_flags.py` asserts, by AST walk, that **no module under `apps/safety/` imports `apps.common.flags`**. The lexical name check stays as the tripwire it always was; this is the property underneath it. A flag that cannot be read inside the safety layer cannot weaken it *whatever it is called* — which is the gap the name check had, since `story.gentle_mode` would have passed it. Two guards-on-the-guard: the safety path still exists and still contains `pipeline/policy/scrub/classifier`, and the walk demonstrably sees a real flag import in `media/service.py`. | Added `from apps.common import flags` to `apps/safety/policy.py` → **`apps/safety/policy.py imports apps.common.flags`**. Reverted. |
+| **P2-2** | Three tests in `degradation.test.tsx` drive the real `StoryPage` over a real SSE stream, for a parent with `text_on: false` and captions off: narration **appears** when no `media` frame carries audio, **stays off** when it does, and **is not flashed up** in the gap between the `beat` frame and the audio. The third anchors on `story-thinking` being removed, which is the moment the beat landed — so it cannot pass vacuously on a page that never got one. | Reverted `showWords` to the pre-Day-15 `wordsOnScreen(settings)` → **"shows the narration when the voice never arrived" fails**, `Unable to find an element by: [data-testid="beat-narration"]`. Reverted. |
+| **P2-3** | `continue-on-error: true` removed from CI's mypy step — the condition its own comment set ("clean for a few days running") was met on Day 14 by `b91acaf` and every run since reports 0 issues in 260 files. `test_gate.py` now asserts the flag appears in **neither** workflow, not just the deploy: `ci.yml` *is* the gate, so a softened job there is a softened gate. Comment lines are stripped before the check — both workflows discuss the flag, and a guard that read its own explanation as a breach is the trap the analytics guard uses an AST walk to avoid. | Re-added `continue-on-error: true` to the mypy step → **`ci.yml contains continue-on-error, which can only ever weaken the gate`**. Reverted. |
+
+**Re-verified after the P2 fixes:** `make lint` clean · `mypy` 0 issues in 260 files · **1304** backend (3 new) · **183** frontend (3 new) · **42 passed / 1 skipped** evals.
 
 ## Verdict after fixes
 

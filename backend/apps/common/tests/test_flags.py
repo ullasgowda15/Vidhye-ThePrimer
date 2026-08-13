@@ -16,6 +16,8 @@ the moment it is being used.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -27,6 +29,30 @@ from apps.common import flags
 from apps.common.models import FeatureFlag
 
 pytestmark = pytest.mark.django_db
+
+BACKEND = Path(__file__).resolve().parents[3]
+
+#: The layer that must not be configurable at runtime (§13.2). Everything under
+#: it: the input scrub, the deterministic policy, the model classifier, the
+#: pipeline that sequences them and the prompt assembly that carries the rules.
+SAFETY_LAYER = BACKEND / "apps" / "safety"
+
+
+def _imports(path: Path) -> set[str]:
+    """Every module name imported by one file, as written.
+
+    An AST walk rather than a regex, so a name inside a docstring or a comment
+    about the boundary does not read as a breach of it — these files discuss
+    flags and switches at length, which is exactly the trap a grep falls into.
+    """
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +92,77 @@ def test_no_flag_can_switch_off_a_safety_guard() -> None:
         f"{offenders} look like safety switches. See apps/common/flags.py's docstring: "
         f"the safety layer is configured in settings, not at runtime."
     )
+
+
+class TestTheRuleIsStructural:
+    """The same rule as a fact about the import graph (Day 15 review, P2-1).
+
+    The naming test above is a tripwire, not a proof: it reads the *names* in the
+    registry, so it catches the earnest addition of `safety.classifier_enabled`
+    and misses a flag called `story.gentle_mode` that happens to be read inside
+    the output guard. Names are a convention; what actually has to be true is that
+    **the safety layer does not consult runtime configuration at all.**
+
+    So this asserts it where it cannot be talked around: no module under
+    `apps/safety/` may import `apps.common.flags`. A flag that cannot be read
+    inside the safety layer cannot weaken it, whatever it is called, and a person
+    who wants to weaken it has to add an import that shows up in a diff next to
+    this test's name.
+
+    An AST walk rather than a grep, for the same reason
+    `tests/test_analytics_pipeline.py` uses one: these files discuss flags and
+    switches at length in prose, and a comment about the boundary must not read as
+    a breach of it.
+
+    **What this deliberately does not cover.** `media.service` and
+    `story.ai.router` *do* read flags, and should: `media.illustrations` declines
+    a new picture and `ai.beat_model` rolls back a model. Neither is a safety
+    decision — the safety substitution is exempted at the call site
+    (`get_or_generate_stock(paid=False)`, asserted by
+    `story/tests/test_degradation.py::test_the_safety_substitution_is_never_refused`)
+    and a rolled-back beat model is still graded by the same output guard and the
+    same separately-pinned classifier.
+    """
+
+    def test_no_module_in_the_safety_layer_can_read_a_flag(self) -> None:
+        breaches: list[str] = []
+        for path in sorted(SAFETY_LAYER.rglob("*.py")):
+            if "/tests/" in path.as_posix() or "/redteam/" in path.as_posix():
+                continue
+            for module in _imports(path):
+                if module.startswith("apps.common.flags"):
+                    breaches.append(f"{path.relative_to(BACKEND).as_posix()} imports {module}")
+
+        assert not breaches, (
+            "the safety layer must not consult runtime configuration — a flag it "
+            "can read is a flag that can weaken it, whatever the flag is called. "
+            "See apps/common/flags.py's docstring.\n  " + "\n  ".join(breaches)
+        )
+
+    def test_the_guard_is_reading_a_real_safety_layer(self) -> None:
+        """The guard on the guard.
+
+        An import scan over a directory that has moved passes vacuously and looks
+        exactly like a clean bill of health. Both halves are checked: the path
+        exists, and it still contains the modules this rule is actually about.
+        """
+        assert SAFETY_LAYER.is_dir(), f"the safety layer moved from {SAFETY_LAYER}"
+
+        scanned = {
+            path.relative_to(SAFETY_LAYER).as_posix()
+            for path in SAFETY_LAYER.rglob("*.py")
+            if "/tests/" not in path.as_posix()
+        }
+        for expected in ("pipeline.py", "policy.py", "scrub.py", "classifier.py"):
+            assert expected in scanned, f"{expected} is not where this guard is looking"
+
+    def test_it_would_notice_an_import(self) -> None:
+        """And that the walk actually bites, rather than returning an empty set
+        because it failed to parse anything."""
+        assert any(
+            module.startswith("apps.common.flags")
+            for module in _imports(BACKEND / "apps" / "media" / "service.py")
+        ), "the import walk cannot see a flag import that is definitely there"
 
 
 def test_every_declared_flag_ships_in_its_normal_state() -> None:

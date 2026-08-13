@@ -77,10 +77,12 @@ jobs:
 
       - name: Type check (mypy)
         working-directory: backend
-        # Non-blocking while annotations are still being added, so a type regression
-        # will NOT fail the build — read the step's output, don't trust the green tick.
-        # Flip to blocking once the codebase has been clean for a few days running.
-        continue-on-error: true
+        # **Blocking since the Day-15 review (P2-3).** It was `continue-on-error`
+        # while annotations were still being added, with a note to flip it once the
+        # suite had been clean for a few days running. It has been: `b91acaf`
+        # cleared the last nine carried errors on Day 14 and every run since has
+        # reported 0 issues in 260 source files. Leaving it advisory past that point
+        # only means the next type regression lands under a green tick.
         run: mypy .
 
       - name: Check for missing migrations

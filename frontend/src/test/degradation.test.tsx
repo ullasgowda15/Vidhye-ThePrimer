@@ -24,11 +24,15 @@
  * "error" appear nowhere.
  */
 
-import { render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, screen, waitForElementToBeRemoved } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChildBoundary, ParentBoundary } from '@/components/SafeBoundary';
 import { wordsOnScreen } from '@/design/accessibility';
+import StoryPage from '@/routes/child/StoryPage';
+import { useAuthStore } from '@/store/auth';
 
 /** A component that throws on render, the way a bad field on a beat would. */
 function Explodes(): never {
@@ -159,5 +163,138 @@ describe('a beat that arrives without its voice', () => {
     // The parent settings preview and the server-side mirror of this rule both
     // ask the question without a beat in hand; they must behave as before.
     expect(wordsOnScreen(textOff)).toBe(false);
+  });
+});
+
+/**
+ * The same rule, through the page that has to apply it (Day 15 review, P2-2).
+ *
+ * The four cases above grade `wordsOnScreen` in isolation, which leaves the
+ * argument untested: `StoryPage` decides what to pass as `hasAudio`, and a
+ * perfect rule asked the wrong question is the bug the rule exists to prevent.
+ * The expression is `status === 'thinking' || audioUrl !== null`, and both halves
+ * carry weight — the first keeps the words from flashing up during the second
+ * before the `media` frame lands, the second is the actual answer once the beat
+ * has settled.
+ *
+ * So these drive the real page, over a real stream, for a parent who turned the
+ * story text off, and read what a child would end up looking at.
+ */
+describe('the story page applying that rule', () => {
+  const SETTINGS = {
+    text_on: false,
+    voice_on: true,
+    accessibility: { captions: false, reduced_motion: false, audio_volume: 1 },
+  };
+
+  const BEAT = {
+    beatId: 'beat-1',
+    seq: 1,
+    narration: 'Pip peeks over the log. Three little frogs!',
+    scene: { imageUrl: null, status: 'pending' },
+    audioUrl: null,
+    interaction: { type: 'none', prompt_audio: null, expected: null, choices: null },
+    choices: null,
+    emotion: 'playful_curious',
+    isFinal: false,
+  };
+
+  const ADVENTURE = {
+    adventureId: 'adv-1',
+    streamUrl: '/api/v1/adventures/adv-1/stream',
+    companion: { name: 'Pip', voiceId: 'warm_low' },
+    estimatedBeats: 6,
+    world: { key: 'whispering_woods', name: 'the Whispering Woods', place: 'the Hollow Oak' },
+  };
+
+  const asFrame = (event: string, data: unknown) =>
+    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
+  function play(chunks: string[]) {
+    const encoder = new TextEncoder();
+    let index = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (index >= chunks.length) return controller.close();
+        controller.enqueue(encoder.encode(chunks[index++]));
+      },
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string) => {
+        const path = String(url);
+        if (path.includes('/stream')) return Promise.resolve({ ok: true, status: 200, body });
+        const payload = path.includes('/settings') ? SETTINGS : ADVENTURE;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify(payload),
+        });
+      }),
+    );
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter
+          initialEntries={['/story/child-1']}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
+          <Routes>
+            <Route path="/story/:childId" element={<StoryPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    useAuthStore.setState({ accessToken: 'access-token', status: 'authenticated', user: null });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('shows the narration when the voice never arrived', async () => {
+    play([
+      ': open\n\n',
+      asFrame('beat', BEAT),
+      // No `media` frame carrying audio — the vendor was out of quota, or the
+      // breaker declined the line. The stream then settles.
+      asFrame('done', { status: 'complete' }),
+    ]);
+
+    // Text is off and captions are off, so this paragraph is on screen for one
+    // reason only: it is that or a child sitting in front of nothing.
+    expect(await screen.findByTestId('beat-narration')).toHaveTextContent(/three little frogs/i);
+  });
+
+  it('keeps the words off once the voice does arrive', async () => {
+    play([
+      ': open\n\n',
+      asFrame('beat', BEAT),
+      asFrame('media', { audioUrl: 'https://cdn.example/beat-1.mp3' }),
+      asFrame('done', { status: 'complete' }),
+    ]);
+
+    // The audio landed, so the parent's choice stands.
+    await screen.findByTestId('beat-audio');
+    expect(screen.queryByTestId('beat-narration')).toBeNull();
+  });
+
+  it('does not flash the words up while the audio is still on its way', async () => {
+    // The gap the `status === 'thinking'` half of the expression exists to cover:
+    // between the `beat` frame and the `media` frame there is genuinely no audio,
+    // and treating that as "no voice is coming" would put a paragraph on screen
+    // and snatch it away a moment later.
+    play([': open\n\n', asFrame('beat', BEAT)]);
+
+    // `story-thinking` renders only while there is no beat, so its removal is the
+    // moment the frame landed — which is what stops this passing vacuously on a
+    // page that simply never got one.
+    await waitForElementToBeRemoved(() => screen.queryByTestId('story-thinking'));
+    expect(screen.queryByTestId('beat-narration')).toBeNull();
   });
 });
