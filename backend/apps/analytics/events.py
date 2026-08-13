@@ -114,7 +114,15 @@ def track(
 
     `parent` is derived from `child` when it is not passed, because almost every
     child-scoped event is also a fact about an account and no caller should have
-    to remember to say so twice.
+    to remember to say so twice. That derivation happens **inside** the `try`: on
+    a `Child` that was not loaded with `select_related`, `child.parent` is a
+    deferred database read, and it is the one line of this function other than the
+    insert that can touch a database at all. `getattr`'s default absorbs the
+    `AttributeError` a null FK raises and nothing else, so with that line outside
+    the guard an `OperationalError` from the fetch reached the caller — which on
+    this path is `record_choice` or `_persist_beat`, with a child mid-story
+    (Day-14 review, P1-1). Rule 1 has to cover every line that can fail, not the
+    obvious one.
     """
     if name not in Event.NAMES:
         # Loud in development, quiet in production. An unknown name can only come
@@ -127,10 +135,9 @@ def track(
         logger.error("analytics.event_unknown name=%s", name)
         return None
 
-    if parent is None and child is not None:
-        parent = getattr(child, "parent", None)
-
     try:
+        if parent is None and child is not None:
+            parent = getattr(child, "parent", None)
         return _write(
             name=name,
             child=child,

@@ -234,6 +234,124 @@ def test_an_sdk_timeout_leaves_the_openrouter_adapter_as_an_aierror(monkeypatch,
     assert isinstance(caught.value.__cause__, type(_timeout()))
 
 
+# ---------------------------------------------------------------------------
+# Cost tracing at the router seam (Day 14 review, P1-3 and P1-5)
+# ---------------------------------------------------------------------------
+
+
+class RecordingProvider(FakeProvider):
+    """A `FakeProvider` that also keeps the schema it was handed."""
+
+    def __init__(self, responses: list[str], usage: dict[str, int] | None = None) -> None:
+        super().__init__(responses)
+        self.schemas: list[dict[str, Any]] = []
+        self.last_usage = usage
+
+    def generate_json(
+        self, *, system: str, messages: list[dict[str, Any]], schema: dict[str, Any]
+    ) -> str:
+        self.schemas.append(schema)
+        return super().generate_json(system=system, messages=messages, schema=schema)
+
+
+def _descriptions(node: Any) -> list[str]:
+    if isinstance(node, dict):
+        found = [node["description"]] if isinstance(node.get("description"), str) else []
+        for key, value in node.items():
+            if key != "description":
+                found += _descriptions(value)
+        return found
+    if isinstance(node, list):
+        return [text for item in node for text in _descriptions(item)]
+    return []
+
+
+def test_a_caller_that_brings_no_schema_still_gets_a_trimmed_one() -> None:
+    """P1-3. The branch three contracts arrive on.
+
+    `StoryPlan`, `ReturningGreetingText` and `VisualDescriptor` all call the router
+    without a `schema=`, and this branch built one with `strip_unsupported_keywords`
+    alone — so Pydantic's full docstrings, rationale paragraphs and all, went to the
+    provider as field guidance. That is the §19.1 layering problem `trim_descriptions`
+    exists to fix, and it made `json_schema_for`'s "every schema we send passes
+    through this" untrue.
+    """
+    from apps.story.ai.schemas import StoryPlan, json_schema_for
+
+    provider = RecordingProvider([json.dumps(_VALID_PLAN)])
+    ModelRouter(providers=[provider]).generate_structured(CONTEXT, model=StoryPlan)
+
+    assert provider.schemas[0] == json_schema_for(StoryPlan)
+    # And the trimming is doing something here, not merely being called: no
+    # description survives with a blank-line paragraph break in it.
+    assert not [text for text in _descriptions(provider.schemas[0]) if "\n\n" in text]
+
+
+@pytest.mark.django_db
+def test_a_metered_generation_that_then_fails_is_still_costed() -> None:
+    """P1-5. Both providers read the meter before the checks that can raise —
+    a refusal, an empty `choices` list, a truncation — and say in a comment that
+    they do it so the spend is not lost. It was lost anyway: the span was written
+    after `generate_json` returned, so anything that raised took the reading with
+    it. Those are the expensive failures §22.4 most wants visible."""
+    from apps.analytics.models import CostKind, GenerationCost
+    from apps.story.ai.router import ProviderError
+
+    class RefusesAfterReadingTheMeter(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.last_usage = {"input_tokens": 900, "output_tokens": 0}
+
+        def generate_json(self, **_: Any) -> str:
+            raise ProviderError("the model declined the request")
+
+    with pytest.raises(ProviderError):
+        ModelRouter(providers=[RefusesAfterReadingTheMeter()]).generate_beat(CONTEXT)
+
+    span = GenerationCost.objects.get()
+    assert span.kind == CostKind.LLM
+    assert span.operation == "beat"
+    assert span.units == {"input_tokens": 900, "output_tokens": 0}
+
+
+@pytest.mark.django_db
+def test_a_call_that_never_reached_the_model_is_not_costed() -> None:
+    """The other half, and the reason the fix is keyed on `last_usage` rather than
+    written unconditionally. A connection that failed to open was never billed, and
+    `_trace_llm_cost`'s character estimate would happily invent a price for it —
+    over-reporting spend that does not exist, which is the same dishonesty as
+    under-reporting spend that does."""
+    from apps.analytics.models import GenerationCost
+    from apps.story.ai.router import ProviderError
+
+    class NeverGotThere(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.last_usage = None
+
+        def generate_json(self, **_: Any) -> str:
+            raise ProviderError("connection refused")
+
+    with pytest.raises(ProviderError):
+        ModelRouter(providers=[NeverGotThere()]).generate_beat(CONTEXT)
+
+    assert not GenerationCost.objects.exists()
+
+
+#: The smallest plan that validates, for the schema test above.
+_VALID_PLAN: dict[str, Any] = {
+    "title": "The Three Frogs",
+    "skeleton": [
+        "Pip finds a mossy log",
+        "three frogs appear",
+        "they hop across the river",
+        "the child counts them",
+        "home again for tea",
+    ],
+    "branch_themes": ["follow the river", "climb the willow"],
+}
+
+
 def test_an_unimplemented_seam_raises_an_aierror_too() -> None:
     """A seam is not an exception to the contract.
 

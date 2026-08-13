@@ -15,6 +15,7 @@
  */
 
 import { cloneElement, useId, type ReactElement, type ReactNode } from 'react';
+import { Link, type LinkProps } from 'react-router-dom';
 
 import { STATUS_LABEL, STATUS_STYLE } from './dashboard';
 
@@ -261,6 +262,13 @@ export function PrimaryButton(props: React.ButtonHTMLAttributes<HTMLButtonElemen
  * one thing on the screen and no way to say which of them does anything. One
  * element, one role, one name.
  *
+ * **A router `Link`, not a bare `<a href>`.** It shipped as the latter and that
+ * made the first-run call to action — the one button on the one screen a parent
+ * sees before anything else exists — a full document navigation inside a SPA:
+ * white flash, app remount, query cache discarded (Day-14 review, P1-6). `Link`
+ * renders a single `<a>`, so the accessibility argument above is untouched; what
+ * changes is that the transition is a transition.
+ *
  * `className` is passed through rather than composed here so a caller can widen
  * it; the focus ring and target size cannot be opted out of.
  */
@@ -268,14 +276,14 @@ export function LinkButton({
   children,
   className = '',
   ...props
-}: React.AnchorHTMLAttributes<HTMLAnchorElement> & { children: ReactNode }) {
+}: LinkProps & { children: ReactNode }) {
   return (
-    <a
+    <Link
       {...props}
       className={`inline-flex min-h-[--target-min] items-center rounded-md bg-primary px-5 py-2 text-3 font-semibold text-surface no-underline ${FOCUS_RING} ${className}`}
     >
       {children}
-    </a>
+    </Link>
   );
 }
 

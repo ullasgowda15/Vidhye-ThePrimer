@@ -25,6 +25,7 @@
 import { render, screen } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -36,6 +37,7 @@ import {
 } from '@/design/accessibility';
 import {
   Field,
+  LinkButton,
   PrimaryButton,
   QuietButton,
   Section,
@@ -197,6 +199,28 @@ describe('the parent controls are usable from a keyboard', () => {
     // would take it out of the tab order and defeat the whole point.
     expect(link.className).toContain('-translate-y-24');
     expect(link.className).toContain('focus:translate-y-0');
+  });
+
+  it('routes the first-run call to action without reloading the app', () => {
+    // `LinkButton` shipped as a bare `<a href>`, which inside a SPA is a full
+    // document navigation: white flash, remount, query cache discarded — on the
+    // one button of the one screen a parent sees before anything else exists
+    // (Day-14 review, P1-6). A router `Link` still renders a single `<a>`, so the
+    // reason the component exists — never `<Link><button>`, which announces two
+    // controls for one thing (WCAG 4.1.2) — is untouched.
+    render(
+      <MemoryRouter>
+        <LinkButton to="/parent/onboarding">Add your first child</LinkButton>
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole('link', { name: 'Add your first child' });
+    expect(link.tagName).toBe('A');
+    expect(link.querySelector('button')).toBeNull();
+    expect(link).toHaveAttribute('href', '/parent/onboarding');
+    // The target floor and the focus ring cannot be opted out of by a caller.
+    expect(link.className).toContain('min-h-[--target-min]');
+    expect(link.className).toContain('focus-visible:outline-primary');
   });
 
   it('names a field without swallowing its hint into the accessible name', () => {

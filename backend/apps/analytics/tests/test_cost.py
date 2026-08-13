@@ -211,6 +211,100 @@ class TestEveryGenerationIsTraced:
 
         assert GenerationCost.objects.filter(kind=CostKind.IMAGE).count() == 1
 
+    def test_the_companion_build_is_attributed_to_the_child(
+        self, aarav: Child, fake_ai: Any
+    ) -> None:
+        """The largest generation event in a child's life with the product.
+
+        A descriptor, six illustrations and a voice line, and until Day 14's review
+        every one of those spans landed with a null child — `cost.trace` was opened
+        nowhere in the companion app (P1-2). Two things were lost with it: §22.4
+        could not say what bringing a child on board costs even in principle, since
+        nothing on the row said whose it was; and `GenerationCost.child` is the
+        cascade that makes §13.7's delete reach this table, so those rows were the
+        only analytics rows in the product that outlived the family.
+
+        **Session stays null, deliberately.** This happens before any sitting
+        exists, and inventing one would make cost/session answer a question it was
+        not asked.
+        """
+        from apps.companion.models import Companion
+        from apps.companion.tasks import generate_companion_assets
+
+        companion = Companion.objects.get(child=aarav)
+        GenerationCost.objects.all().delete()
+
+        # The task body, run outside any ambient trace, exactly as a worker does.
+        assert cost.current().child_id is None
+        generate_companion_assets(str(companion.pk))
+
+        spans = GenerationCost.objects.all()
+        assert spans.exists()
+        assert not spans.filter(child_id__isnull=True).exists()
+        assert not spans.exclude(session_key__isnull=True).exists()
+
+    def test_the_arrival_greeting_is_attributed_to_the_child(
+        self, aarav: Child, fake_ai: Any
+    ) -> None:
+        """The other half of P1-2: a language call, a voice call and the two
+        classifier calls guarding them, all on a request that knows the child.
+
+        A memory first, because the *first*-meeting hello is the pre-vetted one and
+        generates nothing at all — this is the day-two path (§4.5), which is the
+        only one that spends anything.
+        """
+        from apps.companion import greeting
+        from apps.memory.tests.test_retrieval import remember
+
+        remember(aarav, "Aarav counted three stepping stones across the stream.", salience=0.8)
+        GenerationCost.objects.all().delete()
+
+        # Through the view's own trace rather than the view, so this asserts the
+        # attribution and not the URL routing (`test_greeting_api.py` owns that).
+        with cost.trace(child=aarav):
+            result = greeting.build(aarav)
+
+        assert result.kind == greeting.RETURNING
+        spans = GenerationCost.objects.all()
+        assert spans.exists()
+        assert not spans.filter(child_id__isnull=True).exists()
+
+    def test_the_view_opens_that_trace(self) -> None:
+        """The line above only proves the trace works. This proves it is opened.
+
+        Read off the source because the alternative — a request through the API —
+        would assert the same thing at ten times the cost, and what can regress
+        here is somebody removing one `with` statement.
+        """
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[3] / "apps" / "companion" / "views.py"
+        text = source.read_text(encoding="utf-8")
+
+        assert "with cost.trace(child=child):" in text
+        assert "arrival = greeting.build(child)" in text
+
+    def test_a_deleted_family_leaves_no_cost_span_at_all(self, aarav: Child, fake_ai: Any) -> None:
+        """§13.7 over the whole table, not only the attributed part.
+
+        The Day-14 review deleted a real family and found two spans left standing —
+        the greeting and the companion assets, carrying nothing identifying but
+        standing all the same. With both traced, the table empties.
+        """
+        from apps.companion import greeting
+        from apps.companion.models import Companion
+        from apps.companion.tasks import generate_companion_assets
+
+        generate_companion_assets(str(Companion.objects.get(child=aarav).pk))
+        with cost.trace(child=aarav):
+            greeting.build(aarav)
+        play(aarav)
+        assert GenerationCost.objects.count() > 0
+
+        aarav.delete()
+
+        assert GenerationCost.objects.count() == 0
+
     @pytest.mark.django_db(transaction=True, serialized_rollback=True)
     def test_the_media_worker_re_enters_the_sitting_context(
         self, aarav: Child, fake_ai: Any

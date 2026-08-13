@@ -74,6 +74,39 @@ class TestTelemetryNeverReachesTheCaller:
         aarav.refresh_from_db()
         assert aarav.first_name == "Aarav"
 
+    def test_a_failing_parent_lookup_is_swallowed_too(self, aarav: Child) -> None:
+        """The other line in `track` that touches a database (Day-14 review, P1-1).
+
+        `parent` is derived from `child` when the caller did not pass one, and on a
+        `Child` that was not loaded with `select_related` that is a deferred FK
+        read. It sat outside the `try` — where `getattr`'s default absorbs the
+        `AttributeError` a null FK raises and nothing else, so an `OperationalError`
+        from the fetch went straight to the caller. The caller here is
+        `record_choice` or `_persist_beat`, with a child mid-story, which is the
+        exact thing rule 1 exists to prevent.
+
+        The subject is a stand-in rather than a real `Child` because the failure
+        being reproduced is the database refusing the read, and there is no honest
+        way to ask Postgres for that mid-test.
+        """
+
+        class ChildWhoseParentCannotBeRead:
+            pk = aarav.pk
+
+            @property
+            def parent(self) -> Any:
+                raise RuntimeError("connection already closed")
+
+        assert events.track(Event.CHILD_CREATED, child=ChildWhoseParentCannotBeRead()) is None  # type: ignore[arg-type]
+
+    def test_a_parent_passed_in_is_not_re_derived(self, aarav: Child) -> None:
+        # The guard above must not have turned the derivation into a swallowed
+        # no-op: a caller who passes the parent still gets it on the row.
+        event = events.track(Event.CHILD_CREATED, child=aarav, parent=aarav.parent)
+
+        assert event is not None
+        assert event.parent_id == aarav.parent_id
+
 
 class TestTheNameIsAClosedSet:
     """Rule 2. A typo is a metric that reads zero forever."""

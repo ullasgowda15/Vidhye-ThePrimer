@@ -32,7 +32,8 @@ decided and what the honest alternative was. The decisions that matter most:
   is the server's next day. Written down rather than hidden.
 
 **This module is the product/ops half of §5.6 and must never be imported by a
-parent-facing view.** `tests/test_boundary.py` asserts that.
+parent-facing view.** `tests/test_analytics_pipeline.py::TestTheSeparationIsStructural`
+asserts that, over the import graph.
 
 *Scale note:* the queries here fan out per child in a couple of places. That is
 deliberate at alpha scale — a loop over a few hundred children is readable and a

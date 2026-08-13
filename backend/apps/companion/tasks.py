@@ -15,6 +15,7 @@ import logging
 
 from celery import shared_task
 
+from apps.analytics import cost
 from apps.companion.models import AssetStatus, Companion
 from apps.companion.service import build_assets
 
@@ -37,5 +38,18 @@ def generate_companion_assets(companion_id: str) -> str:
         logger.info("companion.assets_skipped companion=%s reason=deleted", companion_id)
         return AssetStatus.FAILED
 
-    build_assets(companion)
+    # Seven provider calls — a descriptor, six illustrations, a voice line — and
+    # the largest single generation event in a child's life with the product
+    # (§19.9, §22.4). **Child, and deliberately no session**: this happens before
+    # any sitting exists, so attributing it to one would be an invention, and
+    # cost/session goes on answering "what does a story cost". What the child id
+    # buys is the other two things — "what does bringing a child on board cost",
+    # and the `GenerationCost.child` cascade, which is what makes §13.7's delete
+    # reach these rows. Without it they are the only analytics rows in the product
+    # that outlive the family (Day-14 review, P1-2).
+    #
+    # Re-entered here rather than inherited: a `ContextVar` does not cross a
+    # Celery boundary, the same seam `story.tasks.generate_beat_media` re-enters.
+    with cost.trace_ids(child_id=companion.child_id):
+        build_assets(companion)
     return companion.assets_status

@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast, runtime_checkabl
 from django.conf import settings
 from pydantic import BaseModel, ValidationError
 
-from apps.story.ai.schemas import Beat, beat_json_schema, strip_unsupported_keywords
+from apps.story.ai.schemas import Beat, beat_json_schema, json_schema_for
 
 if TYPE_CHECKING:
     from anthropic.types import MessageParam, OutputConfigParam
@@ -219,6 +219,61 @@ def _trace_llm_cost(
 
 #: Only used when a provider reports no usage. See `_trace_llm_cost`.
 _CHARS_PER_TOKEN = 4
+
+
+def _generate_traced(
+    provider: StructuredProvider,
+    *,
+    operation: str,
+    system: str,
+    messages: list[dict[str, Any]],
+    schema: dict[str, Any],
+) -> str:
+    """One `generate_json`, with its cost span written whichever way the call ends.
+
+    Both providers read their token meter *before* the checks that can raise, and
+    they say why: a refusal, an empty `choices` list and a truncated response all
+    cost input tokens. Until Day 14's review that was only half true — the meter
+    was read early and then discarded, because the span was written out here after
+    `generate_json` returned, so every one of those endings lost its spend
+    silently. §22.4 wants exactly those generations visible: they are the
+    expensive failures (P1-5).
+
+    **The span is written on failure only when the provider actually metered
+    something.** A transport error that never reached the model was never billed,
+    and `_trace_llm_cost`'s character estimate would happily invent a price for
+    it — over-reporting spend that does not exist, which is the same dishonesty as
+    under-reporting spend that does. `last_usage is not None` is the difference
+    between "the model answered and we did not like the answer" and "we never got
+    there", and it is the provider's own report either way.
+    """
+    started = time.monotonic()
+    try:
+        completion = provider.generate_json(system=system, messages=messages, schema=schema)
+    except Exception:
+        if getattr(provider, "last_usage", None) is not None:
+            # No completion to measure: the meter is authoritative here, and
+            # `_trace_llm_cost` only falls back to counting characters when the
+            # provider reported nothing — which the guard above has excluded.
+            _trace_llm_cost(
+                provider,
+                operation=operation,
+                system=system,
+                messages=messages,
+                completion="",
+                started=started,
+            )
+        raise
+
+    _trace_llm_cost(
+        provider,
+        operation=operation,
+        system=system,
+        messages=messages,
+        completion=completion,
+        started=started,
+    )
+    return completion
 
 
 @runtime_checkable
@@ -659,21 +714,24 @@ class ModelRouter:
             raise AIConfigurationError("context must contain non-empty 'system' and 'user' keys.")
 
         provider = self.select_provider()
-        json_schema = (
-            schema if schema is not None else strip_unsupported_keywords(model.model_json_schema())
-        )
+        # `json_schema_for` and not `strip_unsupported_keywords`: the two differ by
+        # `trim_descriptions`, and this is the branch every caller that does not
+        # build its own schema arrives on — `StoryPlan`, `ReturningGreetingText`,
+        # `VisualDescriptor`. Sending Pydantic's untrimmed docstrings here put our
+        # engineering rationale in front of the model as field guidance on three
+        # contracts, which is the §19.1 layering problem `trim_descriptions` exists
+        # to fix, and made `json_schema_for`'s "every schema we send passes through
+        # this" untrue (Day-14 review, P1-3).
+        json_schema = schema if schema is not None else json_schema_for(model)
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
         operation = operation_for(model)
 
-        started = time.monotonic()
-        raw = provider.generate_json(system=system, messages=messages, schema=json_schema)
-        _trace_llm_cost(
+        raw = _generate_traced(
             provider,
             operation=operation,
             system=system,
             messages=messages,
-            completion=raw,
-            started=started,
+            schema=json_schema,
         )
         try:
             return self._parse(raw, model)
@@ -698,19 +756,16 @@ class ModelRouter:
                 ),
             },
         ]
-        repair_started = time.monotonic()
-        repaired = provider.generate_json(system=system, messages=messages, schema=json_schema)
         # `operation` is unchanged and the span is separate, so the cost table
         # shows a repaired beat as two `beat` spans. That is the honest shape: it
         # is what was billed, and a repair rate is then `spans / beats` rather than
         # a counter somebody has to remember to add.
-        _trace_llm_cost(
+        repaired = _generate_traced(
             provider,
             operation=operation,
             system=system,
             messages=messages,
-            completion=repaired,
-            started=repair_started,
+            schema=json_schema,
         )
         try:
             return self._parse(repaired, model)

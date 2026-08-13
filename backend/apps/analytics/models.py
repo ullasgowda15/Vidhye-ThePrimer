@@ -12,9 +12,9 @@ it is easiest to see:
 
 Nothing in this file enforces that on its own — a boundary that is only a
 docstring is a boundary — so it is also enforced twice in code:
-`apps.analytics.internal` is staff-only, and `tests/test_boundary.py` asserts
-that no module reachable from a parent-facing view imports the product-analytics
-modules.
+`apps.analytics.internal` is staff-only, and
+`tests/test_analytics_pipeline.py::TestTheSeparationIsStructural` asserts that no
+parent-facing module imports the product-analytics modules.
 
 ---
 

@@ -44,7 +44,7 @@ export default function Home() {
               else is optional, and you can change all of it later.
             </p>
             <p className="mt-4">
-              <LinkButton href="/parent/onboarding">Add your first child</LinkButton>
+              <LinkButton to="/parent/onboarding">Add your first child</LinkButton>
             </p>
           </Card>
         </Section>

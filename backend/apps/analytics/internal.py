@@ -11,7 +11,8 @@ by a staff account. The two never meet:
 
 * nothing in this module is mounted under `/api/v1/`;
 * nothing under `/api/v1/` imports `metrics`, `cost` or the `Event` /
-  `GenerationCost` models — asserted by `tests/test_boundary.py`;
+  `GenerationCost` models — asserted by
+  `tests/test_analytics_pipeline.py::TestTheSeparationIsStructural`;
 * every number on this page is an aggregate across families. There is no
   per-child view here, deliberately: a staff page that could be pointed at one
   named child is a raw behavioural record with a nicer font (§13.8), and the

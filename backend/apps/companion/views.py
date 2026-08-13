@@ -34,7 +34,7 @@ from rest_framework.views import APIView
 
 from apps.accounts.consent import require_consent
 from apps.accounts.models import User
-from apps.analytics import events
+from apps.analytics import cost, events
 from apps.analytics.models import Event
 from apps.common.permissions import IsParentOwner
 from apps.common.throttling import CompanionCreateThrottle, CompanionReadThrottle
@@ -208,7 +208,13 @@ class GreetingView(GenericAPIView):
         self.check_object_permissions(request, child)
         require_consent(cast(User, request.user))
 
-        arrival = greeting.build(child)
+        # A language call, a voice call and the two classifier calls guarding them
+        # (§19.9). Attributed to the child and to no sitting, for the reason
+        # `companion.tasks` gives at length: the arrival scene happens before a
+        # story does, and the child id is what makes the spend both answerable
+        # ("what does a relationship cost") and deletable (Day-14 review, P1-2).
+        with cost.trace(child=child):
+            arrival = greeting.build(child)
         return Response(
             ArrivalSerializer(
                 {
