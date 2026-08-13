@@ -21,7 +21,7 @@ a command that answers it.
 
 | | Evidence |
 |---|---|
-| Eval suite gates the deploy | `make evals`; `Docs/Runbooks/Eval-Gate.md` has the drill log — **local half done, CI half not yet run** |
+| Eval suite gates the deploy | `make evals`; green in CI on its first run (`31665610393`, 41 passed / 1 skipped). `Docs/Runbooks/Eval-Gate.md` has the drill log — **the forced-fail half is done locally on all five regressions; the CI red row is still owed** |
 | Restore drill, run and shown to fail | `Docs/Runbooks/Backup-Restore.md` drill log, both rows — **against the compose Postgres, not a managed one** |
 | Feature flags + prompt rollback | `make flags`, `make prompts`; `apps/common/tests/test_flags.py`, `apps/safety/tests/test_prompt_rollback.py` |
 | Budget breaker → warm content | `apps/story/tests/test_degradation.py` — plays a real adventure with the breaker open |

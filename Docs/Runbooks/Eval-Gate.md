@@ -106,17 +106,23 @@ that exists to catch it. The control run — nothing forced — is green.
 | `too_wordy` | ❌ red | `test_every_beat_a_child_hears_fits_their_age` |
 | `unsafe_narration` | ❌ red | coherence, objective, and the graders'-own-bite tests |
 
-### In CI, and the deploy — **not yet run**
+### In CI — control row done, **red row still owed**
 
 | Date | Ref | What was forced | Evals | Other CI jobs | Deploy |
 |---|---|---|---|---|---|
-| _(empty — run the two steps above and fill this in)_ | | | | | |
+| 2026-08-13 | `main` @ `6b23b57` | nothing (control) | ✅ green, run **`31665610393`** — `41 passed, 1 skipped` in 18s, matching the local run exactly | ✅ Backend, Frontend and Backend image all green | n/a — no tag |
+| _(owed)_ | `eval-gate-drill` | e.g. `cliffhanger_close` | expect ❌ | expect ✅ | expect `release` never starts |
 
-> The run ids in this table are the evidence, not decoration, and this table is
-> **empty on purpose**: the local drill above proves the *suite* fails for real
-> reasons, and only a CI run proves the *pipeline* stops. Two rows are needed for
-> a complete drill — the same suite, red for a real reason and green without it.
-> One red row alone proves a broken suite; one green row alone proves nothing.
+> The run ids in this table are the evidence, not decoration. Two rows make a
+> complete drill — the same suite, red for a real reason and green without it —
+> and **only the green one is filled in**. A green control alone proves the job
+> runs; it does not prove the pipeline stops. Run step 2 above and complete this.
+>
+> Until then the standing guard is
+> `evals/test_gate.py::test_the_deploy_workflow_actually_requires_this_suite`,
+> which asserts every link of the chain (release → gate → ci.yml → the `evals`
+> job, and no failure-softening flag in the deploy) on every commit — so the
+> wiring cannot be broken silently while this row waits.
 >
 > `evals/test_gate.py::test_the_deploy_workflow_actually_requires_this_suite`
 > asserts the wiring (release → gate → ci.yml → the `evals` job, and no
