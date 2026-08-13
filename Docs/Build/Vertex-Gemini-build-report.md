@@ -107,3 +107,14 @@ The founder's key proved the **happy paths** — auth, region, structured beats,
 3. **Nothing has run a full sitting on Vertex.** What has run live is one beat, two safety grades, one image scan — three of the four call types, one call each. Sustained behaviour needs `make evals-live` and the Day-10/11 manual test: latency under `MEDIA_TURN_BUDGET_S`, real cost per session, and whether beats ever truncate at 8,000 tokens with dynamic thinking on (the one beat measured used 1,136 output tokens including thoughts, so there is roughly 7× headroom — but a long beat with a hard prompt is the case that would find the edge). The **memory digest** is the one call type not yet exercised live at all.
 
 Also outstanding, and not a code matter: **rotate the service-account key** (it was in a synced folder), and set the GCP budget alerts `Hosting.md §5` calls for before a family plays.
+
+---
+
+## CI
+
+| Commit | Run | Result |
+|---|---|---|
+| `36f1147` — the build | **`31707874319`** | ✅ all five jobs |
+| `d50a824` — SDK enums for the safety settings, this report's self-review, corrected cost figures | **`31708859140`** | ✅ all five jobs |
+
+`d50a824` is the last commit in this piece of work that contains code, so `31708859140` is the run that covers it. The commit that adds this table is documentation-only and its run is not separately recorded — the same convention `Docs/PROGRESS.md` uses where a pair of commits is covered by one run.
