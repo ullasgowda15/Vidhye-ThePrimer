@@ -50,6 +50,13 @@ LLM_PRICES: dict[str, tuple[str, str]] = {
     "anthropic:claude-opus-5": ("5.00", "25.00"),
     "anthropic:claude-sonnet-5": ("3.00", "15.00"),
     "anthropic:claude-haiku-4-5-20251001": ("1.00", "5.00"),
+    # Gemini on Vertex AI (Docs/Hosting.md §3 — the all-Google deployment).
+    # Text list prices per 1M tokens. Thinking tokens bill at the output rate,
+    # which is why `router._gemini_usage` folds `thoughts_token_count` into
+    # `output_tokens` rather than reporting it separately: the number here is the
+    # rate that applies to both.
+    "google:gemini-2.5-flash": ("0.30", "2.50"),
+    "google:gemini-2.5-flash-lite": ("0.10", "0.40"),
     # OpenRouter free routes — genuinely zero, and stored as a known zero.
     "openrouter:nvidia/nemotron-3-super-120b-a12b:free": ("0.00", "0.00"),
     # The scripted provider in the test suite. It has no model and costs nothing,

@@ -65,9 +65,77 @@ if not SAFETY_CLASSIFIER_ENABLED:  # noqa: F405
 if IMAGE_MODERATION == "off":  # noqa: F405
     raise ImproperlyConfigured(
         "IMAGE_MODERATION must not be 'off' outside development. Set it to "
-        "'auto' and give the deployment an ANTHROPIC_API_KEY so generated "
-        "illustrations are actually looked at before a child sees them (§13.8)."
+        "'auto' and give the deployment credentials for a vision model - an "
+        "ANTHROPIC_API_KEY, or the GOOGLE_CLOUD_* settings for Gemini on Vertex "
+        "- so generated illustrations are actually looked at before a child "
+        "sees them (§13.8)."
     )
+
+# ---------------------------------------------------------------------------
+# Gemini on Vertex needs all three of its settings (PRODUCT.md §16.1, §13.8)
+# ---------------------------------------------------------------------------
+# A half-configured Vertex deployment does not fail loudly, and that is the whole
+# reason this guard exists. `GoogleProvider.is_configured()` returns *false* on a
+# missing project — which is right at runtime, because falling through to the
+# next provider is better than raising inside a beat — so a box that meant to run
+# every model on Gemini and forgot `GOOGLE_CLOUD_PROJECT` does not crash. It
+# quietly finds no configured provider at all and serves pre-vetted fallback
+# beats to every child, forever, while the logs say the thing the fallback path
+# always says. The image gate degrades the same way: `IMAGE_MODERATION=auto` with
+# no usable credential is `moderation=absent` on every scan.
+#
+# So the check happens at boot, where "this deployment cannot do what it says"
+# is still a sentence somebody reads.
+#
+# Only when Google is the *intended* one: first in `AI_PROVIDER_ORDER`, or named
+# as the image moderator. Google sitting further down the order is a fallback
+# nobody configured, which is absence rather than misconfiguration - the same
+# reading `TTS_FALLBACK_PROVIDERS` gets.
+#
+# Plain ASCII, like the other guards: this is read in a terminal, and the Windows
+# console renders a section sign as a replacement character.
+_order = list(AI_PROVIDER_ORDER)  # noqa: F405
+_wants_vertex = [
+    label
+    for label, wanted in (
+        ("AI_PROVIDER_ORDER", bool(_order) and _order[0] == "google"),
+        ("IMAGE_MODERATION_PROVIDER", IMAGE_MODERATION_PROVIDER == "google"),  # noqa: F405
+    )
+    if wanted
+]
+if _wants_vertex:
+    from apps.common import vertex
+
+    _missing = vertex.missing_for(
+        GOOGLE_CLOUD_PROJECT,  # noqa: F405
+        GOOGLE_CLOUD_LOCATION,  # noqa: F405
+        GOOGLE_APPLICATION_CREDENTIALS,  # noqa: F405
+    )
+    if _missing:
+        raise ImproperlyConfigured(
+            f"{' and '.join(_wants_vertex)} selects google (Gemini on Vertex AI), but "
+            f"{', '.join(_missing)} is not set. Vertex is authenticated by a service "
+            "account, not an API key - that is what bills the call to the GCP project "
+            "and keeps it under the terms that exclude our inputs from training "
+            "(13.8, Docs/Hosting.md section 3). Set GOOGLE_CLOUD_PROJECT, "
+            "GOOGLE_CLOUD_LOCATION and GOOGLE_APPLICATION_CREDENTIALS (an absolute "
+            "path to the service-account JSON on this box). Without them nothing "
+            "calls Gemini: every beat degrades to the pre-vetted fallback and the "
+            "image gate reports moderation=absent."
+        )
+
+    from pathlib import Path
+
+    # And that the file is really there. A path typo produces exactly the same
+    # silent degradation the block above describes, one layer later, and it is the
+    # commonest of the two mistakes: the settings get copied from the runbook and
+    # the key gets left on the laptop it was downloaded to.
+    if not Path(GOOGLE_APPLICATION_CREDENTIALS).is_file():  # noqa: F405
+        raise ImproperlyConfigured(
+            f"GOOGLE_APPLICATION_CREDENTIALS='{GOOGLE_APPLICATION_CREDENTIALS}' is not a "  # noqa: F405
+            "file on this box. It must be an absolute path to the service-account JSON "
+            "key, readable by the process (mount it into the container; never commit it)."
+        )
 
 # ---------------------------------------------------------------------------
 # No child data down a route that may train on it (PRODUCT.md §13.8)

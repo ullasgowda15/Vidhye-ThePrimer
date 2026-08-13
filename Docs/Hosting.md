@@ -27,8 +27,9 @@ What keeps us portable, piece by piece:
 | Component | Vendor | What it does | Pilot tier | Pilot cost | Cost after free tier |
 |---|---|---|---|---|---|
 | **Hosting / compute** | Google Cloud (Compute Engine) | One VM runs the entire `docker-compose` (Django ASGI, Celery worker, Postgres+pgvector, Redis) | e2-medium (4 GB), on the **$300 / 90-day credit** | **$0** | ~$24–27/mo on GCP *(reason to migrate to Hetzner ~$5)* |
-| **Story beats (LLM)** | Google — Gemini API (**paid**, data-excluded) | Writes the story beats | Gemini **Flash, paid tier** — *not* the AI Studio free tier (§3) | ~$2–5/mo *(from credit)* | ~$1.50/$7.50 per 1M tokens |
-| **Safety grader + memory digest (LLM)** | Google — Gemini API (**paid**, data-excluded) | Independent output classifier (§13.3) + memory consolidation | Gemini **Flash-Lite**, paid tier | ~$1–3/mo *(from credit)* | ~$0.10/$0.40 per 1M tokens |
+| **Story beats (LLM)** | Google — **Vertex AI** Gemini (paid, data-excluded) | Writes the story beats | `gemini-2.5-flash`, service-account auth — *not* the AI Studio free tier (§3) | ~$2–5/mo *(from credit)* | $0.30/$2.50 per 1M tokens |
+| **Safety grader + memory digest (LLM)** | Google — **Vertex AI** Gemini (paid, data-excluded) | Independent output classifier (§13.3) + memory consolidation | `gemini-2.5-flash-lite` | ~$1–3/mo *(from credit)* | $0.10/$0.40 per 1M tokens |
+| **Image moderation (vision)** | Google — **Vertex AI** Gemini (paid, data-excluded) | The §13.8 gate: looks at every generated illustration before a child does | `gemini-2.5-flash-lite`, same credentials | pennies *(from credit)* | as above, plus image tokens |
 | **Embeddings** | OpenAI | Semantic memory vectors for recall (the moat) | `text-embedding-3-small` | **<$1/mo** | ~$0.02 per 1M tokens |
 | **Images** | Cloudflare — Workers AI | Companion reference set + scene art (FLUX-1-schnell) | 10,000 neurons/day **free** | **$0** | $0.011 per 1,000 neurons |
 | **Voice** | Google Cloud — Text-to-Speech | Narration + returning-greeting audio | Neural2, **1M chars/mo free** | **$0** | ~$16 per 1M chars (Neural2) |
@@ -53,7 +54,7 @@ What keeps us portable, piece by piece:
 - The **safety grader** is handed the beat and the child's controls; the **embeddings** are handed each memory's sentence.
 - `apps/accounts/privacy.py` tells parents, in the present tense and with no qualification: *"We never use your child's data to train anybody's AI models — not ours, and not our providers."* A carve-out for beats would make that sentence false, and the disclosure is the thing this rule exists to keep true.
 
-So: never a free prompt-reselling route for **any** of them. On OpenRouter that means never a `:free` suffix; on Gemini it means the paid API / Vertex rather than the AI Studio free tier. Also set the account-level data policy (OpenRouter: disallow prompt logging/training) — the suffix is what code can check, the account setting is the other half.
+So: never a free prompt-reselling route for **any** of them. On OpenRouter that means never a `:free` suffix; on Gemini it means **Vertex AI, authenticated by a service account** — billed to the GCP project and covered by the enterprise terms that exclude inputs from training — rather than an AI Studio key, whose free tier trains on prompts. That is enforced in the shape the code can enforce it: `apps/common/vertex.py` builds the client with `vertexai=True` and a service-account credential and there is no API-key setting for Gemini anywhere in `settings/base.py`, so the route that would break the promise is not one this deployment can be configured to take. Also set the account-level data policy (OpenRouter: disallow prompt logging/training) — the suffix is what code can check, the account setting is the other half.
 
 **This is now enforced, not just written down** (that is the other half of F-3 — the rule had been in `PROGRESS.md` since §13.8 was written and every model was on a `:free` route anyway):
 
@@ -72,10 +73,16 @@ Set in `.env` (never commit it — it's gitignored). Values are the pilot target
 
 ```dotenv
 # --- Provider routing: ALL FOUR paid + data-excluded (§3) ---
-AI_PROVIDER_ORDER=gemini            # (see note) or route Gemini via openrouter
-AI_BEAT_MODEL=<gemini-flash-slug>            # PAID/data-excluded (no ':free' suffix)
-AI_SAFETY_MODEL=<gemini-flash-lite-slug>     # PAID/data-excluded — must differ from beat model
-AI_MEMORY_MODEL=<gemini-flash-lite-slug>     # PAID/data-excluded — carries the verbatim digest
+AI_PROVIDER_ORDER=google             # the registered provider name (NOT 'gemini')
+AI_BEAT_MODEL=gemini-2.5-flash               # PAID/data-excluded (bare id, no slug, no ':free')
+AI_SAFETY_MODEL=gemini-2.5-flash-lite        # PAID/data-excluded — must differ from beat model
+AI_MEMORY_MODEL=gemini-2.5-flash-lite        # PAID/data-excluded — carries the verbatim digest
+
+# --- Vertex AI auth: a service account, never an API key (§3) ---
+GOOGLE_CLOUD_PROJECT=<gcp-project-id>
+GOOGLE_CLOUD_LOCATION=global         # see the region note below
+GOOGLE_APPLICATION_CREDENTIALS=/home/primer/.config/primer/vertex-sa.json
+GOOGLE_GENAI_USE_VERTEXAI=true
 
 # --- Embeddings (semantic recall) ---
 EMBEDDING_PROVIDER=openai
@@ -87,6 +94,8 @@ IMAGE_PROVIDER=cloudflare
 CLOUDFLARE_ACCOUNT_ID=<id>
 CLOUDFLARE_API_TOKEN=<token>
 IMAGE_MODERATION=auto                # vision moderation on
+IMAGE_MODERATION_PROVIDER=google     # runs the gate on Vertex — no Anthropic key needed
+IMAGE_MODERATION_MODEL=gemini-2.5-flash-lite
 
 # --- Voice ---
 TTS_PROVIDER=google                  # Google Cloud TTS, free 1M chars/mo
@@ -106,9 +115,15 @@ AWS_S3_REGION_NAME=auto
 MEDIA_CDN_BASE_URL=<r2-public-or-custom-domain>
 ```
 
-> **Router note:** if the app's `AI_PROVIDER_ORDER` doesn't yet have a native `gemini` provider implemented, route Gemini **through OpenRouter** (OpenAI-compatible) as an interim — set `AI_PROVIDER_ORDER=openrouter` with Gemini slugs. Confirm which is wired before launch; Django refuses to boot on a provider/model-form mismatch. **The exact model slugs must be filled in from each provider's current model list at setup time.**
+> **Router note (resolved — this was §11's open decision 4).** The router has a **native `google` provider** (`apps/story/ai/router.py::GoogleProvider`), on the `google-genai` SDK in Vertex mode. Routing Gemini through OpenRouter is no longer the plan and no longer needed. Two things this changes for whoever sets it up:
+> - The provider name is **`google`**. `AI_PROVIDER_ORDER=gemini` — which every earlier version of this document said — is not a registered provider and Django refuses to boot on it.
+> - Model ids are **bare Vertex ids** (`gemini-2.5-flash`), never gateway slugs (`google/gemini-2.5-flash`). `model_ids.pairing_error` refuses a slug under `google`, because Vertex answers 404 to one on every call.
 
-> **Boot guards to expect (all correct, don't disable):** `prod.py` refuses to start with the safety classifier off, with `IMAGE_MODERATION=off`, with `MEDIA_STORAGE=local`, or with any child-data model on a `:free` route (§3). These are safety rails, not bugs.
+> **Region: `asia-south1` cannot run this product.** Verified against the live API on 13 Aug 2026, not read off a docs page. `asia-south1` (Mumbai) serves `gemini-2.5-flash` but **not** `gemini-2.5-flash-lite`, so the safety grader and the memory digest would 404 on every call — and since §13.3 requires the grader to be a *different* model from the writer, there is no single-model configuration that fixes it. `global` and `us-central1` serve both; `global` is what §7 deploys, because Google routes each request to the nearest healthy region and that beats pinning us-central1 from India. Watch out for the trap: `client.models.get()` reports Flash-Lite as present in `asia-south1` (it resolves against the global publisher catalogue) and `generate_content` then 404s — **probe with a real generation.**
+
+> **Boot guards to expect (all correct, don't disable):** `prod.py` refuses to start with the safety classifier off, with `IMAGE_MODERATION=off`, with `MEDIA_STORAGE=local`, with any child-data model on a `:free` route (§3), or with `google` selected and any of `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` / `GOOGLE_APPLICATION_CREDENTIALS` missing or pointing at a file that is not there. These are safety rails, not bugs — the last one exists because a half-configured Vertex box does not crash: it quietly finds no provider, serves pre-vetted fallback beats to every child, and reports `moderation=absent` on every scan.
+
+> **The service-account key never goes in the repository.** Keep it outside the tree entirely (`~/.config/primer/vertex-sa.json`, owner-read-only: `chmod 600`, or `icacls <path> /inheritance:r /grant:r "$env:USERNAME:(F)"` on Windows) and mount it into the container. `.gitignore` has patterns for the obvious filenames, but they only catch the names somebody thought of — one arrived as `gemini-key.json` at the repo root, which `*.pem` and `*.key` did not match. If a key has ever been in the tree, in a synced folder, or in a chat, rotate it in GCP rather than reasoning about who saw it.
 
 ---
 
@@ -117,7 +132,7 @@ MEDIA_CDN_BASE_URL=<r2-public-or-custom-domain>
 Non-negotiable at a tight budget:
 
 1. **GCP billing budget + alert.** Set a budget on the billing account with email alerts at **$50 / $150 / $250** of the $300, so the credit can't silently drain. (Note: GCP alerts *notify*, they don't hard-stop — see #4.)
-2. **Beats are a paid line item now** (§3), so the credit covers the VM *and* the LLM calls. At ~90–120 beats/day on Flash that is a few dollars a month against a $300 credit — the privacy rule costs roughly one month of the credit's tail, which is the trade the audit's F-3 made deliberately. Watch it in `manage.py metrics` (cost/session) rather than assuming a free tier absorbs it.
+2. **Beats are a paid line item now** (§3), so the credit covers the VM *and* the LLM calls. **Measured, not estimated:** the first real beat through Vertex cost **$0.0031** (986 input + 1,136 output tokens on `gemini-2.5-flash`, priced by `analytics.pricing`). At ~90–120 beats/day that is roughly **$0.30–0.40/day, ~$10/month** — a little more than the earlier guess, because Gemini's *thinking* tokens bill at the output rate and are reported separately (`router._gemini_usage` folds them in, so cost/session already counts them). Against a $300 credit that is comfortable. Watch it in `manage.py metrics` (cost/session) rather than assuming a free tier absorbs it.
 3. **OpenAI usage hard-limit.** Set a low monthly cap (e.g. $5) in the OpenAI dashboard — embeddings won't come close, so this is pure insurance.
 4. **Hard-stop billing (optional but recommended).** A small Cloud Function tied to the budget pub/sub topic that disables billing at 100% of credit prevents any post-credit charge. Ask me to add this if you want a true hard ceiling.
 5. **Cloudflare & Google free tiers are self-capping** — they degrade or 429 rather than bill you, and the app handles that gracefully (see #6).
@@ -193,19 +208,19 @@ The architecture doesn't change between pilot and growth — only the size of th
 
 ## 11. Open decisions to confirm (defaults chosen, correct me if wrong)
 
-1. **VM region** — defaulted to nearest your users (`asia-south1`/Mumbai if India-based). *Confirm your users' location.*
+1. **VM region** — defaulted to nearest your users (`asia-south1`/Mumbai if India-based). *Confirm your users' location.* Note this is the **compute** region and is independent of `GOOGLE_CLOUD_LOCATION`, which must be `global` or `us-central1` because `asia-south1` does not serve Flash-Lite (§4).
 2. **Embeddings** — recommend OpenAI `text-embedding-3-small` (pennies) over free `local-hash`, because semantic recall is the moat. `local-hash` is $0 but lexical; fine only if you want zero extra vendors at launch.
 3. **Day-90 plan** — assumed migrate to Hetzner. Alternative: stay on GCP paid (simpler, but ~5× the compute cost).
-4. **Native Gemini provider vs OpenRouter** — confirm which is wired in the router before launch (§4 note).
+4. ~~**Native Gemini provider vs OpenRouter**~~ — **decided and built.** The native `google` provider runs on Vertex with service-account auth (§4 note). OpenRouter stays wired as a seam, unused by this deployment.
 5. **Domain** — do we want a custom pilot URL, or is the VM IP / a free subdomain fine for 15 users?
 
 ---
 
 ## 12. Accounts to create / keys to obtain (checklist)
 
-- [ ] Google Cloud account + project + billing enabled (unlocks $300 credit, TTS, Gemini paid)
-- [ ] Gemini API key — **paid**, data-excluded (beats) (§3)
-- [ ] Gemini API — paid/data-excluded access for safety + memory (Vertex or paid AI Studio)
+- [ ] Google Cloud account + project + billing enabled (unlocks $300 credit, TTS, Vertex AI)
+- [ ] **Vertex AI API enabled** on the project
+- [ ] **Service account + JSON key** with the `roles/aiplatform.user` role — this is the credential for beats, safety, memory *and* image moderation, all four. **No API key of any kind** (§3): an AI Studio key is a different product under different terms. Store the JSON outside the repo, owner-read-only (§4).
 - [ ] Google Cloud Text-to-Speech API enabled + key
 - [ ] OpenAI account + API key (embeddings) — with a low usage cap
 - [ ] Cloudflare account → Workers AI token + Account ID (images)

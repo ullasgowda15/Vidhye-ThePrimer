@@ -42,6 +42,7 @@ def pairing(monkeypatch: Any) -> Any:
         memory: str | None = None,
         anthropic_key: str = "",
         openrouter_key: str = "",
+        vertex: bool = False,
     ) -> None:
         monkeypatch.setattr(base, "AI_PROVIDER_ORDER", order)
         monkeypatch.setattr(base, "AI_BEAT_MODEL", beat)
@@ -49,6 +50,15 @@ def pairing(monkeypatch: Any) -> Any:
         monkeypatch.setattr(base, "AI_MEMORY_MODEL", safety if memory is None else memory)
         monkeypatch.setattr(base, "ANTHROPIC_API_KEY", anthropic_key)
         monkeypatch.setattr(base, "OPENROUTER_API_KEY", openrouter_key)
+        # Vertex is credentialled by three settings rather than one key, and all
+        # three have to be here: `_selected_ai_provider` returns `""` when the
+        # selected provider has no credentials, and an empty provider skips the
+        # whole check. A google test that forgot them would pass by not running.
+        monkeypatch.setattr(base, "GOOGLE_CLOUD_PROJECT", "primer-test" if vertex else "")
+        monkeypatch.setattr(base, "GOOGLE_CLOUD_LOCATION", "global" if vertex else "")
+        monkeypatch.setattr(
+            base, "GOOGLE_APPLICATION_CREDENTIALS", "/nowhere/sa.json" if vertex else ""
+        )
         base._check_model_pairing()
 
     return run
@@ -138,6 +148,52 @@ def test_the_check_follows_selection_rather_than_the_first_name_in_the_order(
     and a boot check that cries wolf is one somebody removes.
     """
     pairing(order=["openrouter", "anthropic"], anthropic_key="test-key")
+
+
+def test_a_gateway_slug_under_google_fails(pairing: Any) -> None:
+    """Vertex takes a bare `gemini-2.5-flash`, never a `vendor/model` slug.
+
+    This mistake arrives by a specific road rather than out of nowhere:
+    `Docs/Hosting.md` recommended routing Gemini *through OpenRouter* before there
+    was a native provider, so a half-migrated `.env` keeps the slug and changes
+    only `AI_PROVIDER_ORDER`. Vertex answers 404 to every call, and when the
+    setting is `AI_SAFETY_MODEL` that is §13.3's guard silently off — the same
+    shape of failure Day 7 found under OpenRouter.
+    """
+    with pytest.raises(ImproperlyConfigured) as caught:
+        pairing(
+            order=["google"],
+            beat="google/gemini-2.5-flash",
+            safety="gemini-2.5-flash-lite",
+            vertex=True,
+        )
+
+    message = str(caught.value)
+    assert "AI_BEAT_MODEL" in message
+    # It has to say what to do, like the other two branches do.
+    assert "gemini-2.5-flash" in message
+
+
+def test_the_shipping_vertex_pairing_boots(pairing: Any) -> None:
+    """The all-Google configuration from `Docs/Hosting.md §4`: bare Gemini ids, a
+    grader that is a different model from the writer."""
+    pairing(
+        order=["google"],
+        beat="gemini-2.5-flash",
+        safety="gemini-2.5-flash-lite",
+        vertex=True,
+    )
+
+
+def test_a_google_deployment_missing_its_credentials_checks_nothing(pairing: Any) -> None:
+    """The reason `_selected_ai_provider` had to learn about Vertex.
+
+    With no credentials nothing will be called, so there is no pairing to be
+    wrong about — but the same code path is what makes the *credentialled* case
+    checked at all, and before this it returned `""` for every all-Vertex
+    deployment.
+    """
+    pairing(order=["google"], beat="google/gemini-2.5-flash", vertex=False)
 
 
 def test_no_credentials_at_all_is_not_a_pairing_error(pairing: Any) -> None:
@@ -245,3 +301,98 @@ def test_prod_refuses_to_boot_on_a_training_permitted_route(setting: str) -> Non
     # `launch_check` holds itself to.
     problem = next(line for line in stderr.splitlines() if setting in line)
     assert problem.isascii(), problem
+
+
+# ---------------------------------------------------------------------------
+# Gemini on Vertex needs all three of its settings (§16.1, §13.8)
+# ---------------------------------------------------------------------------
+# Why this is a boot failure and not a warning: a half-configured Vertex
+# deployment does not crash. `GoogleProvider.is_configured()` returns *false* on a
+# missing project — correct at runtime, because falling through beats raising
+# inside a beat a child is waiting for — so the box quietly finds no provider at
+# all and serves pre-vetted fallback beats to every child, forever. The image gate
+# degrades the same way, to `moderation=absent`. Both are invisible from outside.
+
+
+def _vertex_env(credentials: str) -> dict[str, str]:
+    """A `PROD_ENV` overlay for the all-Google deployment."""
+    return {
+        "AI_PROVIDER_ORDER": "google",
+        "ANTHROPIC_API_KEY": "",
+        "AI_BEAT_MODEL": "gemini-2.5-flash",
+        "AI_SAFETY_MODEL": "gemini-2.5-flash-lite",
+        "AI_MEMORY_MODEL": "gemini-2.5-flash-lite",
+        "GOOGLE_CLOUD_PROJECT": "primer-test",
+        "GOOGLE_CLOUD_LOCATION": "global",
+        "GOOGLE_APPLICATION_CREDENTIALS": credentials,
+    }
+
+
+@pytest.fixture
+def service_account_file(tmp_path: Any) -> str:
+    """A stand-in for the service-account JSON. Never a real key, and never in
+    the repository — the guard only asks whether the path is a file."""
+    path = tmp_path / "vertex-sa.json"
+    path.write_text('{"type": "service_account"}', encoding="utf-8")
+    return str(path)
+
+
+def test_the_all_google_production_configuration_boots(service_account_file: str) -> None:
+    """The control, and the thing the runbook tells the founder to deploy."""
+    code, stderr = _boot_prod(**_vertex_env(service_account_file))
+    assert code == 0, stderr
+
+
+@pytest.mark.parametrize(
+    "setting", ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS")
+)
+def test_prod_refuses_to_boot_with_google_selected_and_a_setting_missing(
+    setting: str, service_account_file: str
+) -> None:
+    code, stderr = _boot_prod(**{**_vertex_env(service_account_file), setting: ""})
+
+    assert code != 0, f"prod booted with {setting} unset and google selected"
+    assert "ImproperlyConfigured" in stderr
+    assert setting in stderr
+
+    # Plain ASCII, like every other boot guard: this is read in a terminal, and
+    # the Windows console renders a section sign as a replacement character.
+    problem = next(line for line in stderr.splitlines() if setting in line)
+    assert problem.isascii(), problem
+
+
+def test_prod_refuses_to_boot_when_the_key_file_is_not_there(tmp_path: Any) -> None:
+    """The commoner of the two mistakes: the settings get copied from the runbook
+    and the key stays on the laptop it was downloaded to. Same silent degradation
+    as an unset setting, one layer later."""
+    code, stderr = _boot_prod(**_vertex_env(str(tmp_path / "not-downloaded-yet.json")))
+
+    assert code != 0
+    assert "is not a file on this box" in stderr
+
+
+def test_the_image_moderator_alone_is_enough_to_require_vertex(
+    service_account_file: str,
+) -> None:
+    """Google can be the *moderator* without being the writer — the illustrator,
+    the writer and the moderator being three different companies is a stronger
+    §13.3 guarantee, not a misconfiguration. It still needs its credentials."""
+    code, stderr = _boot_prod(
+        IMAGE_MODERATION_PROVIDER="google",
+        IMAGE_MODERATION_MODEL="gemini-2.5-flash-lite",
+        GOOGLE_APPLICATION_CREDENTIALS="",
+    )
+
+    assert code != 0
+    assert "IMAGE_MODERATION_PROVIDER" in stderr
+    assert "GOOGLE_APPLICATION_CREDENTIALS" in stderr
+
+
+def test_google_further_down_the_order_is_absence_rather_than_misconfiguration(
+    service_account_file: str,
+) -> None:
+    """A fallback nobody configured is not a broken deployment — the same reading
+    `TTS_FALLBACK_PROVIDERS` gets. Refusing to boot here would make adding a
+    fallback provider a liability."""
+    code, stderr = _boot_prod(AI_PROVIDER_ORDER="anthropic,google")
+    assert code == 0, stderr

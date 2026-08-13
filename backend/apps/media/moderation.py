@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from django.conf import settings
 
@@ -160,18 +160,180 @@ class ClaudeImageModerator:
         return False, (tail.strip() or head.strip() or "unsafe")[:120]
 
 
+class GeminiImageModerator:
+    """Gemini's vision model as the image gate, on Vertex AI (§16.1, §13.8).
+
+    The same rubric, the same shape of answer and the same posture as
+    `ClaudeImageModerator` — it exists because the deployment described in
+    `Docs/Hosting.md §3` has no Anthropic key at all, and without it the gate
+    silently degrades to the structural check. That is the failure the audit
+    called out by name: the vision layer behind the F-1/F-2 companion-injection
+    fix would not run, and every scan would log `moderation=absent` on a
+    deployment that believed it was moderating.
+
+    **Thinking is switched off here and nowhere else.** The answer is one word;
+    `MAX_TOKENS` is 100 so that a model which decides to write an essay is
+    truncated rather than expensive. A Gemini 2.5 model with dynamic thinking
+    would happily spend all hundred of those tokens reasoning and return no text
+    at all — which fails closed, so every generated illustration in the product
+    would be flagged and replaced with stock art, with nothing but a
+    `ModerationUnavailable` in a log to say why.
+    """
+
+    name = "google-vision"
+
+    #: Same budget as the Claude moderator, and the same reason.
+    MAX_TOKENS = 100
+
+    def __init__(self, model: str = "") -> None:
+        self._model = model or settings.IMAGE_MODERATION_MODEL
+
+    def is_configured(self) -> bool:
+        from apps.common import vertex
+
+        return vertex.is_configured()
+
+    def classify(self, data: bytes, content_type: str) -> tuple[bool, str]:
+        from google.genai import types
+
+        from apps.common import vertex
+
+        response = vertex.client().models.generate_content(
+            model=self._model,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_bytes(data=data, mime_type=content_type),
+                        types.Part(text="Classify this illustration."),
+                    ],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=MODERATION_PROMPT,
+                max_output_tokens=self.MAX_TOKENS,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        return self._verdict_from(response)
+
+    @staticmethod
+    def _verdict_from(response: Any) -> tuple[bool, str]:
+        """Read `(is_safe, reason)` out of a response. Separated so it is testable.
+
+        Deliberately parallel to `ClaudeImageModerator._verdict_from`, including
+        the two things that are easy to get backwards:
+
+        * **The provider's own refusal is a BLOCK verdict, not an error.** Gemini
+          declining to describe a picture is itself information about the picture,
+          and the safe reading of it is "do not show this to a child". Note that
+          the safety settings are left at Gemini's defaults here — unlike the beat
+          path (`router._PERMISSIVE_SAFETY_CATEGORIES`), where the vendor filter
+          would be second-guessing our own grader. Here it is a second opinion on
+          exactly the question being asked, and its answer is usable.
+        * **An unparseable answer is not a pass.** A classifier whose confusing
+          replies mean "fine" is not a classifier. Only an explicit SAFE passes;
+          no text at all is `ModerationUnavailable`, which the caller fails closed.
+        """
+        feedback = getattr(response, "prompt_feedback", None)
+        if getattr(feedback, "block_reason", None) is not None:
+            return False, "provider_refused"
+
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            raise ModerationUnavailable("The moderator returned no verdict.")
+
+        candidate = candidates[0]
+        finish = str(getattr(getattr(candidate, "finish_reason", None), "value", "") or "")
+        if finish in _GEMINI_REFUSALS:
+            return False, "provider_refused"
+
+        content = getattr(candidate, "content", None)
+        text = "".join(
+            str(part_text)
+            for part in (getattr(content, "parts", None) or [])
+            if not getattr(part, "thought", False) and (part_text := getattr(part, "text", ""))
+        ).strip()
+        if not text:
+            raise ModerationUnavailable("The moderator returned no verdict.")
+
+        head, _, tail = text.partition("\n")
+        if head.strip().upper().startswith("SAFE"):
+            return True, ""
+        return False, (tail.strip() or head.strip() or "unsafe")[:120]
+
+
+#: Gemini finish reasons that mean *the picture* was the problem. Read as a BLOCK
+#: verdict rather than as a broken moderator: a vision model refusing to look at
+#: an illustration has told us what we asked.
+_GEMINI_REFUSALS = frozenset(
+    {"SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "IMAGE_PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
+)
+
+#: `IMAGE_MODERATION_PROVIDER` -> the classifier it names. `auto` tries them in
+#: this order and takes the first with credentials, which is what keeps the
+#: default behaviour of a deployment that has only an Anthropic key exactly what
+#: it was before Gemini existed here.
+MODERATORS: dict[str, type] = {
+    ClaudeImageModerator.name: ClaudeImageModerator,
+    GeminiImageModerator.name: GeminiImageModerator,
+    # The provider names as they are spelled everywhere else in the settings
+    # (`AI_PROVIDER_ORDER`, `TTS_PROVIDER`), so an operator writing
+    # `IMAGE_MODERATION_PROVIDER=google` gets what they meant.
+    "anthropic": ClaudeImageModerator,
+    "google": GeminiImageModerator,
+}
+
+#: The order `auto` tries them in.
+_AUTO_ORDER = (ClaudeImageModerator, GeminiImageModerator)
+
+
 def select_moderator() -> ImageModerator | None:
     """The configured moderator, or `None` when the gate is structural-only.
 
     `None` is a legitimate configuration (CI, offline development, `off`) and is
     reported by the caller as `moderation=absent`; it is never silently equivalent
     to a clean verdict.
+
+    `IMAGE_MODERATION_PROVIDER` names one, and defaults to `auto`: try each in
+    turn and use the first that has credentials. Two things about that default
+    are load-bearing. It leaves an Anthropic-only deployment behaving exactly as
+    it did — the gate is not a place to surprise anyone — and it means the
+    all-Google deployment gets a *real* vision gate from its Vertex credentials
+    alone, rather than the structural fallback it would otherwise have had while
+    reporting `IMAGE_MODERATION=auto`.
+
+    A name that is set but unknown, or set but not configured, returns `None`
+    with a log line rather than falling back to a different provider: an operator
+    who asked for Gemini and silently got Claude (or got nothing) has a
+    deployment that does not match the one they described.
     """
     if str(settings.IMAGE_MODERATION).lower() == OFF:
         return None
 
-    moderator = ClaudeImageModerator()
-    return moderator if moderator.is_configured() else None
+    chosen = str(getattr(settings, "IMAGE_MODERATION_PROVIDER", "") or AUTO).strip().lower()
+    if chosen and chosen != AUTO:
+        factory = MODERATORS.get(chosen)
+        if factory is None:
+            logger.error(
+                "media.moderation_provider_unknown provider=%s known=%s",
+                chosen,
+                ",".join(sorted(MODERATORS)),
+            )
+            return None
+        moderator = factory()
+        if moderator.is_configured():
+            return cast("ImageModerator", moderator)
+        logger.error(
+            "media.moderation_provider_unconfigured provider=%s", moderator.name
+        )
+        return None
+
+    for candidate in _AUTO_ORDER:
+        moderator = candidate()
+        if moderator.is_configured():
+            return cast("ImageModerator", moderator)
+    return None
 
 
 def classify(data: bytes, content_type: str) -> tuple[str, str]:

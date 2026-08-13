@@ -26,9 +26,12 @@ The parent session rides a refresh cookie with `SameSite=Lax`, which is the CSRF
 1. Create a GCP account and a **new project** (e.g. `the-primer`).
 2. **Enable billing** — this unlocks the **$300 free credit**, and also Text-to-Speech and Vertex/Gemini paid. (Card verification only; you won't be charged inside free tiers — see `Hosting.md §5`.)
 3. **Budget + alerts:** Billing → Budgets → create a budget with email alerts at **$50 / $150 / $250** of the credit. (Alerts notify; they don't hard-stop. Ask me to add the optional hard-stop function if you want a true ceiling.)
-4. Enable APIs: **Compute Engine**, **Cloud Text-to-Speech**, and **Vertex AI** (for the paid safety/memory Gemini calls).
+4. Enable APIs: **Compute Engine**, **Cloud Text-to-Speech**, and **Vertex AI** (for the paid Gemini calls — beats, safety, memory *and* image moderation, all paid/data-excluded per `Hosting.md §3`).
+5. **Service account for Vertex.** IAM & Admin → Service Accounts → create one (e.g. `primer-vertex`) → grant it **`roles/aiplatform.user`** → Keys → Add key → JSON. This one credential covers all four model calls.
+   - **Where the file goes:** onto the server at `/home/primer/.config/primer/vertex-sa.json`, `chmod 600`, owned by the app user, mounted into the container. **Never inside the repository** — `.gitignore` has patterns for the obvious names, but they only catch the names somebody thought of, and one of these has already turned up at a repo root as `gemini-key.json` where `*.pem`/`*.key` did not match it.
+   - **Never email it, put it in a chat, or leave it in a cloud-synced folder** (Downloads, OneDrive, Drive). If it has been in any of those, rotate it: create a new key, update the file, delete the old key. That is two minutes and it is the only remediation that actually works.
 
-⬜ Project created, billing on, budget alerts set, APIs enabled.
+⬜ Project created, billing on, budget alerts set, APIs enabled, service-account key downloaded and stored outside any repo.
 
 ---
 
@@ -127,7 +130,9 @@ Start from `DEPLOY.md`'s env table (the full prod list) and `Hosting.md §4` (th
 | `IMAGE_PROVIDER=cloudflare` + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | Step 5 | never `local`. |
 | `TTS_PROVIDER=google` + `GOOGLE_TTS_API_KEY` | Step 1 | `TTS_FALLBACK_PROVIDERS=elevenlabs` + `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`. Never add `local`. |
 | `EMBEDDING_PROVIDER=openai` + `OPENAI_API_KEY` | your OpenAI key | pennies; semantic recall. |
-| **LLM (beats/safety/memory)** | Gemini per `Hosting.md §4` | **All three on a paid, data-excluded tier** (§13.8) — beats included; set `AI_MEMORY_MODEL` explicitly rather than letting it inherit. **Confirm the router has a native `gemini` provider** — if not, route via OpenRouter (`AI_PROVIDER_ORDER=openrouter` + Gemini slugs, **no `:free` suffix**). Django refuses to boot on a provider/model-form mismatch, and now also on a `:free` child-data model. |
+| **LLM (beats/safety/memory)** | `AI_PROVIDER_ORDER=google`, `AI_BEAT_MODEL=gemini-2.5-flash`, `AI_SAFETY_MODEL=gemini-2.5-flash-lite`, `AI_MEMORY_MODEL=gemini-2.5-flash-lite` | The router has a **native `google` provider** (Vertex AI). The registered name is `google`, **not `gemini`** — Django refuses to boot on an unknown provider. Bare Vertex model ids, never gateway slugs. Set `AI_MEMORY_MODEL` explicitly rather than letting it inherit. All three are paid + data-excluded (§13.8). |
+| **Vertex auth** | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION=global`, `GOOGLE_APPLICATION_CREDENTIALS=/home/primer/.config/primer/vertex-sa.json` | A **service account**, never an API key — that is what bills the call to this project and keeps it under the terms that exclude training. `prod.py` refuses to boot if any is missing or the file is not there. **`asia-south1` will not work:** it does not serve `gemini-2.5-flash-lite`, so the safety grader would 404 on every call (`Hosting.md §4`). |
+| **Image moderation** | `IMAGE_MODERATION=auto`, `IMAGE_MODERATION_PROVIDER=google`, `IMAGE_MODERATION_MODEL=gemini-2.5-flash-lite` | The §13.8 gate, on the same Vertex credentials — no Anthropic key needed. Leave `IMAGE_MODERATION_PROVIDER` unset on an all-Google box and the gate silently degrades to structural-only while still reporting `auto`. Confirm from the logs that scans say `moderation=passed`, not `moderation=absent`. |
 | `SECURE_SSL_REDIRECT=1`, `DEBUG=0` | | |
 
 ⬜ `.env` assembled on the server with real values, **not committed**, permissions `600`.

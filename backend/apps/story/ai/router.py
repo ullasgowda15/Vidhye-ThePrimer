@@ -3,8 +3,9 @@
 Why a router at all: portability (no provider lock-in), cost control (the right
 model per call-type), and resilience (a provider outage must not be a product
 outage). Claude is the configured primary; OpenRouter is a real, selectable
-provider so the pipeline can be exercised on a free model; OpenAI and Google are
-declared as typed seams so Day 15's fallback work is wiring, not redesign.
+provider so the pipeline can be exercised on a free model; Google is Gemini on
+Vertex AI, which is what the all-Google deployment runs on (`Docs/Hosting.md §3`);
+OpenAI stays a typed seam so filling it in is wiring, not redesign.
 
 Which provider runs is decided entirely by `AI_PROVIDER_ORDER` in the environment
 — no code changes to switch.
@@ -657,10 +658,249 @@ class OpenAIProvider(_UnimplementedProvider):
     name = "openai"
 
 
-class GoogleProvider(_UnimplementedProvider):
-    """Fallback seam — Google (PRODUCT.md §19.3). Not implemented."""
+#: Gemini's own content filters, turned **off** for every category it will let us
+#: turn off (§13.3).
+#:
+#: This looks like the wrong direction to move a child-safety product's dials and
+#: it is the opposite. §13.3 makes *our* grader the authority — a separate model,
+#: a written rubric, a recorded verdict on every beat, an incident row when it
+#: refuses. A vendor filter sitting in front of that adds no safety we do not
+#: already have and takes something away: it is tuned for a general audience,
+#: it has no idea a wolf in a bedtime story is the point, and when it fires we get
+#: a blocked response with a category name rather than a graded refusal. That is a
+#: silent availability failure on the one surface where the child is waiting.
+#:
+#: So: Gemini's filter is off, ours runs, and a block that happens anyway (the
+#: unfilterable categories, or a policy change) is translated into `ProviderError`
+#: below and lands in the Day-5 degradation path like any other refusal.
+#:
+#: The four categories are the ones Vertex accepts a threshold for on the Gemini
+#: 2.5 models. Naming them explicitly rather than iterating `HarmCategory` is
+#: deliberate: the enum also holds image-only and unspecified members, and a
+#: category the endpoint does not accept is a 400 on every generation.
+_PERMISSIVE_SAFETY_CATEGORIES = (
+    "HARM_CATEGORY_HARASSMENT",
+    "HARM_CATEGORY_HATE_SPEECH",
+    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+    "HARM_CATEGORY_DANGEROUS_CONTENT",
+)
+
+#: The finish reasons that mean "the model finished writing". Everything else —
+#: SAFETY, PROHIBITED_CONTENT, RECITATION, BLOCKLIST, SPII, MAX_TOKENS, OTHER —
+#: is a generation we cannot use, and each one becomes a `ProviderError`.
+_GEMINI_COMPLETE = frozenset({"", "STOP", "FINISH_REASON_UNSPECIFIED"})
+
+
+def _gemini_safety_settings() -> list[Any]:
+    from google.genai import types
+
+    return [
+        types.SafetySetting(category=category, threshold="OFF")  # type: ignore[arg-type]
+        for category in _PERMISSIVE_SAFETY_CATEGORIES
+    ]
+
+
+def _gemini_contents(messages: list[dict[str, Any]]) -> list[Any]:
+    """Our `{role, content}` turns as Gemini `Content` objects.
+
+    Gemini's assistant role is spelled `model`, which matters on the repair turn:
+    `generate_structured` replays the bad generation as an `assistant` message,
+    and a Gemini call that sent it as `user` would be asking the model to fix
+    something it would read as the child's words (§19.1's layering, at the
+    transport).
+    """
+    from google.genai import types
+
+    return [
+        types.Content(
+            role="model" if message.get("role") == "assistant" else "user",
+            parts=[types.Part(text=str(message.get("content", "")))],
+        )
+        for message in messages
+    ]
+
+
+def _gemini_usage(response: Any) -> dict[str, int] | None:
+    """Gemini's token meter, or `None` if it did not report one.
+
+    Not `_usage_from`: that reads `response.usage`, and Gemini calls it
+    `usage_metadata`. Same contract, same `getattr`-all-the-way-down caution, and
+    the same reason — a provider that stops reporting usage must cost us a priced
+    span, never an `AttributeError` between a child and their story.
+
+    `thoughts_token_count` is folded into the output side. Gemini bills thinking
+    tokens at the output rate and does not include them in
+    `candidates_token_count`, so leaving them out would under-report the price of
+    exactly the generations that cost most (§22.4).
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return None
+    incoming = getattr(usage, "prompt_token_count", None)
+    outgoing = getattr(usage, "candidates_token_count", None)
+    thoughts = getattr(usage, "thoughts_token_count", None)
+    if incoming is None and outgoing is None and thoughts is None:
+        return None
+    return {
+        "input_tokens": int(incoming or 0),
+        "output_tokens": int(outgoing or 0) + int(thoughts or 0),
+    }
+
+
+def _enum_name(value: Any) -> str:
+    """An SDK enum member as its wire name, and anything else as its string."""
+    return str(getattr(value, "value", value) or "")
+
+
+def _gemini_text(candidate: Any) -> str:
+    """The text parts of one candidate, joined.
+
+    Thought parts are skipped. A thinking model returns its reasoning as parts
+    flagged `thought=True` alongside the answer, and concatenating them would hand
+    `json.loads` a JSON object with an essay in front of it — a validation failure
+    that would burn the repair attempt on a generation that was actually fine.
+    """
+    content = getattr(candidate, "content", None)
+    parts = getattr(content, "parts", None) or []
+    return "".join(
+        str(text)
+        for part in parts
+        if not getattr(part, "thought", False) and (text := getattr(part, "text", ""))
+    ).strip()
+
+
+class GoogleProvider:
+    """Gemini on Vertex AI — the provider for the all-Google deployment (§16.1).
+
+    **Vertex, not AI Studio**, and the difference is the product's privacy
+    promise rather than a preference: a Vertex call is authenticated by a service
+    account, billed to the GCP project, and covered by the enterprise terms that
+    exclude our inputs from training (§13.8, `Docs/Hosting.md §3`). The AI Studio
+    free tier trains on prompts, and a beat prompt carries a child's first name,
+    age band, fears and retrieved memories. `apps.common.vertex` is where that
+    distinction is enforced; this class only ever asks it for a client.
+
+    Two things it does differently from `AnthropicProvider`, both because Gemini
+    does:
+
+    * **The schema is translated** (`schemas.gemini_schema`). Gemini's
+      `response_schema` is an OpenAPI 3.0 subset that rejects `$ref`, `$defs` and
+      `additionalProperties` — all three of which Pydantic emits for `Beat`. The
+      wire schema changes; the contract does not.
+    * **Its own content filters are off** (`_PERMISSIVE_SAFETY_CATEGORIES`), and a
+      block that happens anyway becomes a `ProviderError` rather than an empty
+      string. See that constant, and `_transport_error`: everything above this
+      module keys on `AIError`, and a blocked beat that returned `""` would sail
+      past validate-and-repair as a JSON error and cost a second paid call for
+      nothing.
+    """
 
     name = "google"
+    credential_env_var = "GOOGLE_APPLICATION_CREDENTIALS"
+
+    #: Gemini enforces `response_schema` natively, like Claude does — there is no
+    #: degraded JSON-mode to report.
+    output_mode = "json_schema"
+
+    def __init__(self, api_key: str = "", model: str = "") -> None:
+        # `api_key` is accepted and ignored so every entry in `PROVIDERS` is
+        # constructed the same way. Vertex authenticates with a service account;
+        # a provider that quietly accepted a key here would be an invitation to
+        # configure the one route §13.8 forbids.
+        self._model = model or settings.AI_BEAT_MODEL
+        #: See `StructuredProvider.generate_json`. Reset on every call so a failed
+        #: generation can never be priced with the previous one's meter reading.
+        self.last_usage: dict[str, int] | None = None
+
+    @property
+    def model(self) -> str:
+        """Which model this provider will call — stamped on the rows it produces."""
+        return self._model
+
+    def is_configured(self) -> bool:
+        """True when project, location and a service-account file are all set.
+
+        False rather than an exception on a half-set deployment, deliberately:
+        this is what `select_provider` reads, so a missing location falls through
+        to the next provider in `AI_PROVIDER_ORDER` instead of raising inside a
+        beat that a child is waiting for.
+        """
+        from apps.common import vertex
+
+        return vertex.is_configured()
+
+    def generate_json(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        schema: dict[str, Any],
+    ) -> str:
+        # Everything inside the try, for the reason `AnthropicProvider` says it:
+        # `_transport_error` is a boundary, and a boundary with a line above it is
+        # not one. The schema translation is in here too — a contract Gemini
+        # cannot express is a failure that must reach the child as a fallback
+        # beat, not as a `ValueError` nothing above us catches.
+        self.last_usage = None
+        try:
+            from google.genai import types
+
+            from apps.common import vertex
+            from apps.story.ai.schemas import gemini_schema
+
+            config = types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=MAX_OUTPUT_TOKENS,
+                response_mime_type="application/json",
+                response_schema=gemini_schema(schema),
+                safety_settings=_gemini_safety_settings(),
+            )
+            response = vertex.client().models.generate_content(
+                model=self._model,
+                contents=_gemini_contents(messages),
+                config=config,
+            )
+
+            # The meter, before anything below can raise. A blocked prompt, a
+            # safety-stopped candidate and a truncated response all cost input
+            # tokens, and a span written only on the happy path would under-report
+            # exactly the generations worth knowing the price of (§22.4, Day-14
+            # P1-5). Same ordering as the Anthropic branch, for the same reason.
+            self.last_usage = _gemini_usage(response)
+
+            # Three ways Gemini declines, in the order it produces them. Each is a
+            # `ProviderError` so it lands in the Day-5 degradation path — the
+            # child gets a pre-vetted warm beat, never a dead stream (§13.3).
+            feedback = getattr(response, "prompt_feedback", None)
+            if (blocked := getattr(feedback, "block_reason", None)) is not None:
+                raise ProviderError(
+                    f"Gemini blocked the request before generating "
+                    f"(block_reason: {_enum_name(blocked) or 'unspecified'})."
+                )
+
+            candidates = getattr(response, "candidates", None) or []
+            if not candidates:
+                raise ProviderError(f"Gemini returned no candidates for '{self._model}'.")
+
+            candidate = candidates[0]
+            finish = _enum_name(getattr(candidate, "finish_reason", None))
+            if finish not in _GEMINI_COMPLETE:
+                # Includes MAX_TOKENS on purpose. A truncated response is invalid
+                # JSON, so returning it would spend the one repair attempt (§19.6)
+                # re-generating something that will truncate again; the fallback
+                # beat is both cheaper and what the child ends up with either way.
+                raise ProviderError(
+                    f"Gemini stopped without a usable response "
+                    f"(finish_reason: {finish}) for '{self._model}'."
+                )
+
+            if not (text := _gemini_text(candidate)):
+                raise ProviderError(f"Gemini returned no text content for '{self._model}'.")
+            return text
+        except AIError:
+            raise
+        except Exception as exc:
+            raise _transport_error(self.name, self._model, exc) from exc
 
 
 PROVIDERS: dict[str, type] = {

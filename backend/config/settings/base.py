@@ -388,9 +388,40 @@ OPENROUTER_BASE_URL = env("OPENROUTER_BASE_URL", default="https://openrouter.ai/
 # Optional OpenRouter attribution header. Not a secret, not child data.
 OPENROUTER_SITE_URL = env("OPENROUTER_SITE_URL", default="http://localhost:5173")
 
-# Claude is primary; OpenAI/Google are the fallback seam (not implemented yet).
-# AI_BEAT_MODEL is provider-relative: a Claude model id for `anthropic`, an
-# OpenRouter model slug (e.g. `vendor/model:free`) for `openrouter`.
+# ---------------------------------------------------------------------------
+# Gemini on Vertex AI (PRODUCT.md §16.1, §13.8; Docs/Hosting.md §3)
+# ---------------------------------------------------------------------------
+# The `google` provider — beats, the safety grader, the memory digest and the
+# image-moderation vision call, all on one GCP project.
+#
+# **Vertex, not AI Studio, and that is a privacy decision rather than a
+# preference.** A Vertex call is authenticated by a *service account*, billed to
+# this project (the $300 credit) and covered by the GCP enterprise terms that
+# exclude our inputs from model training. An AI Studio key is a different product
+# with different terms — its free tier trains on prompts — and a beat prompt
+# carries a child's first name, age band, avoid list, fears and retrieved
+# memories (§13.8). There is deliberately **no GOOGLE_GENAI_API_KEY setting** in
+# this file: the route that would break the promise is one nothing here can be
+# configured to take.
+#
+# `apps.common.vertex` owns what these three mean, so the provider, the image
+# moderator and `prod.py`'s boot guard all agree. Missing values make the
+# provider report itself unconfigured (a clean fall-through to the next entry in
+# AI_PROVIDER_ORDER), never an exception inside a child's beat; outside
+# development `prod.py` refuses to boot on them instead.
+GOOGLE_CLOUD_PROJECT = env("GOOGLE_CLOUD_PROJECT", default="")
+# The Vertex region. Pick the one nearest the children — `asia-south1` (Mumbai)
+# for India, `us-central1` otherwise. It is part of the endpoint, so a region
+# that does not serve the configured model answers 404 to every call.
+GOOGLE_CLOUD_LOCATION = env("GOOGLE_CLOUD_LOCATION", default="us-central1")
+# Absolute path to the service-account JSON on the box. Never the key itself, and
+# never committed: `.env` is gitignored and the file lives beside it.
+GOOGLE_APPLICATION_CREDENTIALS = env("GOOGLE_APPLICATION_CREDENTIALS", default="")
+
+# Claude is primary; `google` is Gemini on Vertex (above); OpenAI is a seam that
+# is still unimplemented. AI_BEAT_MODEL is provider-relative: a Claude model id
+# for `anthropic`, a bare Gemini id (`gemini-2.5-flash`) for `google`, an
+# OpenRouter model slug for `openrouter`.
 AI_BEAT_MODEL = env("AI_BEAT_MODEL", default="claude-opus-5")
 AI_PROVIDER_ORDER = env.list("AI_PROVIDER_ORDER", default=["anthropic"])
 
@@ -435,6 +466,21 @@ SAFETY_MAX_REWRITES = env.int("SAFETY_MAX_REWRITES", default=2)
 IMAGE_MODERATION = env("IMAGE_MODERATION", default="auto")
 # Provider-relative, like the two above. Must be a vision-capable model.
 IMAGE_MODERATION_MODEL = env("IMAGE_MODERATION_MODEL", default="claude-haiku-4-5-20251001")
+# Which vision model runs the gate: `anthropic`, `google`, or `auto`.
+#
+# It does **not** ride `AI_PROVIDER_ORDER`: the moderator does not go through the
+# router, and the two are legitimately different vendors — §13.3's "the pipeline
+# that produced the image does not get to approve it" is a stronger guarantee
+# when the illustrator, the writer and the moderator are three different
+# companies.
+#
+# `auto` means "the first one that has credentials", Anthropic first — so an
+# existing deployment behaves exactly as it did, and an all-Google deployment
+# gets a real vision gate from its Vertex credentials rather than the structural
+# fallback. Name one explicitly to be sure which is running; a named provider
+# with no credentials logs and leaves the gate absent rather than silently
+# using the other one.
+IMAGE_MODERATION_PROVIDER = env("IMAGE_MODERATION_PROVIDER", default="auto")
 
 # ---------------------------------------------------------------------------
 # Memory (PRODUCT.md §11)
@@ -576,8 +622,21 @@ OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 # check that disagree about what a valid model id is would let the rollback lever
 # set something the next boot refuses to start on.
 def _selected_ai_provider() -> str:
-    """The provider `ModelRouter.select_provider` will pick: first in order with a key."""
-    credentials = {"anthropic": ANTHROPIC_API_KEY, "openrouter": OPENROUTER_API_KEY}
+    """The provider `ModelRouter.select_provider` will pick: first in order with a key.
+
+    `google` is credentialled by three settings rather than one, and it has to be
+    in this map or the pairing check below would silently do nothing on the one
+    deployment shape it was extended for: an all-Vertex box has no
+    `ANTHROPIC_API_KEY`, so this would return `""` and every model id would go
+    unchecked (§19.3).
+    """
+    credentials = {
+        "anthropic": ANTHROPIC_API_KEY,
+        "openrouter": OPENROUTER_API_KEY,
+        "google": all(
+            (GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, GOOGLE_APPLICATION_CREDENTIALS)
+        ),
+    }
     for _name in AI_PROVIDER_ORDER:
         if credentials.get(_name):
             return str(_name)
@@ -594,9 +653,10 @@ def _check_model_pairing() -> None:
         return
 
     # `IMAGE_MODERATION_MODEL` is deliberately absent: it does not go through the
-    # router. `media.moderation.ClaudeImageModerator` calls Anthropic directly, so
-    # it is a Claude id whatever `AI_PROVIDER_ORDER` says, and checking it here
-    # would refuse a perfectly correct configuration.
+    # router. `media.moderation` calls its provider directly and chooses it with
+    # `IMAGE_MODERATION_PROVIDER`, which is legitimately a *different* vendor from
+    # the one writing beats — checking it against `AI_PROVIDER_ORDER` here would
+    # refuse a perfectly correct configuration.
     models = {
         "AI_BEAT_MODEL": AI_BEAT_MODEL,
         "AI_SAFETY_MODEL": AI_SAFETY_MODEL,

@@ -12,14 +12,17 @@
 
 ## Part 0 — Bring the stack up locally (real keys)
 
-1. Put real keys in `.env` (per `test-prerequisites.md`). Confirm `AI_PROVIDER_ORDER`, `AI_BEAT_MODEL` (Gemini Flash, free), `AI_SAFETY_MODEL` (Gemini Flash-Lite, paid — must differ), `EMBEDDING_PROVIDER=openai`, `TTS_PROVIDER=google`, `IMAGE_PROVIDER=cloudflare`, `MEDIA_STORAGE=local` (local is fine for this pass; prod uses R2).
+1. Put real credentials in `.env` (per `test-prerequisites.md`). Confirm **all four child-data routes are paid/data-excluded** (no `:free` suffix): `AI_PROVIDER_ORDER=google` (the registered name — *not* `gemini`), `AI_BEAT_MODEL=gemini-2.5-flash`, `AI_SAFETY_MODEL=gemini-2.5-flash-lite` (must differ), `AI_MEMORY_MODEL=gemini-2.5-flash-lite` (set explicitly), `EMBEDDING_PROVIDER=openai`. Gemini runs on **Vertex AI**, so set `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION=global` (**not `asia-south1` — it does not serve Flash-Lite**, so the safety grader would 404 on every call) and `GOOGLE_APPLICATION_CREDENTIALS` pointing at the service-account JSON **outside this repo**. Plus `TTS_PROVIDER=google`, `IMAGE_PROVIDER=cloudflare`, `IMAGE_MODERATION=auto` with `IMAGE_MODERATION_PROVIDER=google` and `IMAGE_MODERATION_MODEL=gemini-2.5-flash-lite` (never `off`), `MEDIA_STORAGE=local` (local is fine for this pass; prod uses R2).
 2. Four terminals: `make up` → `make migrate` → **A:** `make run` · **B:** `make worker` · **C:** `make front`.
 3. Sanity gates — do not proceed until all pass:
    - `make ping` → worker is live.
    - `make hello-beat` → a real validated beat generates (proves AI keys work).
-   - `make launch-check` → read the output; blocking items are expected locally (budget, managed-PG), but nothing should error unexpectedly.
+   - `make launch-check` → read the output; blocking items are expected locally (budget, managed-PG), but `privacy.provider_terms` must be **OK** (a `:free` child-data model blocks it — drop the `:free` suffix, don't disable the check), and nothing else should error unexpectedly.
+4. **Close the two owed safety checks (you now have real keys):**
+   - `pytest evals/ -q --live --spotcheck` (or `make evals-live`) → the `--live` eval pass; everything about model behaviour otherwise rests on the scripted provider.
+   - Confirm the **image moderator actually runs on real generated art** — with `IMAGE_MODERATION=auto` and `IMAGE_MODERATION_PROVIDER=google`, watch the logs during Part C's companion/beat art for `media.scan ... moderation=passed`. If you see `moderation=absent`, the gate did **not** run and the picture was only structurally checked. It's the fail-closed recall layer behind the F-1/F-2 companion-injection fix; a single test PNG has now proven the Vertex path, but no real illustration has been through it and nothing has ever been *blocked* live.
 
-⬜ All four processes up; ping + hello-beat succeed.
+⬜ All four processes up; ping + hello-beat succeed; `privacy.provider_terms` OK; `--live` evals pass; image moderator observed running.
 
 ---
 

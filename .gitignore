@@ -11,6 +11,20 @@
 secrets/
 backend/config/settings/local.py
 
+# Google service-account keys (Vertex AI — Docs/Hosting.md §3). A safety net, not
+# the plan: the key belongs **outside the repository entirely**
+# (`~/.config/primer/vertex-sa.json`), because a rule here only protects the
+# filenames somebody thought of. One was found sitting at the repo root as
+# `gemini-key.json`, untracked but visible to `git status` and one `git add -A`
+# away from a history that cannot be rewritten — `*.pem` and `*.key` above did
+# not match it, and a service-account key is a JSON file.
+*service-account*.json
+*service_account*.json
+*-sa.json
+gemini-key.json
+vertex-sa.json
+gcp-credentials*.json
+
 # ===== Python / Django =====
 __pycache__/
 *.py[cod]

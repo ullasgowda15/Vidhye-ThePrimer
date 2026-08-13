@@ -234,6 +234,71 @@ class TestEachCheckCatchesItsOwnFailure:
         assert code == 0
 
 
+class TestTheAllGoogleDeployment:
+    """The configuration `Docs/Hosting.md §4` actually ships: Gemini on Vertex,
+    no API key anywhere.
+
+    The preflight used to ask "is `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`
+    set?", which is a question about API keys and not about reachability. Vertex
+    is credentialled by a service account and three settings, so an all-Google
+    box — fully working, generating beats — would have been told its safety
+    grader was unreachable and refused the launch.
+    """
+
+    @pytest.fixture
+    def all_google(self, launchable: None, settings: Any) -> None:
+        settings.ANTHROPIC_API_KEY = ""
+        settings.OPENROUTER_API_KEY = ""
+        settings.AI_PROVIDER_ORDER = ["google"]
+        settings.GOOGLE_CLOUD_PROJECT = "primer-test"
+        settings.GOOGLE_CLOUD_LOCATION = "global"
+        settings.GOOGLE_APPLICATION_CREDENTIALS = "/nowhere/service-account.json"
+        settings.AI_BEAT_MODEL = "gemini-2.5-flash"
+        settings.AI_SAFETY_MODEL = "gemini-2.5-flash-lite"
+        settings.AI_MEMORY_MODEL = "gemini-2.5-flash-lite"
+
+    def test_it_passes_the_preflight(self, all_google: None) -> None:
+        output, code = run()
+
+        assert "OK    safety.grader_reachable" in output
+        assert "google is configured for gemini-2.5-flash-lite" in output
+        assert code == 0
+
+    def test_the_grader_is_a_different_model_from_the_writer(self, all_google: None) -> None:
+        """§13.3, on the bare Gemini ids. Flash writes, Flash-Lite grades — which
+        is also the constraint that rules out `asia-south1`, the only region near
+        the pilot's users, because it serves Flash and not Flash-Lite."""
+        output, _ = run()
+        assert "OK    safety.grader_is_separate" in output
+
+    def test_the_gemini_routes_satisfy_the_training_rule(self, all_google: None) -> None:
+        """§13.8. A bare `gemini-2.5-flash` carries no `:free` suffix, and Vertex
+        bills to the GCP project under terms that exclude inputs from training —
+        the second half being a purchasing fact (`Docs/Hosting.md §3`) that the
+        guard cannot prove and does not claim to."""
+        output, _ = run()
+        assert "OK    privacy.provider_terms" in output
+        assert "gemini-2.5-flash" in output
+
+    def test_the_beat_route_is_priced(self, all_google: None) -> None:
+        """Otherwise cost/session — the number the pilot is judged on — is missing
+        its largest term (§22.4)."""
+        output, _ = run()
+        assert "OK    spend.pricing" in output
+
+    def test_losing_the_vertex_credentials_blocks_the_launch(
+        self, all_google: None, settings: Any
+    ) -> None:
+        """The mirror image, and the reason the row is worth anything: a box that
+        thinks it is on Gemini and has no credentials degrades every beat to the
+        fallback and every scan to `moderation=absent`."""
+        settings.GOOGLE_APPLICATION_CREDENTIALS = ""
+
+        output, code = run()
+        assert "FAIL  safety.grader_reachable" in output
+        assert code == 1
+
+
 class TestTheCommandsOwnHonesty:
     def test_a_clean_deployment_passes(self, launchable: None) -> None:
         output, code = run()

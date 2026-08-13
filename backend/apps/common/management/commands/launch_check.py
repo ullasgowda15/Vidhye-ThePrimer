@@ -113,14 +113,20 @@ class Command(BaseCommand):
         # classifier. `prod.py` deliberately does not check this — an outage is a
         # runtime condition the pipeline handles honestly — but launching into it
         # on purpose is a different thing, and this is the moment to notice.
-        has_key = bool(settings.ANTHROPIC_API_KEY or settings.OPENROUTER_API_KEY)
+        #
+        # Asked through `_selected_provider` rather than "is any API key set",
+        # because the all-Vertex deployment has no API key at all and is
+        # nonetheless fully configured: Gemini is credentialled by a service
+        # account and three settings (`apps.common.vertex`).
+        provider = _selected_provider()
         checks.append(
             Check(
                 "safety.grader_reachable",
-                OK if has_key else FAIL,
-                f"a provider is configured for {settings.AI_SAFETY_MODEL}"
-                if has_key
-                else "no AI provider key: every classifier call will degrade, on every beat.",
+                OK if provider else FAIL,
+                f"{provider} is configured for {settings.AI_SAFETY_MODEL}"
+                if provider
+                else "no AI provider is credentialled: every classifier call will "
+                "degrade, on every beat.",
             )
         )
 
@@ -468,8 +474,20 @@ def _effective_beat_model() -> str:
 
 
 def _selected_provider() -> str:
+    """The provider the router will actually reach, mirroring `select_provider`.
+
+    `google` is credentialled by three settings rather than one
+    (`apps.common.vertex`), and it has to be here for the same reason it is in
+    `config.settings.base._selected_ai_provider`: an all-Vertex deployment has no
+    `ANTHROPIC_API_KEY`, and a preflight that only knew about API keys would
+    report the grader as unreachable and the beat route as unpriced on a
+    deployment where both are fine.
+    """
+    from apps.common import vertex
+
     credentials = {
         "anthropic": settings.ANTHROPIC_API_KEY,
         "openrouter": settings.OPENROUTER_API_KEY,
+        "google": vertex.is_configured(),
     }
     return next((name for name in settings.AI_PROVIDER_ORDER if credentials.get(name)), "")

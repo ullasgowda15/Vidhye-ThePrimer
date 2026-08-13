@@ -143,6 +143,20 @@ def pairing_error(*, setting: str, model: str, provider: str, order: list[str]) 
             )
         return message
 
+    if provider == "google" and looks_like_slug(model):
+        # Same shape mistake as the two below, one vendor over, and it arrives by
+        # exactly the same route: `Docs/Hosting.md` recommended Gemini *through a
+        # gateway* before there was a native provider, so a half-migrated `.env`
+        # keeps a `google/gemini-...` slug while `AI_PROVIDER_ORDER` now says
+        # `google`. Vertex answers 404 to a slug, on every call, which for
+        # `AI_SAFETY_MODEL` is the strongest guard in the product silently off.
+        return (
+            f"{setting}='{model}' looks like a gateway model slug, but google is the "
+            f"provider that will be selected (AI_PROVIDER_ORDER={list(order)}). Vertex "
+            f"takes a bare Gemini model id - e.g. 'gemini-2.5-flash' - or put openrouter "
+            f"first in AI_PROVIDER_ORDER to keep routing through a gateway."
+        )
+
     if provider == "anthropic" and looks_like_slug(model):
         return (
             f"{setting}='{model}' looks like an OpenRouter slug, but anthropic is the "

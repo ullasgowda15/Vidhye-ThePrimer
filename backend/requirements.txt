@@ -15,6 +15,19 @@ anthropic==0.120.2
 # OpenRouter is OpenAI-API-compatible, so the OpenAI SDK is its client. It is also
 # the TTS client (§16.6) — same SDK, different endpoint.
 openai==1.59.6
+# Gemini on Vertex AI — `story.ai.router.GoogleProvider` and the image gate's
+# `media.moderation.GeminiImageModerator` (§16.1, Docs/Hosting.md §3). One SDK
+# fronts both Google AI Studio and Vertex; we only ever construct it with
+# `vertexai=True` and a service account, because that is the half whose terms
+# exclude our inputs from training (§13.8).
+#
+# **Held at 2.8.x on purpose.** 2.9.0 raised its floor to `pydantic>=2.12.5`, and
+# taking it would drag the pin below — the library every generated contract in
+# `story.ai.schemas` is validated by — up two minor versions as a side effect of
+# adding a provider. 2.8.0 is the newest release that runs on the pydantic this
+# product is tested against, and `pip-audit` reports no advisory against it.
+# Revisit the pair together, deliberately, not as a transitive bump.
+google-genai==2.8.0
 pydantic==2.10.4
 
 # Media pipeline (PRODUCT.md §16.6). Object storage is S3-compatible (S3/R2/B2/

@@ -42,6 +42,13 @@ def no_live_providers(settings: Any) -> None:
     settings.ELEVENLABS_VOICE_MAP = {}
     settings.GOOGLE_TTS_API_KEY = ""
     settings.GOOGLE_TTS_VOICE_MAP = {}
+    # Gemini on Vertex (§16.1). Three settings rather than a key, and all three
+    # have to go: `GoogleProvider.is_configured()` and `GeminiImageModerator`
+    # both read them, so a developer whose `.env` points at a real GCP project
+    # would otherwise have the suite select Vertex and spend the credit.
+    settings.GOOGLE_CLOUD_PROJECT = ""
+    settings.GOOGLE_CLOUD_LOCATION = ""
+    settings.GOOGLE_APPLICATION_CREDENTIALS = ""
     # The embedding adapter's real provider (§11.3). Blanked with the rest, and
     # `offline_media` points EMBEDDING_PROVIDER at `local` — a suite that embedded a
     # child's memories through a live API would be spending money *and* sending

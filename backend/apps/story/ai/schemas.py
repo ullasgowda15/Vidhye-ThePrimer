@@ -317,6 +317,188 @@ def _first_paragraph(text: str) -> str:
     return head.rsplit(" ", 1)[0] + "…"
 
 
+# ---------------------------------------------------------------------------
+# Gemini's dialect of the same schema (PRODUCT.md §19.3)
+# ---------------------------------------------------------------------------
+#: Keywords Gemini's `response_schema` rejects. It is an **OpenAPI 3.0 subset**,
+#: not JSON Schema, and it is stricter than the two providers this file was
+#: written for: Anthropic and OpenAI-compatible gateways both take `$defs`,
+#: `$ref` and `additionalProperties` without complaint, and Gemini 400s the whole
+#: request on any of them.
+#:
+#: `title` is in the subset and is dropped anyway. Pydantic derives one per field
+#: from the field's own name — `"Beat Id"` above `beat_id` — so it is a hundred
+#: tokens of the model being told what it can already see, on every generation.
+#: That is `trim_descriptions`' argument (§19.9) applied to the other half of the
+#: schema.
+_GEMINI_UNSUPPORTED_KEYWORDS = frozenset(
+    {
+        "$schema",
+        "$id",
+        "$comment",
+        "$defs",
+        "definitions",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "patternProperties",
+        "allOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "discriminator",
+        "examples",
+        "title",
+    }
+)
+
+#: The `format` values Gemini accepts, per type. Anything else is dropped rather
+#: than passed through: Pydantic emits `uuid`, `email`, `date` and `binary` from
+#: ordinary field types, and an unrecognised format is a 400 on the whole
+#: request — the same failure mode `_UNSUPPORTED_SCHEMA_KEYWORDS` exists for, one
+#: dialect over.
+_GEMINI_FORMATS: dict[str, frozenset[str]] = {
+    "string": frozenset({"date-time", "enum"}),
+    "integer": frozenset({"int32", "int64"}),
+    "number": frozenset({"float", "double"}),
+}
+
+
+class GeminiSchemaError(ValueError):
+    """A contract that cannot be expressed in Gemini's subset.
+
+    Raised by `gemini_schema` rather than returned as a half-converted schema,
+    because the two ways this can happen — a `$ref` that resolves to nothing, and
+    a recursive model — are both bugs in *our* contract that would otherwise
+    surface as a provider 400 on every generation, which reads in a log as a
+    vendor problem.
+    """
+
+
+def gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """The same contract, in the dialect Gemini's `response_schema` accepts.
+
+    **This changes the wire schema and nothing else.** The `Beat` model, its
+    `extra="forbid"`, and `ModelRouter._parse`'s validation of what comes back are
+    all untouched — a beat that Gemini returns is validated against exactly the
+    same Pydantic model an Anthropic beat is. What changes is only what we are
+    allowed to *ask* for:
+
+    * **`$ref`/`$defs` are inlined.** Gemini has no reference resolution, and
+      Pydantic emits a `$def` for every nested model — `Scene`, `Interaction`,
+      `Learning`, `CastMember`, `ChoiceOption`, `InteractionType`. Inlining makes
+      the schema bigger and is the only option; a recursive contract would make it
+      infinite, so that raises instead (`GeminiSchemaError`).
+    * **`anyOf` with a null branch becomes `nullable`.** `type: "null"` is not a
+      Gemini type. §8.1's required-but-nullable fields (`prompt_audio`,
+      `expected`, `choices`) are exactly this shape, and getting it wrong would
+      either drop the field from the contract or 400 the request.
+    * **`additionalProperties` is dropped.** It is what `extra="forbid"` renders
+      as, it is not in Gemini's subset, and losing it on the wire costs nothing:
+      the strictness it buys is applied when the response is validated, which is
+      where it was always enforced anyway.
+
+    Applied by `router.GoogleProvider` and nowhere else. Every other provider
+    keeps the schema `json_schema_for` produced, which is why this is a separate
+    function and not a change to that one.
+    """
+    defs: dict[str, Any] = {
+        **schema.get("$defs", {}),
+        **schema.get("definitions", {}),
+    }
+    converted = _gemini_node(schema, defs, ())
+    if not isinstance(converted, dict):  # pragma: no cover - a schema is an object
+        raise GeminiSchemaError("The root of a JSON Schema must be an object.")
+    return converted
+
+
+def _gemini_node(node: Any, defs: dict[str, Any], seen: tuple[str, ...]) -> Any:
+    """One node of the tree, converted. `seen` is the `$ref` chain above it."""
+    if isinstance(node, list):
+        return [_gemini_node(item, defs, seen) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    if (ref := node.get("$ref")) is not None:
+        return _gemini_node(_inline(str(ref), node, defs, seen), defs, (*seen, str(ref)))
+
+    converted: dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _GEMINI_UNSUPPORTED_KEYWORDS:
+            continue
+        if key == "const":
+            # A one-member enum says the same thing in a keyword Gemini has.
+            converted["enum"] = [value]
+            continue
+        if key == "anyOf":
+            converted.update(_gemini_any_of(value, defs, seen))
+            continue
+        converted[key] = _gemini_node(value, defs, seen)
+
+    _drop_unsupported_format(converted)
+
+    if isinstance(properties := converted.get("properties"), dict) and properties:
+        # Gemini emits object keys in whatever order it likes unless it is told
+        # one, and a beat generated field-by-field reads better when the narration
+        # is written before the scene that illustrates it. Free to send and the
+        # vendor's own recommendation.
+        converted["propertyOrdering"] = list(properties)
+    return converted
+
+
+def _inline(ref: str, node: dict[str, Any], defs: dict[str, Any], seen: tuple[str, ...]) -> Any:
+    """The `$def` a `$ref` points at, with any sibling keys kept over it."""
+    if ref in seen:
+        raise GeminiSchemaError(
+            f"'{ref}' refers to itself. Gemini has no schema references, so a "
+            f"recursive contract cannot be expressed as a response_schema."
+        )
+    name = ref.rsplit("/", 1)[-1]
+    if name not in defs:
+        raise GeminiSchemaError(f"'{ref}' does not resolve: no definition named '{name}'.")
+    # Siblings win: a `$ref` carrying its own `description` means the field, not
+    # the shared definition, said what it is.
+    return {**defs[name], **{key: value for key, value in node.items() if key != "$ref"}}
+
+
+def _gemini_any_of(options: Any, defs: dict[str, Any], seen: tuple[str, ...]) -> dict[str, Any]:
+    """`anyOf` in Gemini's dialect: the null branch becomes `nullable: true`.
+
+    A single surviving branch is merged into the parent rather than left as a
+    one-member `anyOf`, because `{"type": "string", "nullable": true}` is what the
+    subset is written around and what its examples use — and because the union of
+    one is not a union.
+    """
+    if not isinstance(options, list):
+        return {"anyOf": _gemini_node(options, defs, seen)}
+
+    branches = [option for option in options if _type_of(option) != "null"]
+    result: dict[str, Any] = {}
+    if len(branches) < len(options):
+        result["nullable"] = True
+
+    converted = [_gemini_node(branch, defs, seen) for branch in branches]
+    if len(converted) == 1 and isinstance(converted[0], dict):
+        result.update(converted[0])
+    elif converted:
+        result["anyOf"] = converted
+    return result
+
+
+def _type_of(option: Any) -> str:
+    return str(option.get("type", "")) if isinstance(option, dict) else ""
+
+
+def _drop_unsupported_format(node: dict[str, Any]) -> None:
+    """Remove a `format` Gemini does not know for this node's type."""
+    if "format" not in node:
+        return
+    allowed = _GEMINI_FORMATS.get(str(node.get("type", "")).lower(), frozenset())
+    if str(node["format"]) not in allowed:
+        del node["format"]
+
+
 def beat_json_schema() -> dict[str, Any]:
     """JSON Schema for `Beat`, shaped for provider structured-output APIs.
 
