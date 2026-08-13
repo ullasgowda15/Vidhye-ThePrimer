@@ -692,10 +692,22 @@ _GEMINI_COMPLETE = frozenset({"", "STOP", "FINISH_REASON_UNSPECIFIED"})
 
 
 def _gemini_safety_settings() -> list[Any]:
+    """The four settings above, as SDK objects.
+
+    Built through the SDK's own enums rather than passed as strings, so a category
+    the installed version does not know fails **here**, with a `ValueError` naming
+    the constant, rather than as a 400 from Vertex on every generation. Both
+    endings are a fallback beat for the child — this is called inside
+    `generate_json`'s try — but only one of them says in the log which line to go
+    and look at.
+    """
     from google.genai import types
 
     return [
-        types.SafetySetting(category=category, threshold="OFF")  # type: ignore[arg-type]
+        types.SafetySetting(
+            category=types.HarmCategory(category),
+            threshold=types.HarmBlockThreshold.OFF,
+        )
         for category in _PERMISSIVE_SAFETY_CATEGORIES
     ]
 
