@@ -201,9 +201,24 @@ class TestDay2Return:
         Without it a good week of signups would *lower* day-2 return, because
         every child who joined today would be counted as a miss for a day that
         has not happened.
+
+        Nia's first story is anchored to **local midnight**, not to "0.2 days
+        ago", for the reason the calendar test below spells out. A fractional-day
+        offset only lands on *today* when the suite happens to run late enough in
+        the day, and this test is about a child whose first story is today: run at
+        00:33, 4.8 hours back was yesterday, which is old enough to judge, so Nia
+        entered the denominator as a miss and the assertion read (1, 2). It passed
+        locally and failed in CI, which is the only place this suite runs in the
+        small hours (Day-14 review, P1-7).
         """
         _seed(aarav, completed_on=[5], started_on=[4])
-        _seed(nia, completed_on=[0.2])  # first story a few hours ago
+
+        # Four hours ago, or local midnight if that is more recent — always today,
+        # always in the past, at every hour the suite might run at.
+        midnight = timezone.localtime(NOW).replace(hour=0, minute=0, second=0, microsecond=0)
+        first_story = max(midnight, NOW - datetime.timedelta(hours=4))
+        Event.objects.create(name=Event.ADVENTURE_STARTED, child=nia, ts=first_story, props={})
+        Event.objects.create(name=Event.ADVENTURE_COMPLETED, child=nia, ts=first_story, props={})
 
         rate = metrics.day2_return(metrics.Window.last(14, now=NOW), today=NOW.date())
         assert (rate.numerator, rate.denominator) == (1, 1)

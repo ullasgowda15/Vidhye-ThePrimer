@@ -5,7 +5,7 @@
 
 ## Overall verdict
 
-**READY, with six P1s and no P0.** The two properties the brief singles out both hold, and both hold for the right reason rather than by luck.
+**READY, with seven P1s and no P0** (six found in the audit; the seventh found by CI on the fix commit — a Day-14 test that fails for about five hours out of every twenty-four, and had never yet been run in that window). The two properties the brief singles out both hold, and both hold for the right reason rather than by luck.
 
 **No child data is in telemetry.** I read every one of the eleven emission sites rather than trusting `_clean`, and the props are shape throughout: an age band and three list *lengths* on `child.created`; a world key, an objective code and a rounded difficulty on `adventure.started`; a positional key, a latency and two booleans on `choice.made`; four classifier labels and nothing from `detail` on `safety.incident`. The two places a child's own words exist in this product — `Choice.value` and the narration — are on no event. `_clean`'s scalars-only rule is a second line of defence rather than the only one, which is the right way round.
 
@@ -13,9 +13,9 @@
 
 The rest of the day is strong work. §22.3's five metrics are computed from `Event` and from nothing else — I checked, there is no second source — and each definition states the choice it made; `_matured` is the piece that matters most, and it is right (a good week of signups cannot lower day-2 return, because children too new to be judged are out of the denominator, not in it as misses). The cost context genuinely crosses the Celery boundary: `test_the_media_worker_re_enters_the_sitting_context` runs the real task body, through `async_to_sync` and worker threads with their own connections, and asserts no media span lands unattributed. The accessibility pass is real end-to-end, not asserted — I re-measured every contrast pair from `tokens.css` myself and compiled the stylesheet to confirm the 44px target token actually becomes CSS. And the prompt minimisation dropped nothing load-bearing: it touches only schema `description` strings, and the one dropped paragraph that contains a *rule* rather than a rationale ("There are no losing options") turns out to be stated in the instruction layer, where it belongs.
 
-The six P1s are all small and all real. Two are gaps between a property the code claims in a comment and the property it has (`track`'s rule 1; the router's early meter read). Two are one-line consistency fixes (the untrimmed default schema; three docstrings pointing at a test file that does not exist). One is the day's own flagged deviation, reassessed and found to be half-defensible (P1-2). One is a full page reload on the first-run call to action, introduced by the polish work itself.
+The P1s are all small and all real. Two are gaps between a property the code claims in a comment and the property it has (`track`'s rule 1; the router's early meter read). Two are one-line consistency fixes (the untrimmed default schema; three docstrings pointing at a test file that does not exist). One is the day's own flagged deviation, reassessed and found to be half-defensible (P1-2). One is a full page reload on the first-run call to action, introduced by the polish work itself. The seventh arrived after the fixes were pushed: CI ran at 00:33 UTC, which is the first time this suite has ever run inside the ~4.8-hour window where a fractional-day seed in `test_metrics.py` means "yesterday" instead of "today" (P1-7).
 
-**All six were fixed in this session** (see *Fixes applied*), re-verified, and pushed.
+**All seven were fixed in this session** (see *Fixes applied*), re-verified, and pushed.
 
 ## Scorecard
 
@@ -134,6 +134,26 @@ The meter is read early. Nothing then writes it: `_trace_llm_cost` is called by 
 
 **Fix:** render `Link` with the same classes.
 
+### P1-7 — a Day-14 metrics test fails for ~4.8 hours out of every 24
+
+*Found by CI on the fix commit, not by any local run — which is itself the finding.*
+
+`test_metrics.py::TestDay2Return::test_a_child_too_new_to_judge_is_left_out_of_the_denominator` seeds the "too new to judge" child with `_seed(nia, completed_on=[0.2])` — a fractional-day offset, commented "first story a few hours ago". A fractional offset only lands on **today** if the suite runs late enough in the day. Run at 00:33 UTC, 4.8 hours back is *yesterday*, which is old enough to judge, so Nia enters the denominator as a miss and the assertion reads `(1, 2)` instead of `(1, 1)`.
+
+Confirmed both ways at the same clock hour, which is what makes it a diagnosis rather than a guess:
+
+```
+$ date -u                       # Thu Aug 13 00:39:05 UTC 2026 — inside the window
+$ pytest ...::test_a_child_too_new_to_judge_is_left_out_of_the_denominator   # pre-fix
+E   assert (1, 2) == (1, 1)
+$ pytest apps/analytics/tests/test_metrics.py                                # post-fix
+24 passed
+```
+
+Nothing in the fix pass caused it: Day 14's own CI run happened to fall outside the window, as did both of my full local runs. The test two functions below it already anchors to local midnight and says in a comment that it does so precisely to be independent of the hour the suite runs at; this one did not get the same treatment.
+
+**Fix:** anchor the first story to `max(local midnight, NOW − 4h)` — always today, always in the past, at every hour. The other seeds in the file use whole-day offsets, which shift the calendar date by exactly that many days whatever the time, so this was the only one exposed. (`0.2` was the only fractional offset in the suite.)
+
 ### P2 — recorded, not fixed
 
 * **P2-1 — `chosen_key` is client text and reaches the export.** `ChoiceRequestSerializer.choiceKey` is a `CharField(max_length=64)` accepted as sent (deliberately: §8.5 means there is no wrong answer to validate against), and `record_choice` puts it verbatim into `Event.props.chosen_key`. Our own client only ever sends an option key, `'count'` or `'continue'` — I traced `StoryPage.tsx`'s three submit paths, and the child's counted number goes in `value`, which is *not* tracked — so nothing leaks today, and the comment claiming `chosen_key` is "a positional key rather than a label" is true of the shipped client. It is not true of the contract. The events table is the one place with an explicit §13.8 minimisation promise and a warehouse export that no delete can reach, so it is worth bounding the value on the event (whitelist against `beat.options` keys plus the two literals) rather than trusting every future client.
@@ -160,7 +180,7 @@ The meter is read early. Nothing then writes it: `_trace_llm_cost` is called by 
 
 ## Fixes applied
 
-All six P1s, in one pass. No P2 was touched, and nothing the audit marked green was edited.
+All seven P1s. Six in one pass; P1-7 in a second, after CI on the first fix commit turned it up. No P2 was touched, and nothing the audit marked green was edited.
 
 | # | Fix | Files | Re-verified by |
 |---|-----|-------|----------------|
@@ -170,8 +190,11 @@ All six P1s, in one pass. No P2 was touched, and nothing the audit marked green 
 | P1-4 | The three docstrings now name `tests/test_analytics_pipeline.py::TestTheSeparationIsStructural`. | `analytics/models.py`, `metrics.py`, `internal.py` | Read; the class exists and is the one that asserts it |
 | P1-5 | `_generate_traced` wraps `generate_json` and writes the span on the failure path **when the provider actually metered something**. Both call sites (first attempt and repair) go through it, which also removed the duplicated tracing block. | `story/ai/router.py` | `test_a_metered_generation_that_then_fails_is_still_costed` (a refusal after a 900-token read → one `beat` span with those units) and `test_a_call_that_never_reached_the_model_is_not_costed` (no meter → no span, so the fix cannot over-report a call that was never billed) |
 | P1-6 | `LinkButton` renders a router `Link`; `Home.tsx` passes `to` rather than `href`. One `<a>`, one role — the WCAG 4.1.2 reason the component exists is untouched. | `parent/ui.tsx`, `parent/Home.tsx` | `routes the first-run call to action without reloading the app` — an `<a>` with no nested `<button>`, the right `href`, and both the target floor and the focus ring still on it |
+| P1-7 | The "too new to judge" child is anchored to `max(local midnight, NOW − 4h)` instead of a fractional-day offset, matching what the calendar test two functions below already does. | `analytics/tests/test_metrics.py` | The whole file, green, run at **00:39 UTC** — inside the window that had just failed in CI, and with the pre-fix version failing at the same clock hour two minutes earlier |
 
-**Re-verification, in full.** `make lint` → ruff check clean, `ruff format --check` clean (215 files), eslint clean, prettier clean. `make typecheck` → **mypy: 0 issues in 243 source files**, `tsc --noEmit` clean. `make schema` → `frontend/openapi.json` **byte-identical** (`git diff --stat` empty), as expected: none of the six touches a serializer or a route. Backend `pytest -q` → **exit 0, 1240 tests** (1231 + 9 new). Frontend `vitest run` → **171 passed, 12 files** (170 + 1 new). CI on the fix commit: recorded in the follow-up docs commit, once the run has actually finished.
+**Re-verification, in full.** `make lint` → ruff check clean, `ruff format --check` clean (215 files), eslint clean, prettier clean. `make typecheck` → **mypy: 0 issues in 243 source files**, `tsc --noEmit` clean. `make schema` → `frontend/openapi.json` **byte-identical** (`git diff --stat` empty), as expected: none of the six touches a serializer or a route. Backend `pytest -q` → **exit 0, 1240 tests** (1231 + 9 new). Frontend `vitest run` → **171 passed, 12 files** (170 + 1 new).
+
+**CI.** Run **`31654512385`** on the first fix commit `75bc533` — **frontend green, backend red**, on P1-7 and nothing else (`1 failed, 1239 passed`; the failure is the metrics test above, not one of the six fixes). Run id for the second fix commit is recorded in the follow-up docs commit, once it has actually finished.
 
 **Re-measured after the fix, not assumed:** the deletion probe that produced Phase 1's two survivors now reports **0 events, 0 cost spans**, as a permanent test rather than a scratch file.
 
