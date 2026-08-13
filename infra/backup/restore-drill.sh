@@ -74,9 +74,15 @@ $PG_RUN pg_restore --no-owner --no-privileges --exit-on-error \
     --dbname="$SCRATCH_URL" < "$DUMP"
 
 echo "-- verifying (through Django, against the restored copy)"
+# `|| STATUS=$?` rather than a bare call: under `set -e` a failing verification
+# would exit the script *here*, which skips the drop below and leaves a stale
+# scratch database on the server. The next run would then begin by dropping a
+# database somebody may since have gone to look at — and a failed drill is
+# precisely when somebody goes to look. Capturing the status keeps the cleanup on
+# both paths, and `exit $STATUS` at the end still fails the drill.
+STATUS=0
 cd backend
-DATABASE_URL="$SCRATCH_URL" python manage.py restore_drill
-STATUS=$?
+DATABASE_URL="$SCRATCH_URL" python manage.py restore_drill || STATUS=$?
 cd ..
 
 echo "-- dropping the scratch database"

@@ -85,49 +85,128 @@ DIRECTIVES = (
 # ---------------------------------------------------------------------------
 # (a) Injection, where an attacker actually puts it
 # ---------------------------------------------------------------------------
+#: The profile fields an attack can be typed into, and the ones this test drives.
+#:
+#: **Every one of them, not just `interests`** — which is the Day-15 review's P0-2
+#: and the reason it found P0-1. This test used to set `child.interests` alone
+#: while `corpus.INJECTION_SURFACES` declared eight surfaces, so a 1.00 gate that
+#: reads as an absolute over the corpus was an absolute over one surface of it.
+#: The three added here are exactly the ones that differ in *kind*:
+#: `interests` reaches a DATA layer, while `avoid_topics`, `fears` and
+#: `first_name` are built into `<safety_policy>`, an INSTRUCTION layer. That is
+#: the distinction the whole §13.5 story turns on, and it was the untested half.
+#:
+#: The remaining surfaces in `INJECTION_SURFACES` are driven elsewhere in this
+#: file and in `backend/apps/safety/redteam/` — memory through `guard_input`, the
+#: turn text and choice labels through the turn block.
+PROFILE_SURFACES = ("interests", "avoid_topics", "fears", "first_name")
+
+#: Layer tags that carry our rules rather than someone's data. A directive inside
+#: one of these is an attacker writing policy; the same directive inside a
+#: `kind="data"` block is the recorded, defended residue (`corpus.INSTRUCTION_RESIDUE`).
+INSTRUCTION_LAYERS = (
+    "system_identity",
+    "safety_policy",
+    "world_and_companion_state",
+    "learning_directive",
+    "story_plan",
+    "output_contract",
+)
+
+
+def _instruction_layers_of(assembled: str) -> str:
+    """Just the instruction layers of an assembled prompt, lowercased.
+
+    Split on the layer tags `prompting.layers` emits rather than parsed: the tags
+    are literal strings this repository writes, and a parser here would be a
+    dependency in the eval suite for no extra assurance.
+    """
+    kept = []
+    for name in INSTRUCTION_LAYERS:
+        start = assembled.find(f"<{name}>")
+        end = assembled.find(f"</{name}>", start + 1)
+        if start != -1 and end != -1:
+            kept.append(assembled[start:end])
+    return "\n".join(kept).lower()
+
+
 def test_no_injected_instruction_reaches_a_prompt_layer(
     child: Any, provider: Any, corpus: Any
 ) -> None:
     """The profile route, which is the one that reaches an *instruction* layer.
 
-    A parent types into "what does your child love?" and that text is built into
-    the safety policy the model is given — so an injection here is not a data
-    problem, it is a rewritten rulebook. Each string is put in a real profile
-    field, an adventure is really planned and a beat really generated, and the
-    assembled system prompt the provider was handed is then searched for the
-    operative phrase.
+    A parent types into "what does your child love?", or into the avoid-topics
+    box, and that text is built into the safety policy the model is given — so an
+    injection here is not a data problem, it is a rewritten rulebook. Each string
+    is put in each real profile field, an adventure is really planned and a beat
+    really generated, and the assembled system prompt the provider was handed is
+    then searched for the operative phrase.
 
     Grading the *assembled prompt* rather than the scrubber's return value is the
     point: `scrub` could be perfect and this could still fail, if some path built
     a layer from the unscrubbed column.
+
+    **Two gates, because there are two different failures.** A directive anywhere
+    in the system prompt is scored against `redteam.injection`, with the recorded
+    `INSTRUCTION_RESIDUE` excused in the data layers where it is defended. A
+    directive inside an *instruction* layer is excused nowhere and asserted
+    outright — that is the one §13.5 has no answer for, and no entry in any
+    recorded-gap list may ever license it.
     """
     if provider is None:
         pytest.skip("reads the prompts the scripted provider was handed")
 
-    score = Score("redteam.injection")
-    for attack in corpus.INJECTION:
-        child.interests = [attack]
-        child.save(update_fields=["interests"])
-        provider.prompts.clear()
+    original = {surface: getattr(child, surface) for surface in PROFILE_SURFACES}
 
+    score = Score("redteam.injection")
+    for surface in PROFILE_SURFACES:
+        for attack in corpus.INJECTION:
+            for field, value in original.items():
+                setattr(child, field, value)
+            # `first_name` is a plain column; the other three are lists of seeds.
+            setattr(child, surface, attack if surface == "first_name" else [attack])
+            child.save(update_fields=list(original))
+            provider.prompts.clear()
+
+            play(child, beats=1)
+
+            assembled = "\n".join(system for system, _ in provider.prompts)
+            instructions = _instruction_layers_of(assembled)
+            everywhere = assembled.lower()
+
+            # (a) The absolute. Nothing excuses a directive among our own rules.
+            in_rules = [phrase for phrase in DIRECTIVES if phrase in instructions]
+            assert not in_rules, (
+                f"{surface}={attack[:50]!r} put {in_rules} inside an INSTRUCTION "
+                f"layer. corpus.INSTRUCTION_RESIDUE covers data layers only — see "
+                f"assembler._instruction_text."
+            )
+
+            # (b) The scored gate, with the recorded data-layer residue excused.
+            expected = {phrase for text, phrase in corpus.INSTRUCTION_RESIDUE if text == attack}
+            leaked = [phrase for phrase in DIRECTIVES if phrase in everywhere]
+            unexpected = [phrase for phrase in leaked if phrase not in expected]
+
+            score.record(
+                not unexpected,
+                f"{surface}={attack[:50]!r} -> {unexpected} survived into the system layer",
+            )
+
+    # The recorded residue is asserted to be *exact*, in both directions, on the
+    # surface it was recorded against. An entry that stops leaking is a scrubber
+    # improvement that should be promoted into `INJECTION`; the assertion fires
+    # either way, which is what stops the record drifting into a list of excuses.
+    for field, value in original.items():
+        setattr(child, field, value)
+    for attack, phrase in corpus.INSTRUCTION_RESIDUE:
+        child.interests = [attack]
+        child.save(update_fields=list(original))
+        provider.prompts.clear()
         play(child, beats=1)
 
         assembled = "\n".join(system for system, _ in provider.prompts).lower()
-        expected = {phrase for text, phrase in corpus.INSTRUCTION_RESIDUE if text == attack}
-        leaked = [phrase for phrase in DIRECTIVES if phrase in assembled]
-        unexpected = [phrase for phrase in leaked if phrase not in expected]
-
-        score.record(
-            not unexpected,
-            f"{attack[:60]!r} -> {unexpected} survived into the system layer",
-        )
-        # The recorded residue is asserted to be *exact*, in both directions. An
-        # entry that stops leaking is a scrubber improvement that should be
-        # promoted into `INJECTION`; the assertion fires either way, which is what
-        # stops the record drifting into a list of excuses.
-        missing = expected - set(leaked)
-        assert not missing, (
-            f"{attack[:60]!r} no longer leaves {missing}. Promote it out of "
+        assert phrase in assembled, (
+            f"{attack[:60]!r} no longer leaves {phrase!r}. Promote it out of "
             f"corpus.INSTRUCTION_RESIDUE into corpus.INJECTION."
         )
 
