@@ -73,12 +73,29 @@ def test_a_real_provider_without_a_key_says_so_usefully(settings) -> None:
 
 
 def test_declared_but_unbuilt_providers_raise_rather_than_pretend(settings) -> None:
-    """§19.3's fallback seam: a stub must be honest about being a stub."""
-    for name in ("voyage", "google"):
-        provider = adapter.EMBEDDING_PROVIDERS[name]()
-        assert provider.is_configured() is False
-        with pytest.raises(NotImplementedError):
-            provider.embed("anything")
+    """§19.3's fallback seam: a stub must be honest about being a stub.
+
+    `google` used to be in this list and is not any more — it is the shipped
+    provider now (`gemini-embedding-001` on Vertex). `voyage` is still a seam.
+    """
+    provider = adapter.EMBEDDING_PROVIDERS["voyage"]()
+    assert provider.is_configured() is False
+    with pytest.raises(NotImplementedError):
+        provider.embed("anything")
+
+
+def test_the_google_provider_is_no_longer_a_stub(settings) -> None:
+    """The other half of the test above, so "it is implemented" is asserted
+    somewhere rather than merely no longer denied."""
+    settings.GOOGLE_CLOUD_PROJECT = "primer-test"
+    settings.GOOGLE_CLOUD_LOCATION = "global"
+    settings.GOOGLE_APPLICATION_CREDENTIALS = "/nowhere/service-account.json"
+
+    provider = adapter.EMBEDDING_PROVIDERS["google"]()
+
+    assert isinstance(provider, adapter.GoogleEmbeddingProvider)
+    assert provider.is_configured() is True
+    assert not isinstance(provider, adapter._UnimplementedEmbeddingProvider)
 
 
 def test_a_provider_of_the_wrong_width_is_rejected_not_reshaped() -> None:
@@ -91,7 +108,7 @@ def test_a_provider_of_the_wrong_width_is_rejected_not_reshaped() -> None:
         def is_configured(self) -> bool:
             return True
 
-        def embed(self, text: str) -> list[float]:
+        def embed(self, text: str, *, task: str = adapter.TASK_DOCUMENT) -> list[float]:
             return [0.1] * 8
 
     with pytest.raises(MediaProviderError, match="8 dimensions"):
@@ -102,6 +119,207 @@ def test_the_provider_label_names_the_offline_one_as_offline() -> None:
     """A database of lexical vectors must never look like a semantic one."""
     assert adapter.provider_label(adapter.LocalHashEmbeddingProvider()) == "local-hash"
     assert adapter.provider_label(adapter.OpenAIEmbeddingProvider()) == "openai"
+
+
+# ---------------------------------------------------------------------------
+# The shipped provider: gemini-embedding-001 on Vertex
+# ---------------------------------------------------------------------------
+# Three things can go wrong here and two of them are silent.
+#
+# The width is the loud one: `memory.embedding` is a `vector(1536)` column, so a
+# provider returning anything else is refused by `embed` and, failing that, by
+# Postgres. The quiet ones are **normalization** — truncated `gemini-embedding-001`
+# output is not unit-length (measured: 0.690528 at 1536 against 1.000000 at its
+# native 3072) — and **task type**, where embedding a query as though it were a
+# document builds a correct index and then searches it slightly wrongly, forever,
+# with nothing failing.
+
+
+class _FakeEmbeddings:
+    """Stands in for the Vertex client, recording what it was asked for."""
+
+    def __init__(self, values: list[float] | None = None, boom: Exception | None = None) -> None:
+        self._values = values
+        self._boom = boom
+        self.calls: list[dict] = []
+        self.models = self
+
+    def embed_content(self, **kwargs) -> object:
+        self.calls.append(kwargs)
+        if self._boom is not None:
+            raise self._boom
+        embedding = type("E", (), {"values": self._values})()
+        return type("R", (), {"embeddings": [embedding]})()
+
+
+@pytest.fixture
+def vertex_embeddings(monkeypatch, settings):
+    """Vertex configured, with the embedding call under the test's control."""
+    settings.EMBEDDING_PROVIDER = "google"
+    settings.EMBEDDING_MODEL = "gemini-embedding-001"
+    settings.EMBEDDING_DIMENSIONS = EMBEDDING_DIMENSIONS
+    settings.GOOGLE_CLOUD_PROJECT = "primer-test"
+    settings.GOOGLE_CLOUD_LOCATION = "global"
+    settings.GOOGLE_APPLICATION_CREDENTIALS = "/nowhere/service-account.json"
+
+    def install(values: list[float] | None = None, boom: Exception | None = None):
+        from apps.common import vertex
+
+        client = _FakeEmbeddings(values, boom)
+        monkeypatch.setattr(vertex, "client", lambda: client)
+        return client
+
+    return install
+
+
+class TestTheVertexEmbeddingProvider:
+    def test_it_asks_for_the_column_width_and_returns_it(self, vertex_embeddings) -> None:
+        client = vertex_embeddings([0.5] * EMBEDDING_DIMENSIONS)
+
+        vector = adapter.embed("Aarav named the little dragon Sparkle.")
+
+        assert len(vector) == EMBEDDING_DIMENSIONS
+        assert client.calls[0]["model"] == "gemini-embedding-001"
+        assert client.calls[0]["config"].output_dimensionality == EMBEDDING_DIMENSIONS
+
+    def test_it_normalizes_what_the_model_returns(self, vertex_embeddings) -> None:
+        """The measured hazard. A raw 1536-wide `gemini-embedding-001` vector has
+        an L2 norm near 0.69, and this is the line that fixes it."""
+        vertex_embeddings([0.5] * EMBEDDING_DIMENSIONS)
+
+        vector = adapter.embed("anything")
+
+        assert math.sqrt(sum(value * value for value in vector)) == pytest.approx(1.0)
+
+    def test_a_zero_vector_is_left_alone_rather_than_given_a_direction(self) -> None:
+        """It cannot be scaled to unit length, and inventing a direction for it
+        would be inventing a meaning."""
+        assert adapter._l2_normalize([0.0, 0.0, 0.0]) == [0.0, 0.0, 0.0]
+
+    def test_it_reuses_the_one_vertex_client(self, vertex_embeddings) -> None:
+        """Not a second auth path. `apps.common.vertex` is the single place that
+        knows what a Vertex credential is, so the LLM route and the embedding
+        route cannot end up configured differently."""
+        client = vertex_embeddings([0.1] * EMBEDDING_DIMENSIONS)
+
+        adapter.embed("anything")
+
+        assert client.calls, "the provider did not go through apps.common.vertex"
+
+    def test_it_is_configured_by_the_vertex_settings_and_no_api_key(self, settings) -> None:
+        settings.OPENAI_API_KEY = ""
+        settings.GOOGLE_CLOUD_PROJECT = "primer-test"
+        settings.GOOGLE_CLOUD_LOCATION = "global"
+        settings.GOOGLE_APPLICATION_CREDENTIALS = "/nowhere/sa.json"
+        assert adapter.GoogleEmbeddingProvider().is_configured() is True
+
+        settings.GOOGLE_APPLICATION_CREDENTIALS = ""
+        assert adapter.GoogleEmbeddingProvider().is_configured() is False
+
+    def test_a_model_that_ignores_the_requested_width_fails_loudly(self, vertex_embeddings) -> None:
+        """Criterion 3's second half. `embed`'s guard compares against the
+        *column*; this one compares against what we asked *this provider* for, so
+        a model silently ignoring `output_dimensionality` is named as the cause
+        rather than read as "somebody changed EMBEDDING_DIMENSIONS"."""
+        vertex_embeddings([0.5] * 3072)
+
+        with pytest.raises(MediaProviderError, match="3072 dimensions for an"):
+            adapter.embed("anything")
+
+    def test_an_empty_response_is_an_error_not_an_empty_vector(self, vertex_embeddings) -> None:
+        vertex_embeddings([])
+
+        with pytest.raises(MediaProviderError, match="no vector"):
+            adapter.embed("anything")
+
+    def test_a_provider_failure_stays_a_mediaerror(self, vertex_embeddings) -> None:
+        """`consolidation` catches `MediaError` to write the memory without a
+        vector rather than lose the memory. An SDK type would not be caught."""
+        vertex_embeddings(boom=RuntimeError("vertex is down"))
+
+        with pytest.raises(MediaProviderError, match="Could not reach"):
+            adapter.embed("anything")
+
+    def test_storing_and_asking_are_embedded_as_different_tasks(self, vertex_embeddings) -> None:
+        """`gemini-embedding-001` is asymmetric. Getting this wrong costs ranking
+        quality and nothing observable, which is why it is asserted."""
+        client = vertex_embeddings([0.1] * EMBEDDING_DIMENSIONS)
+
+        adapter.embed("a memory being stored")
+        adapter.embed("a context being matched", task=adapter.TASK_QUERY)
+
+        assert client.calls[0]["config"].task_type == "RETRIEVAL_DOCUMENT"
+        assert client.calls[1]["config"].task_type == "RETRIEVAL_QUERY"
+
+    @pytest.mark.django_db
+    def test_the_retrieval_half_asks_as_a_query(self, vertex_embeddings, aarav) -> None:
+        """The call site, not just the parameter: `memory.retrieval` is the asking
+        end and has to say so, or the distinction above buys nothing."""
+        from apps.memory import retrieval
+
+        client = vertex_embeddings([0.1] * EMBEDDING_DIMENSIONS)
+        Memory.objects.create(
+            child=aarav,
+            type=MemoryType.EVENT,
+            content="Aarav counted three frogs.",
+            embedding=[0.1] * EMBEDDING_DIMENSIONS,
+            salience=0.8,
+        )
+
+        retrieval._nearest(aarav, "how did the counting go", limit=3)
+
+        assert client.calls[-1]["config"].task_type == "RETRIEVAL_QUERY"
+
+
+def test_the_shipped_embedding_route_needs_no_openai_account(settings) -> None:
+    """§13.8's supply chain, as configuration. Every route that carries child data
+    is one vendor now; this asserts the last one to move actually moved."""
+    settings.OPENAI_API_KEY = ""
+    settings.EMBEDDING_PROVIDER = "google"
+    settings.GOOGLE_CLOUD_PROJECT = "primer-test"
+    settings.GOOGLE_CLOUD_LOCATION = "global"
+    settings.GOOGLE_APPLICATION_CREDENTIALS = "/nowhere/sa.json"
+
+    provider = adapter.select_embedding_provider()
+
+    assert provider.name == "google"
+    assert getattr(provider, "credential_env_var", "") == "GOOGLE_APPLICATION_CREDENTIALS"
+
+
+def test_the_documented_configuration_is_the_all_google_one() -> None:
+    """`.env.example` is what somebody copies, so it is where a doc/code drift
+    actually costs something — the previous build shipped three documents saying
+    `AI_PROVIDER_ORDER=gemini`, which is not a provider.
+
+    Read from the file rather than from `settings`: the resolved setting reflects
+    whatever `.env` the machine happens to have (a developer running offline sets
+    `EMBEDDING_PROVIDER=local`, correctly), so asserting on it would be a test
+    that passes in CI and fails on the founder's laptop for a good reason.
+    """
+    from pathlib import Path
+
+    from django.conf import settings as django_settings
+
+    example = Path(django_settings.REPO_ROOT) / ".env.example"
+    lines = example.read_text(encoding="utf-8").splitlines()
+
+    assert "EMBEDDING_PROVIDER=google" in lines
+    assert "EMBEDDING_MODEL=gemini-embedding-001" in lines
+    # 1536 is what makes this a no-migration move: `gemini-embedding-001` is a
+    # Matryoshka model asked for a prefix of its native 3072.
+    assert "EMBEDDING_DIMENSIONS=1536" in lines
+    # And no OpenAI credential is presented as something to fill in.
+    assert not [line for line in lines if line.startswith("OPENAI_API_KEY=")]
+
+
+def test_the_embedding_model_still_satisfies_the_training_rule() -> None:
+    """§13.8. A bare Vertex id carries no `:free` suffix; the guard that blocks a
+    prompt-reselling route for the three LLM settings covers this one too."""
+    from apps.common import model_ids
+
+    assert "EMBEDDING_MODEL" in model_ids.CHILD_DATA_MODEL_SETTINGS
+    assert model_ids.training_error(setting="EMBEDDING_MODEL", model="gemini-embedding-001") is None
+    assert model_ids.training_error(setting="EMBEDDING_MODEL", model="vendor/model:free")
 
 
 # ---------------------------------------------------------------------------

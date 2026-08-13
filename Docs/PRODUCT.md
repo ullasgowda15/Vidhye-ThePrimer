@@ -1144,7 +1144,7 @@ This is the concrete, opinionated stack (per D1) a solo founder can start buildi
 | Object storage | **S3-compatible (e.g., S3/R2) + CDN (CloudFront/Cloudflare)** (via `django-storages`) | Illustrations & audio; edge-cached; R2 attractive for zero egress. |
 | Background jobs | **Celery workers (Redis broker)** | Consolidation, mastery updates, summaries, media prefetch — the standard Django async-task stack. |
 | AI orchestration | **Our own thin orchestration layer** over provider SDKs, with a **model router** | Control, portability, evals, cost visibility (Section 19). |
-| LLM | **Anthropic Claude (primary)**; OpenAI + Google (fallback) | D4; quality + safety + structured output; router prevents lock-in. |
+| LLM | **A model router over provider SDKs.** Anthropic Claude, OpenRouter and Google are implemented; OpenAI is a declared seam. **As deployed (see `Docs/Hosting.md §4`): Gemini on Vertex AI** — beats, safety grader, memory digest, image moderation *and* embeddings on one service account | D4; quality + safety + structured output; router prevents lock-in — the deployment choice is configuration, which is the point of having a router. |
 | Images | **Flux / SDXL / Imagen via adapter**; provider-swappable | Style + character consistency; cost control; adapter isolates choice. |
 | TTS | **A high-quality kids-appropriate TTS** (e.g., ElevenLabs / Play.ht / cloud TTS) via adapter | Companion voice; adapter for swap/cost. |
 | Payments | **Stripe** | Standard; trials, subscriptions, billing portal. |

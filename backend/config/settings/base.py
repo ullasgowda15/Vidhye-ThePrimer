@@ -552,10 +552,16 @@ MEMORY_RETRIEVAL_CANDIDATES = env.int("MEMORY_RETRIEVAL_CANDIDATES", default=20)
 # a provider will look:
 #
 #   Every provider named in this file must be used under API terms that exclude
-#   inputs from model training. Anthropic and the OpenAI *API* both exclude API
-#   traffic from training by default; a self-serve consumer plan or a gateway that
+#   inputs from model training. A self-serve consumer plan or a gateway that
 #   resells prompts (some free OpenRouter routes do) does not, and must not be put
 #   in `AI_PROVIDER_ORDER` or `EMBEDDING_PROVIDER` for that reason.
+#
+# **As shipped, that obligation has exactly one holder.** Both settings above now
+# point at Vertex AI on one GCP service account — `AI_MEMORY_MODEL` at
+# `gemini-2.5-flash-lite`, `EMBEDDING_PROVIDER` at `gemini-embedding-001` — so
+# there is one contract to have read rather than three, and no OpenAI account in
+# the supply chain at all. That is a smaller promise to keep than the one this
+# paragraph was originally written about, and a smaller one to break.
 #
 # What the code can do about it, it does: the digest carries each beat's first
 # clause rather than the whole story, `content` is one sentence, and neither
@@ -579,19 +585,33 @@ MEMORY_ENCRYPTION_KEY = env("MEMORY_ENCRYPTION_KEY", default="")
 # column, the ANN index and the ordering of a nearest-neighbour query exercisable
 # with no key and no spend, and it is lexical, not semantic. Every consolidation
 # run says which was used.
-EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="openai")
-EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="text-embedding-3-small")
+# Defaulted to `google` — `gemini-embedding-001` on the **same Vertex service
+# account** as beats, the safety grader, the memory digest and the image gate.
+# That makes every route carrying child data one vendor under one credential and
+# one set of terms (§13.8), and it is why this product needs no OpenAI account at
+# all. `openai` remains a working provider for anyone who wants it; it is simply
+# no longer the default or a requirement.
+EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", default="google")
+EMBEDDING_MODEL = env("EMBEDDING_MODEL", default="gemini-embedding-001")
 
 # The width of `memory.embedding`, and therefore of every vector we store. Changing
 # it is a migration plus a re-embed of every row, not a config flip — which is why
 # `adapters.embedding.embed` rejects a provider whose output does not match rather
 # than padding or truncating.
+#
+# **1536 survived the move off OpenAI on purpose.** `gemini-embedding-001` is a
+# Matryoshka model whose native width is 3072 and whose prefixes are usable
+# embeddings, so it is asked for 1536 (`output_dimensionality`) and the column,
+# its HNSW index and every stored vector are untouched. Picking the native 3072 —
+# or `text-embedding-005`'s 768 — would each have meant a migration and an index
+# rebuild to gain accuracy nobody has measured a need for yet.
 EMBEDDING_DIMENSIONS = env.int("EMBEDDING_DIMENSIONS", default=1536)
 
-# Used by the embedding adapter and nowhere else. Anthropic publishes no embedding
-# model, so this is the one place the OpenAI key is load-bearing rather than a
-# fallback seam — which usefully means remembering and story-telling fail
-# independently.
+# Used by the OpenAI embedding provider and the OpenRouter LLM seam, and by
+# nothing the shipped configuration reaches. **Not required**: with
+# `EMBEDDING_PROVIDER=google` there is no OpenAI account in this product's supply
+# chain. Left here because both seams still work and switching to them should stay
+# a config change.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 
 

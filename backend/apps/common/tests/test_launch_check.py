@@ -55,7 +55,7 @@ def launchable(settings: Any, db: Any, tmp_path: Any) -> None:
     # reads all four child-data models, and a test whose answer depended on the
     # machine it ran on would be the opposite of a preflight.
     settings.AI_MEMORY_MODEL = "claude-haiku-4-5-20251001"
-    settings.EMBEDDING_MODEL = "text-embedding-3-small"
+    settings.EMBEDDING_MODEL = "gemini-embedding-001"
     settings.IMAGE_MODERATION = "auto"
     settings.MEMORY_ENCRYPTION_KEY = "6H0y0AGRTP-cKQ0RRW9x8p2yh4Y3iCJqQyLwLQ4qSAI="
     settings.MEDIA_STORAGE = "s3"

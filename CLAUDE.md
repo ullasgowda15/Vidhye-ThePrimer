@@ -15,7 +15,9 @@ Work happens one day at a time in two alternating session types:
 `docs/Build/README.md` and `docs/Review/README.md` describe this loop in full. Read the relevant one if unsure.
 
 ## Stack (per PRODUCT.md §16) — do not swap without being told
-Python 3.12 · Django + Django REST Framework (run under **ASGI/uvicorn** — required for SSE) · Celery + Redis · PostgreSQL + pgvector · React + Vite + Tailwind (PWA; Node is a build tool only, no Node server) · Anthropic Claude primary with an OpenAI/Google fallback router · Stripe · S3-compatible storage + CDN.
+Python 3.12 · Django + Django REST Framework (run under **ASGI/uvicorn** — required for SSE) · Celery + Redis · PostgreSQL + pgvector · React + Vite + Tailwind (PWA; Node is a build tool only, no Node server) · a provider-agnostic model router · Stripe · S3-compatible storage + CDN.
+
+**What the router is actually pointed at, as deployed:** **Gemini on Vertex AI**, one service account, for every route that carries child data — beats (`gemini-2.5-flash`), the safety grader and memory digest (`gemini-2.5-flash-lite`), image moderation, and embeddings (`gemini-embedding-001` at 1536 dims). Anthropic Claude and OpenRouter are still implemented providers and stay selectable by configuration; OpenAI is a declared seam. **There is no OpenAI account in this product's supply chain** — if you are about to write `OPENAI_API_KEY` into a required-config list, that is now wrong. See `Docs/Hosting.md §3/§4` and `.env.example`.
 
 ## Standing rules (every session)
 - **Scope discipline:** build only the current day's scope. Do not front-run future days — later days depend on it.

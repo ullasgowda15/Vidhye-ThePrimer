@@ -5,10 +5,16 @@ An AI-generated living storybook — a personalized lifelong learning companion 
 `docs/PRODUCT.md` is the authoritative product and technical spec. `docs/Build/` and
 `docs/Review/` drive the 15-day build loop.
 
-> **Status: Day 2.** The full-stack skeleton plus the parent path: JWT auth, COPPA-lite
-> consent gating child creation, child profiles with the personalization seeds, a parent
-> gate, and a tested prompt-assembly module. No companion, no story loop, no memory, no
-> live safety layer yet — those arrive on later days.
+> **Status: the 15-day build is complete and on `main`; the product is not yet launched.**
+> Days 1–15 are built, reviewed, fixed and CI-green — auth and consent, the companion,
+> the story loop over SSE, the choice loop, memory (write, consolidation, semantic
+> recall), the Learning Engine, the safety layer, the parent dashboard, analytics and
+> cost instrumentation, and the eval ship gate. Since then, every route that carries
+> child data moved onto **Gemini on Vertex AI** under one service account.
+>
+> **What is not done:** no production deployment and no family has played yet. See
+> `Docs/PROGRESS.md` for the live state and `Docs/Runbooks/Launch.md` for what is owed
+> before a child touches it.
 
 ---
 
@@ -20,7 +26,8 @@ An AI-generated living storybook — a personalized lifelong learning companion 
 | Jobs | Celery + Redis |
 | Database | PostgreSQL 16 + pgvector |
 | Frontend | React + Vite + Tailwind (PWA). Node is a build tool only — there is no Node server |
-| AI | Anthropic Claude primary; OpenRouter selectable for dev, with OpenAI/Google fallback seams |
+| AI | **Gemini on Vertex AI** as deployed — beats, safety grader, memory digest, image moderation and embeddings, all on one service account. Anthropic Claude and OpenRouter remain implemented providers, selectable by config; OpenAI is a fallback seam |
+| Embeddings | `gemini-embedding-001` at 1536 dims on the same Vertex credential (pgvector + HNSW, cosine) |
 
 The backend runs under ASGI rather than WSGI because story beats stream to the client
 over SSE from async views (PRODUCT.md §16.4). Don't swap `make run` for a WSGI server.
@@ -56,7 +63,8 @@ module boundaries are drawn as if they were network boundaries from the start.
 ## First run
 
 ```bash
-cp .env.example .env          # then set a provider key if you want hello-beat
+cp .env.example .env          # then point GOOGLE_APPLICATION_CREDENTIALS at a Vertex
+                              # service-account JSON (kept OUTSIDE this repo) for hello-beat
 make venv                     # optional — creates .venv, which make prefers
 make install                  # backend + frontend dependencies
 make up                       # Postgres (pgvector) + Redis
@@ -138,31 +146,48 @@ instruction, not a stack trace.
 `AI_PROVIDER_ORDER` decides which provider runs; the first one with credentials
 wins. Nothing in the code changes when you switch.
 
+**As deployed: `google` (Gemini on Vertex AI).** The registered provider name is
+`google` — *not* `gemini`; Django refuses to boot on an unknown provider. Model ids
+are bare Vertex ids (`gemini-2.5-flash`), never gateway slugs. Auth is a **service
+account** (`GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION=global` +
+`GOOGLE_APPLICATION_CREDENTIALS`), never an API key.
+
 | `.env` | Result |
 |---|---|
-| `AI_PROVIDER_ORDER=anthropic` + `ANTHROPIC_API_KEY` | Claude — the configured primary |
+| `AI_PROVIDER_ORDER=google` + a Vertex service account | **Gemini on Vertex AI — the deployed primary** (beats, safety, memory; embeddings + image moderation share the same credential) |
+| `AI_PROVIDER_ORDER=anthropic` + `ANTHROPIC_API_KEY` | Claude — an implemented alternative |
 | `AI_PROVIDER_ORDER=openrouter,anthropic` + `OPENROUTER_API_KEY` | OpenRouter, falling back to Claude if its key is missing |
 
-OpenRouter exists so the whole pipeline can be exercised on a **free** model without
-an Anthropic key. Two things to know:
+`AI_BEAT_MODEL` is provider-relative — a bare Gemini id for `google`, a Claude model
+id for `anthropic`, an OpenRouter slug for `openrouter`.
 
-- `AI_BEAT_MODEL` is provider-relative — a Claude model id for `anthropic`, an
-  OpenRouter model slug for `openrouter`. Free-model availability there changes over
-  time, so pick one that is currently listed and supports JSON/tool output.
-- Many free models don't support strict `json_schema` output. The provider asks for
-  one, and on rejection degrades to JSON mode plus the router's validate-and-repair
-  pass — so a beat still arrives, just less cheaply.
+**A child-data model may never be a training-permitted route (§13.8).** `prod.py`
+refuses to boot, and `launch_check` blocks, on a `:free` OpenRouter suffix for
+`AI_BEAT_MODEL` / `AI_SAFETY_MODEL` / `AI_MEMORY_MODEL` / `EMBEDDING_MODEL`. A `:free`
+model is fine only for throwaway offline plumbing checks, never for a run that
+touches a real child's data. On Vertex the equivalent is a service account against a
+billed project, not an AI Studio key.
 
-OpenRouter is LLM-only. Images and voice have their own adapters, below.
+Providers that don't enforce `json_schema` natively (OpenRouter, some models) degrade
+to JSON mode plus the router's validate-and-repair pass, so a beat still arrives.
+The LLM provider is LLM-only. Images and voice have their own adapters, below.
 
-### Illustrations and voice
+### Illustrations, voice and embeddings
 
-Two more swappable adapters, each chosen by one name in `.env`:
+Three more swappable adapters, each chosen by one name in `.env`:
 
 | Setting | Implemented | Offline alternative |
 |---|---|---|
 | `IMAGE_PROVIDER` | `cloudflare` — FLUX on Workers AI (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`) | `local` — deterministic placeholder art, no key, no spend |
 | `TTS_PROVIDER` | `elevenlabs` (`ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`) | `local` — a short chime |
+| `EMBEDDING_PROVIDER` | `google` — `gemini-embedding-001` at 1536 dims, on the **same Vertex service account** as the LLM routes. `openai` also works (`OPENAI_API_KEY`) and is no longer required | `local` — a *lexical* hashing trick, not a model |
+
+**`local` embeddings will lie to you about the moat.** They make the vector column,
+the HNSW index and the cosine ordering fully exercisable with no key and no spend,
+which is why CI uses them — but they match on shared words, so they cannot connect
+"the winged reptile he invented" to a memory about a dragon. Every consolidation run
+logs which provider it used, so a database of lexical vectors is never mistaken for
+a semantic one.
 
 A named provider with missing credentials is an **error**, not a quiet downgrade
 to placeholder art — that is the kind of failure nobody notices until a child is
@@ -197,12 +222,15 @@ made. Run it twice — the second run should report **0 generated**, because the
 
 ```bash
 make smoke                              # uses AI_BEAT_MODEL from .env
-make smoke SMOKE_ARGS=--pick-free-model # or let it choose a free model for you
+make smoke SMOKE_ARGS=--pick-free-model # offline-plumbing only — a free route may NOT carry child data (§13.8)
 ```
 
-It runs against whichever provider is first in `AI_PROVIDER_ORDER`, so to smoke-test
-on OpenRouter put `AI_PROVIDER_ORDER=openrouter,anthropic` in `.env` first —
-otherwise it correctly reports that `ANTHROPIC_API_KEY` is unset and stops.
+It runs against whichever provider is first in `AI_PROVIDER_ORDER`. As deployed that
+is `google` (Vertex), so it uses the service-account credential from `.env`; to
+smoke-test on another provider, put e.g. `AI_PROVIDER_ORDER=openrouter,anthropic` in
+`.env` first. `--pick-free-model` is for throwaway plumbing checks only — the boot
+guard forbids a `:free` route for any child-data model, so never use it for a run
+against a real child's data.
 
 It exits 0 only if all three checks pass, so it also works as a gate in a script.
 

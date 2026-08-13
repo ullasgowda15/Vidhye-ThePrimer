@@ -3,8 +3,8 @@
 Local development is covered in [README.md](README.md). This is the staging path.
 
 Everything here that can be prepared in code **is** prepared. What remains needs
-founder credentials — a cloud account, a Stripe key, an Anthropic key — so it is
-written as a checklist rather than automated.
+founder credentials — a cloud account, a Stripe key, a Vertex AI service account —
+so it is written as a checklist rather than automated.
 
 ---
 
@@ -51,9 +51,11 @@ Three processes and two managed services:
 | `REDIS_URL` | From the managed Redis |
 | `ALLOWED_HOSTS` | Your staging hostname(s), comma-separated |
 | `CORS_ALLOWED_ORIGINS` | The PWA's origin, comma-separated |
-| `ANTHROPIC_API_KEY` | From the Anthropic console |
-| `AI_PROVIDER_ORDER` | `anthropic` on staging. OpenRouter is a dev convenience; don't ship a free model to a child. |
-| `AI_BEAT_MODEL` | Optional — defaults to the Claude model in `base.py` |
+| `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS` | The Vertex AI service account. `global` for the location — **`asia-south1` does not serve `gemini-2.5-flash-lite`**, so the safety grader would 404 on every call. The JSON key goes on the box **outside the repo**, `chmod 600`; `prod.py` refuses to boot if it is missing or the path is not a file. |
+| `AI_PROVIDER_ORDER` | `google` — the registered provider name, **not** `gemini`. Anthropic and OpenRouter remain selectable; don't ship a free model to a child. |
+| `AI_BEAT_MODEL`, `AI_SAFETY_MODEL`, `AI_MEMORY_MODEL` | `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-flash-lite`. Bare Vertex ids, never gateway slugs. The grader must differ from the writer (§13.3) and the memory model must be set explicitly rather than inherited. |
+| `IMAGE_MODERATION`, `IMAGE_MODERATION_PROVIDER`, `IMAGE_MODERATION_MODEL` | `auto`, `google`, `gemini-2.5-flash-lite` — the §13.8 vision gate on the same credential. Leave the provider unset on an all-Google box and the gate silently degrades to structural-only. |
+| `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | `google`, `gemini-embedding-001`, `1536`. Same credential; **no OpenAI account needed**. Do not change the width without a column migration and a re-embed. |
 | `IMAGE_PROVIDER` | `cloudflare`. Never `local` outside development — that ships placeholder art to a child. |
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | From the Cloudflare dashboard (Workers AI) |
 | `TTS_PROVIDER` | `elevenlabs` |

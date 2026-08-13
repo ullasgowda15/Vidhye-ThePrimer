@@ -28,4 +28,4 @@ This folder contains **15 build-day briefs** (`Day1.md` … `Day15.md`). Each br
 - **Definition of Done handoff:** the last section of each brief, "End state to hand to Day N+1", is copied into the top of the next day's brief as "Yesterday's expected end state" so continuity is explicit.
 
 ## Stack (see PRODUCT.md §16)
-Python 3.12 · Django + DRF (ASGI via uvicorn) · Celery + Redis · PostgreSQL + pgvector · React + Vite + Tailwind (PWA) · Anthropic Claude primary (router with OpenAI/Google fallback) · Stripe · S3-compatible storage + CDN.
+Python 3.12 · Django + DRF (ASGI via uvicorn) · Celery + Redis · PostgreSQL + pgvector · React + Vite + Tailwind (PWA) · a provider-agnostic model router, **pointed at Gemini on Vertex AI as deployed** (beats, safety, memory, image moderation and embeddings on one service account; Anthropic and OpenRouter still selectable, OpenAI a seam, no OpenAI account required) · Stripe · S3-compatible storage + CDN.

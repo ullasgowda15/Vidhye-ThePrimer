@@ -49,6 +49,13 @@ def no_live_providers(settings: Any) -> None:
     settings.GOOGLE_CLOUD_PROJECT = ""
     settings.GOOGLE_CLOUD_LOCATION = ""
     settings.GOOGLE_APPLICATION_CREDENTIALS = ""
+    # Pinned to the *code* default rather than left to the developer's `.env`.
+    # A deployment sets this to `google`; a test that inherited that value would
+    # assert the wrong branch of `select_moderator` — and would do it only on the
+    # machine that has an `.env`, passing in CI and failing on the founder's
+    # laptop. Same hazard `tests/test_settings_validation.py` documents, and it
+    # caught exactly that here.
+    settings.IMAGE_MODERATION_PROVIDER = "auto"
     # The embedding adapter's real provider (§11.3). Blanked with the rest, and
     # `offline_media` points EMBEDDING_PROVIDER at `local` — a suite that embedded a
     # child's memories through a live API would be spending money *and* sending

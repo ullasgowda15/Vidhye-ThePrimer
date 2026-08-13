@@ -442,7 +442,14 @@ def _nearest(child: Child, context: str, *, limit: int) -> tuple[list[Recalled],
         return [], False
 
     try:
-        vector = embedding_adapter.embed(context)
+        # `TASK_QUERY`, not the default: this is the *asking* end. The shipped
+        # provider's model is asymmetric — a stored memory and the context that
+        # should find it are embedded under different instructions by the same
+        # weights — so embedding a query as though it were a document is the one
+        # way to build a correct index and then search it slightly wrongly, every
+        # time, with nothing failing. Providers whose models are symmetric ignore
+        # it (`media.adapters.embedding.TASK_DOCUMENT`).
+        vector = embedding_adapter.embed(context, task=embedding_adapter.TASK_QUERY)
     except MediaError as exc:
         # Warning rather than exception: this is an expected degradation with a
         # known cost (relevance), and the bundle still carries the rules.

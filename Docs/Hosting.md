@@ -30,7 +30,7 @@ What keeps us portable, piece by piece:
 | **Story beats (LLM)** | Google — **Vertex AI** Gemini (paid, data-excluded) | Writes the story beats | `gemini-2.5-flash`, service-account auth — *not* the AI Studio free tier (§3) | ~$2–5/mo *(from credit)* | $0.30/$2.50 per 1M tokens |
 | **Safety grader + memory digest (LLM)** | Google — **Vertex AI** Gemini (paid, data-excluded) | Independent output classifier (§13.3) + memory consolidation | `gemini-2.5-flash-lite` | ~$1–3/mo *(from credit)* | $0.10/$0.40 per 1M tokens |
 | **Image moderation (vision)** | Google — **Vertex AI** Gemini (paid, data-excluded) | The §13.8 gate: looks at every generated illustration before a child does | `gemini-2.5-flash-lite`, same credentials | pennies *(from credit)* | as above, plus image tokens |
-| **Embeddings** | OpenAI | Semantic memory vectors for recall (the moat) | `text-embedding-3-small` | **<$1/mo** | ~$0.02 per 1M tokens |
+| **Embeddings** | Google — **Vertex AI** Gemini (paid, data-excluded) | Semantic memory vectors for recall (the moat) | `gemini-embedding-001` at 1536 dims, same service account | **<$1/mo** *(from credit)* | $0.15 per 1M input tokens |
 | **Images** | Cloudflare — Workers AI | Companion reference set + scene art (FLUX-1-schnell) | 10,000 neurons/day **free** | **$0** | $0.011 per 1,000 neurons |
 | **Voice** | Google Cloud — Text-to-Speech | Narration + returning-greeting audio | Neural2, **1M chars/mo free** | **$0** | ~$16 per 1M chars (Neural2) |
 | **Media storage + CDN** | Cloudflare — R2 | Stores & serves generated audio + images | 10 GB free, **free egress** | **$0** | $0.015/GB-mo storage |
@@ -53,6 +53,8 @@ What keeps us portable, piece by piece:
 - The **memory digest** carries the *verbatim* session digest — `The child said "…"` for every turn of the sitting. That is the least-processed child speech in the system.
 - The **safety grader** is handed the beat and the child's controls; the **embeddings** are handed each memory's sentence.
 - `apps/accounts/privacy.py` tells parents, in the present tense and with no qualification: *"We never use your child's data to train anybody's AI models — not ours, and not our providers."* A carve-out for beats would make that sentence false, and the disclosure is the thing this rule exists to keep true.
+
+**All four now run on one vendor, one service account, one contract.** Embeddings were the last holdout — they were the reason this product needed an OpenAI account at all — and they moved to Vertex `gemini-embedding-001` alongside the other three. That matters beyond tidiness: the sentence above is a promise about *providers*, plural, and every provider added to it is another set of terms somebody has to have read and another account whose data policy can be changed by someone who has never heard of this product. **The list is now one name long.** The smallest promise is the easiest one to keep, and the easiest one to check.
 
 So: never a free prompt-reselling route for **any** of them. On OpenRouter that means never a `:free` suffix; on Gemini it means **Vertex AI, authenticated by a service account** — billed to the GCP project and covered by the enterprise terms that exclude inputs from training — rather than an AI Studio key, whose free tier trains on prompts. That is enforced in the shape the code can enforce it: `apps/common/vertex.py` builds the client with `vertexai=True` and a service-account credential and there is no API-key setting for Gemini anywhere in `settings/base.py`, so the route that would break the promise is not one this deployment can be configured to take. Also set the account-level data policy (OpenRouter: disallow prompt logging/training) — the suffix is what code can check, the account setting is the other half.
 
@@ -84,10 +86,10 @@ GOOGLE_CLOUD_LOCATION=global         # see the region note below
 GOOGLE_APPLICATION_CREDENTIALS=/home/primer/.config/primer/vertex-sa.json
 GOOGLE_GENAI_USE_VERTEXAI=true
 
-# --- Embeddings (semantic recall) ---
-EMBEDDING_PROVIDER=openai
-EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_API_KEY=<key>                 # pennies; the OpenAI API excludes inputs from training
+# --- Embeddings (semantic recall) — same service account, no OpenAI ---
+EMBEDDING_PROVIDER=google
+EMBEDDING_MODEL=gemini-embedding-001
+EMBEDDING_DIMENSIONS=1536            # a prefix of the model's native 3072; keeps the column
 
 # --- Images ---
 IMAGE_PROVIDER=cloudflare
@@ -133,7 +135,7 @@ Non-negotiable at a tight budget:
 
 1. **GCP billing budget + alert.** Set a budget on the billing account with email alerts at **$50 / $150 / $250** of the $300, so the credit can't silently drain. (Note: GCP alerts *notify*, they don't hard-stop — see #4.)
 2. **Beats are a paid line item now** (§3), so the credit covers the VM *and* the LLM calls. **Measured, not estimated:** two real beats through Vertex cost **$0.0031 and $0.0042** (986 input tokens both times; 1,136 and 1,572 output on `gemini-2.5-flash`, priced by `analytics.pricing`). The spread is thinking — Gemini sizes it per request — so budget on the upper figure. At ~90–120 beats/day that is roughly **$0.40–0.50/day, ~$12–15/month** — a little more than the earlier guess, because Gemini's *thinking* tokens bill at the output rate and are reported separately (`router._gemini_usage` folds them in, so cost/session already counts them). Against a $300 credit that is comfortable. Watch it in `manage.py metrics` (cost/session) rather than assuming a free tier absorbs it.
-3. **OpenAI usage hard-limit.** Set a low monthly cap (e.g. $5) in the OpenAI dashboard — embeddings won't come close, so this is pure insurance.
+3. ~~**OpenAI usage hard-limit.**~~ **No longer applicable — there is no OpenAI account.** Embeddings moved to Vertex `gemini-embedding-001` on the same service account, so every paid route in the product is inside the one GCP budget from #1. That is a real simplification of the spend story: one dashboard to watch, one alert to set, and one bill that the $300 credit covers.
 4. **Hard-stop billing (optional but recommended).** A small Cloud Function tied to the budget pub/sub topic that disables billing at 100% of credit prevents any post-credit charge. Ask me to add this if you want a true hard ceiling.
 5. **Cloudflare & Google free tiers are self-capping** — they degrade or 429 rather than bill you, and the app handles that gracefully (see #6).
 
@@ -209,7 +211,7 @@ The architecture doesn't change between pilot and growth — only the size of th
 ## 11. Open decisions to confirm (defaults chosen, correct me if wrong)
 
 1. **VM region** — defaulted to nearest your users (`asia-south1`/Mumbai if India-based). *Confirm your users' location.* Note this is the **compute** region and is independent of `GOOGLE_CLOUD_LOCATION`, which must be `global` or `us-central1` because `asia-south1` does not serve Flash-Lite (§4).
-2. **Embeddings** — recommend OpenAI `text-embedding-3-small` (pennies) over free `local-hash`, because semantic recall is the moat. `local-hash` is $0 but lexical; fine only if you want zero extra vendors at launch.
+2. ~~**Embeddings**~~ — **decided and built.** Vertex `gemini-embedding-001` at 1536 dims on the same service account, so semantic recall costs no extra vendor at all — which was the only thing that made `local-hash` tempting. Proven semantic against the live API: three memories, three queries sharing **no content word** with the memory each should find, all three ranked first; the same queries under `local-hash` got one of three, and that one degenerately (the same memory won every query).
 3. **Day-90 plan** — assumed migrate to Hetzner. Alternative: stay on GCP paid (simpler, but ~5× the compute cost).
 4. ~~**Native Gemini provider vs OpenRouter**~~ — **decided and built.** The native `google` provider runs on Vertex with service-account auth (§4 note). OpenRouter stays wired as a seam, unused by this deployment.
 5. **Domain** — do we want a custom pilot URL, or is the VM IP / a free subdomain fine for 15 users?
@@ -222,9 +224,9 @@ The architecture doesn't change between pilot and growth — only the size of th
 - [ ] **Vertex AI API enabled** on the project
 - [ ] **Service account + JSON key** with the `roles/aiplatform.user` role — this is the credential for beats, safety, memory *and* image moderation, all four. **No API key of any kind** (§3): an AI Studio key is a different product under different terms. Store the JSON outside the repo, owner-read-only (§4).
 - [ ] Google Cloud Text-to-Speech API enabled + key
-- [ ] OpenAI account + API key (embeddings) — with a low usage cap
+- [ ] ~~OpenAI account + API key (embeddings)~~ — **not needed.** Embeddings run on the Vertex service account above. There is no OpenAI account in this product's supply chain.
 - [ ] Cloudflare account → Workers AI token + Account ID (images)
 - [ ] Cloudflare R2 bucket + access keys + public/CDN URL (media)
 - [ ] ElevenLabs account + API key + a voice ID (voice failover)
 - [ ] (Day 90) Hetzner account
-- [ ] Budget alerts configured on GCP and OpenAI **before** onboarding users
+- [ ] Budget alerts configured on GCP **before** onboarding users (one account now covers every paid route)

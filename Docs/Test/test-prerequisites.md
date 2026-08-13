@@ -9,7 +9,7 @@
 To honestly judge the two moat moments (day-two greeting + invisible learning) you need:
 
 - **A Vertex AI service account (paid) — the three LLM jobs *and* the image gate.** Beats, the safety grader, the memory digest and the vision moderation call all run on **Gemini via Vertex AI** (`gemini-2.5-flash` for beats, `gemini-2.5-flash-lite` for safety/memory/moderation). **Not an API key and not AI Studio** — the free tier trains on prompts. One service-account JSON covers all four.
-- **`OPENAI_API_KEY` (paid, pennies) — embeddings.** `text-embedding-3-small`. This is what makes Day-9 recall actually *semantic*; without it you're on the lexical `local-hash` fallback and recall quality is unverified.
+- **Embeddings — the same Vertex service account, no extra vendor.** `gemini-embedding-001` at 1536 dims (`EMBEDDING_PROVIDER=google`). This is what makes Day-9 recall actually *semantic*; the alternative is the lexical `local-hash` fallback, which cannot match "the winged reptile he invented" to a memory about a dragon. **No OpenAI account is needed anywhere in this product.**
 - **A Google TTS key (free tier) — voice.** The greeting is *spoken* to a pre-reader, so you can't judge warmth on the offline chime. Google Cloud TTS (free 1M chars/mo) with ElevenLabs as failover.
 - **Cloudflare (free tier) — images.** Workers AI for art. Moderation of that art runs on the same Vertex credentials as the LLM jobs (`IMAGE_MODERATION_PROVIDER=google`), so there is no separate vision key to obtain — but it does have to be *switched on*, see "still-owed items" below.
 
@@ -23,7 +23,7 @@ Everything else (Postgres, Redis) runs free/local.
 | **Story beats** (the writing) | `AI_BEAT_MODEL=gemini-2.5-flash` (bare id, no slug, no `:free`) | **Paid** | **Yes** — quality + feel of the whole story |
 | **Safety grader** (every beat vetted) | `AI_SAFETY_MODEL=gemini-2.5-flash-lite`; must differ from the beat model; `SAFETY_CLASSIFIER_ENABLED=true` | **Paid** | **Yes** — in front of every beat |
 | **Memory digest** (consolidation) | `AI_MEMORY_MODEL=gemini-2.5-flash-lite`, set **explicitly** (don't let it inherit) | **Paid** | **Yes** — carries verbatim child speech; writes what tomorrow recalls |
-| **Embeddings** (semantic recall — the moat) | `OPENAI_API_KEY`, `EMBEDDING_PROVIDER=openai`, `EMBEDDING_MODEL=text-embedding-3-small` | **Paid, pennies** | **Yes** — without it recall is lexical, not semantic |
+| **Embeddings** (semantic recall — the moat) | `EMBEDDING_PROVIDER=google`, `EMBEDDING_MODEL=gemini-embedding-001`, `EMBEDDING_DIMENSIONS=1536` | **Paid, pennies** (same service account) | **Yes** — on `local` recall is lexical, not semantic |
 | **Voice / TTS** | `TTS_PROVIDER=google` + `GOOGLE_TTS_API_KEY`; `TTS_FALLBACK_PROVIDERS=elevenlabs` + `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` | **Free tier** (Google 1M chars/mo) | **Yes** — the greeting is spoken |
 | **Illustrations** | `IMAGE_PROVIDER=cloudflare` + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | **Free** (~10k neurons/day) | **Yes** — for visual realism |
 | **Image moderation** | `IMAGE_MODERATION=auto` + `IMAGE_MODERATION_PROVIDER=google` + `IMAGE_MODERATION_MODEL=gemini-2.5-flash-lite` | **Paid** (same service account) | **Yes** — the recall layer behind the companion-injection fix (F-1/F-2). Must actually run — see below. |
@@ -49,7 +49,7 @@ The local manual test with real keys is the place to close the two verification 
 
 ## Cost expectation
 
-At test scale (one founder, a 45–60 min play), spend is small and bounded: paid Gemini Flash for beats + Flash-Lite for safety/memory is a few cents to ~a dollar; embeddings are pennies; TTS and images sit inside free tiers. Beats are now a small **paid** line rather than free — that's the deliberate privacy trade. Check current Gemini/OpenAI pricing for an exact figure, since rates drift.
+At test scale (one founder, a 45–60 min play), spend is small and bounded and **all of it is on one GCP bill against the $300 credit**: measured, a beat costs $0.003–0.004 and a safety grade $0.0001, so a 45-minute sitting is cents; embeddings are pennies; TTS and images sit inside free tiers. Beats are a small **paid** line rather than free — the deliberate privacy trade. Check current Gemini pricing for an exact figure, since rates drift.
 
 ## Do NOT use the offline/free mode for this test
 

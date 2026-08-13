@@ -2,9 +2,16 @@
 
 The third adapter in this package, and deliberately the same shape as the other
 two: one interface — `embed(text) -> list[float]` — a provider name in
-configuration, one real implementation, and typed seams for the vendors that are
+configuration, real implementations, and typed seams for the vendors that are
 declared but not built. `apps.memory` never learns which vendor produced a
 vector, exactly as the story orchestrator never learns which model drew a picture.
+
+**The shipped provider is `google`** — `gemini-embedding-001` on Vertex AI, the
+same service account that writes beats, grades them, consolidates memory and
+looks at generated pictures. That is what makes every route carrying child data
+one vendor under one credential and one set of terms (§13.8), and it is why this
+product needs no OpenAI account. `OpenAIEmbeddingProvider` still works and is
+still selectable; it is simply no longer required.
 
 **Why it lives here rather than in `apps.memory`.** An embedding is a generated
 asset from a third-party provider with a key, a timeout and a failure mode, which
@@ -55,6 +62,18 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_INPUT_CHARS = 2000
 
 
+#: What an embedding is *for*. Modern embedding models are trained
+#: **asymmetrically**: the vector for a stored document and the vector for the
+#: query that should find it are produced by the same weights under different
+#: instructions, and using one where the other belongs costs real ranking quality.
+#: Named here rather than in the one provider that honours them, because the
+#: *call sites* are what know which is which — `memory.consolidation` is storing,
+#: `memory.retrieval` is asking — and that knowledge should not have to be
+#: rediscovered by the next provider that can use it.
+TASK_DOCUMENT = "RETRIEVAL_DOCUMENT"
+TASK_QUERY = "RETRIEVAL_QUERY"
+
+
 @runtime_checkable
 class EmbeddingProvider(Protocol):
     """One embedding model, reduced to what the memory service needs."""
@@ -68,25 +87,34 @@ class EmbeddingProvider(Protocol):
 
     def is_configured(self) -> bool: ...
 
-    def embed(self, text: str) -> list[float]:
-        """Return the embedding of `text`."""
+    def embed(self, text: str, *, task: str = TASK_DOCUMENT) -> list[float]:
+        """Return the embedding of `text`.
+
+        `task` is a *hint*, not a contract: a provider whose model is symmetric
+        ignores it, which is why it has a default and why no caller has to know
+        which kind of provider is configured.
+        """
         ...
 
 
 class OpenAIEmbeddingProvider:
-    """`text-embedding-3-small` — the implemented real provider.
+    """`text-embedding-3-small` — a working provider, no longer the shipped one.
 
-    Chosen for the boring reasons: 1536 native dimensions (so §17.3's column
-    width is the provider's own default rather than a truncation), a price low
-    enough that a family's whole memory graph costs less than one illustration,
-    and an SDK already in `requirements.txt` for the OpenRouter path.
+    Chosen originally for the boring reasons: 1536 native dimensions (so §17.3's
+    column width was the provider's own default rather than a truncation), a
+    price low enough that a family's whole memory graph costs less than one
+    illustration, and an SDK already in `requirements.txt` for the OpenRouter
+    path. It is kept because all three are still true and because switching back
+    should stay a config change.
 
-    **`OPENAI_API_KEY` is used here and nowhere else.** §16.1 puts Claude on the
-    generation path and OpenAI on the fallback seam; Anthropic publishes no
-    embedding model, so this is the one place the OpenAI key is load-bearing
-    rather than optional. That is worth saying out loud because it means memory
-    embedding and story generation fail independently, which is the behaviour we
-    want: an Anthropic outage must not also stop us remembering.
+    **It is no longer required, and that is the point of keeping this note.** The
+    line that used to be here said `OPENAI_API_KEY` was "used here and nowhere
+    else" and was "the one place the OpenAI key is load-bearing" — true when
+    written, and false since embeddings moved to `GoogleEmbeddingProvider`. The
+    product now needs no OpenAI account at all: every route carrying child data
+    is one Vertex service account under one set of terms (§13.8). Selecting this
+    provider means adding a vendor back, which is a decision rather than a
+    default, and the 1536 width means it can be selected without a migration.
     """
 
     name = "openai"
@@ -100,7 +128,9 @@ class OpenAIEmbeddingProvider:
     def is_configured(self) -> bool:
         return bool(self._api_key)
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str, *, task: str = TASK_DOCUMENT) -> list[float]:
+        # `task` is ignored: `text-embedding-3-small` is symmetric — one set of
+        # weights, no document/query distinction to make.
         from openai import OpenAI, OpenAIError
 
         client = OpenAI(api_key=self._api_key, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -145,7 +175,9 @@ class LocalHashEmbeddingProvider:
     def is_configured(self) -> bool:
         return True
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str, *, task: str = TASK_DOCUMENT) -> list[float]:
+        # `task` is ignored: there are no weights here to instruct. A hash is a
+        # hash whichever end of the query it is on.
         vector = [0.0] * self.dimensions
         words = self._WORD.findall(text.lower()[:MAX_INPUT_CHARS])
         for word in words:
@@ -182,7 +214,7 @@ class _UnimplementedEmbeddingProvider:
     def is_configured(self) -> bool:
         return False
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str, *, task: str = TASK_DOCUMENT) -> list[float]:
         raise NotImplementedError(f"Embedding provider '{self.name}' is not implemented yet.")
 
 
@@ -193,11 +225,114 @@ class VoyageEmbeddingProvider(_UnimplementedEmbeddingProvider):
     dimensions = 1024
 
 
-class GoogleEmbeddingProvider(_UnimplementedEmbeddingProvider):
-    """Fallback seam — Google `text-embedding-004`. Not implemented."""
+class GoogleEmbeddingProvider:
+    """`gemini-embedding-001` on Vertex AI — the shipped provider (§11.3, §16.6).
+
+    **The same service account as everything else.** Beats, the safety grader, the
+    memory digest and the image gate already run on Vertex
+    (`apps.common.vertex`); this is the fourth and last child-data route to move,
+    and it moves the product to *one* vendor with *one* credential under the GCP
+    terms that exclude our inputs from training (§13.8). Before it, a family's
+    memories were the one thing that still needed an OpenAI account.
+
+    **1536 by truncation, not by native width, and that is the whole design.**
+    `gemini-embedding-001` is a Matryoshka model: its native 3072-dimensional
+    output is trained so that any prefix of it is still a usable embedding. Asking
+    for `output_dimensionality=1536` therefore keeps `memory.embedding` a
+    `vector(1536)` column with its existing HNSW index — no migration, no
+    re-embed, no index rebuild — and costs some accuracy rather than correctness.
+
+    **Truncated output is not unit-length, and this normalizes it.** Measured
+    against the live API on 13 Aug 2026, embedding the same sentence:
+
+        3072 dims -> L2 norm 1.000000   (the native width; already normalized)
+        1536 dims -> L2 norm 0.690528
+         768 dims -> L2 norm 0.588767
+
+    Google's guidance is to re-normalize anything below the native width, and this
+    provider does. **Be precise about why**, because the tempting reason is wrong:
+    retrieval ranks with pgvector's `CosineDistance` under a `vector_cosine_ops`
+    index, and cosine is magnitude-invariant — so today, unnormalized vectors
+    would rank *identically*. What normalization actually buys is that the column
+    stays a set of unit vectors, which is what makes it safe to ever put an L2 or
+    inner-product query or index over it, what keeps these vectors comparable in
+    magnitude with `LocalHashEmbeddingProvider`'s (a database holding both should
+    not hold two different scales), and what makes a stored vector mean the same
+    thing if `EMBEDDING_DIMENSIONS` is ever changed. It costs one pass over 1536
+    floats.
+    """
 
     name = "google"
-    dimensions = 768
+    credential_env_var = "GOOGLE_APPLICATION_CREDENTIALS"
+
+    def __init__(self, model: str = "", dimensions: int = 0) -> None:
+        self._model = model or settings.EMBEDDING_MODEL
+        #: Read from settings rather than fixed as a class attribute, unlike the
+        #: providers above: this model's width is a *request parameter*, so the
+        #: only honest declared width is the one we are going to ask for.
+        self.dimensions: int = dimensions or settings.EMBEDDING_DIMENSIONS
+
+    def is_configured(self) -> bool:
+        """True when the Vertex credentials are set — the same question the LLM
+        provider asks, through the same module, so a deployment cannot be
+        configured for one and not the other."""
+        from apps.common import vertex
+
+        return vertex.is_configured()
+
+    def embed(self, text: str, *, task: str = TASK_DOCUMENT) -> list[float]:
+        from google.genai import types
+
+        from apps.common import vertex
+
+        try:
+            response = vertex.client().models.embed_content(
+                model=self._model,
+                contents=text[:MAX_INPUT_CHARS],
+                config=types.EmbedContentConfig(
+                    output_dimensionality=self.dimensions,
+                    task_type=task,
+                ),
+            )
+        except Exception as exc:
+            # Same boundary as the OpenAI provider's: `MediaProviderError` is what
+            # `consolidation` catches to write the memory without a vector rather
+            # than lose the memory. An SDK type reaching that handler would not be
+            # caught by it.
+            raise MediaProviderError(f"Could not reach the embedding provider: {exc}") from exc
+
+        embeddings = getattr(response, "embeddings", None) or []
+        values = list(getattr(embeddings[0], "values", None) or []) if embeddings else []
+        if not values:
+            raise MediaProviderError("Embedding provider returned no vector.")
+
+        if len(values) != self.dimensions:
+            # A second guard in front of `embed`'s. That one compares against the
+            # *column*; this one compares against what we asked this provider for,
+            # so a model that silently ignores `output_dimensionality` is named
+            # here as the cause instead of surfacing as a column mismatch whose
+            # obvious reading is "somebody changed EMBEDDING_DIMENSIONS".
+            raise MediaProviderError(
+                f"'{self._model}' returned {len(values)} dimensions for an "
+                f"output_dimensionality of {self.dimensions}."
+            )
+
+        return _l2_normalize([float(value) for value in values])
+
+
+def _l2_normalize(vector: list[float]) -> list[float]:
+    """Scale a vector to unit length. See `GoogleEmbeddingProvider` on why.
+
+    A zero vector is returned unchanged rather than divided: it cannot be scaled
+    to unit length, and inventing a direction for it would be inventing a meaning.
+    `embed`'s width guard still passes it, and it is the honest representation of
+    "the model returned nothing directional" — which for a one-sentence memory
+    would be a provider fault worth seeing rather than papering over.
+    """
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0.0:
+        return vector
+    return [value / norm for value in vector]
 
 
 EMBEDDING_PROVIDERS: dict[str, type] = {
@@ -226,15 +361,28 @@ def select_embedding_provider() -> EmbeddingProvider:
     provider = factory()
     if not provider.is_configured():
         raise MediaConfigurationError(
-            f"Embedding provider '{name}' has no credentials. Set OPENAI_API_KEY in "
-            "your .env, or set EMBEDDING_PROVIDER=local for deterministic offline "
-            "vectors while developing."
+            f"Embedding provider '{name}' has no credentials. Set the credential it "
+            f"needs ({getattr(factory, 'credential_env_var', '') or 'see the adapter'}) "
+            "in your .env - for the shipped `google` provider that is the Vertex "
+            "service account, GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION / "
+            "GOOGLE_APPLICATION_CREDENTIALS - or set EMBEDDING_PROVIDER=local for "
+            "deterministic offline vectors while developing."
         )
     return provider
 
 
-def embed(text: str, provider: EmbeddingProvider | None = None) -> list[float]:
+def embed(
+    text: str,
+    provider: EmbeddingProvider | None = None,
+    *,
+    task: str = TASK_DOCUMENT,
+) -> list[float]:
     """Embed one memory's content. The seam every caller should use.
+
+    `task` says what the vector is *for* — `TASK_DOCUMENT` for a memory being
+    stored, `TASK_QUERY` for the context being matched against them. It defaults
+    to the storing case because that is the overwhelming majority of calls and
+    because a wrong default should be the one that affects the smaller side.
 
     Raises `MediaConfigurationError` when no provider is usable and
     `MediaProviderError` when one was reached and did not answer. Both are
@@ -245,7 +393,7 @@ def embed(text: str, provider: EmbeddingProvider | None = None) -> list[float]:
         raise MediaProviderError("Refusing to embed an empty string.")
 
     chosen = provider if provider is not None else select_embedding_provider()
-    vector = chosen.embed(text)
+    vector = chosen.embed(text, task=task)
 
     expected = settings.EMBEDDING_DIMENSIONS
     if len(vector) != expected:
