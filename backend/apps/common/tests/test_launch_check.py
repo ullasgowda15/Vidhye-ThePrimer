@@ -65,6 +65,21 @@ def launchable(settings: Any, db: Any, tmp_path: Any) -> None:
     settings.MEMORY_ENCRYPTION_KEY = "6H0y0AGRTP-cKQ0RRW9x8p2yh4Y3iCJqQyLwLQ4qSAI="
     settings.MEDIA_STORAGE = "s3"
     settings.INFERENCE_BUDGET_USD_PER_WINDOW = 25.0
+    # The illustrator and the voice, credentialled. Pinned for the same reason the
+    # models above are — `credentials.*` reads the real settings, and CI has no
+    # keys, so an unpinned fixture would assert that a box with no vendors at all
+    # is launchable. The values are shaped like credentials rather than like the
+    # words for them, which is itself one of the things under test.
+    settings.SECRET_KEY = "l0KQ6QQ2rW8sVv1nB7pJdT4xY9zA3cE5gH8kM2qS6uW"
+    settings.IMAGE_PROVIDER = "cloudflare"
+    settings.CLOUDFLARE_ACCOUNT_ID = "9a7c1f2e4b6d8a0c2e4f6a8b0c2d4e6f"
+    settings.CLOUDFLARE_API_TOKEN = "cf-token-for-tests"
+    settings.IMAGE_FALLBACK_PROVIDERS = []
+    settings.TTS_PROVIDER = "elevenlabs"
+    settings.ELEVENLABS_API_KEY = "el-key-for-tests"
+    settings.ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+    settings.ELEVENLABS_VOICE_MAP = {}
+    settings.TTS_FALLBACK_PROVIDERS = []
     get_user_model().objects.create_user(
         email="ops@example.com", password="storybook-primer-42", is_staff=True
     )
@@ -284,6 +299,124 @@ class TestEachCheckCatchesItsOwnFailure:
         assert "WARN  spend.flags" in output
         assert "media.illustrations=off" in output
         assert code == 0
+
+
+class TestTheCredentialsSection:
+    """The section written after the pilot shipped with three unfilled blanks.
+
+    `.env` on the box held `YOUR_CLOUDFLARE_ACCOUNT_ID`, `YOUR_ELEVENLABS_VOICE_ID`
+    and a GCP project that answered 403 to everything. Every other row in this
+    command was green. A child got a pre-vetted fallback beat with no picture and
+    nothing spoken, and waited twenty seconds for it.
+
+    So each test here makes the deployment wrong in one of the ways it was
+    actually wrong that day, and asserts the preflight refuses.
+    """
+
+    def test_a_placeholder_credential_blocks_the_launch(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """The literal incident, on the row that costs nothing to run."""
+        settings.CLOUDFLARE_ACCOUNT_ID = "YOUR_CLOUDFLARE_ACCOUNT_ID"
+
+        output, code = run()
+        assert "FAIL  credentials.placeholders" in output
+        assert "CLOUDFLARE_ACCOUNT_ID=YOUR_CLOUDFLARE_ACCOUNT_ID" in output
+        assert code == 1
+
+    @pytest.mark.parametrize(
+        "value",
+        ("YOUR_ELEVENLABS_VOICE_ID", "<paste it here>", "change-me", "replace_me", "TODO"),
+    )
+    def test_the_shapes_an_unfilled_blank_arrives_in(
+        self, launchable: None, settings: Any, value: str
+    ) -> None:
+        settings.ELEVENLABS_VOICE_ID = value
+        output, code = run()
+        assert "FAIL  credentials.placeholders" in output
+        assert code == 1
+
+    def test_a_real_looking_credential_is_left_alone(self, launchable: None) -> None:
+        """The half that keeps the row worth having. A false positive here refuses
+        a launch that should have proceeded, which is how a check earns a habit of
+        being skipped."""
+        output, code = run()
+        assert "OK    credentials.placeholders" in output
+        assert code == 0
+
+    def test_an_illustrator_with_no_key_blocks_the_launch(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """`IMAGE_PROVIDER=cloudflare` and no token: every beat's picture raises on
+        the first cache miss, which is every beat."""
+        settings.CLOUDFLARE_API_TOKEN = ""
+
+        output, code = run()
+        assert "FAIL  credentials.illustrator" in output
+        assert code == 1
+
+    def test_a_voice_chain_with_nothing_in_it_blocks_the_launch(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """§4.9: a missing picture is a beat a child can still be told, a missing
+        voice is a screen a pre-reader cannot read and nothing to tap."""
+        settings.ELEVENLABS_API_KEY = ""
+        settings.TTS_FALLBACK_PROVIDERS = []
+
+        output, code = run()
+        assert "FAIL  credentials.voice" in output
+        assert code == 1
+
+    def test_a_named_fallback_with_no_credentials_is_warned_about(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """The failure that only appears during the outage it was meant to cover.
+
+        `TTS_FALLBACK_PROVIDERS=google` with no `GOOGLE_TTS_API_KEY` is a runtime
+        no-op — the chain quietly has one member, and the log says `next=-` at the
+        exact moment ElevenLabs stops answering. Correct behaviour; a bad surprise.
+        """
+        settings.TTS_FALLBACK_PROVIDERS = ["google"]
+        settings.GOOGLE_TTS_API_KEY = ""
+
+        output, code = run()
+        assert "WARN  credentials.fallbacks" in output
+        assert "TTS_FALLBACK_PROVIDERS=google" in output
+        assert code == 0
+
+    def test_not_probing_the_vendors_is_itself_a_warning(self, launchable: None) -> None:
+        """A well-formed key the vendor refuses is invisible offline, so the
+        default run says so rather than implying it checked. `--strict` — what a
+        release pipeline runs — turns that into a refusal."""
+        output, code = run()
+        assert "WARN  credentials.reachable" in output
+        assert code == 0
+
+        _, strict_code = run(strict=True)
+        assert strict_code == 1
+
+    def test_live_reports_what_each_vendor_answered(
+        self, launchable: None, monkeypatch: Any
+    ) -> None:
+        """`--live` turns the vendors' answers into rows. Stubbed at `probe_all`
+        rather than at the socket: what is under test is that a refusal from a
+        vendor reaches the exit code, not httpx."""
+        from apps.common import preflight
+
+        monkeypatch.setattr(
+            preflight,
+            "probe_all",
+            lambda: [
+                preflight.Probe("vertex:gemini-2.5-flash", False, "403 PERMISSION_DENIED"),
+                preflight.Probe("cloudflare", True, "credentials accepted"),
+            ],
+        )
+
+        output, code = run(live=True)
+        assert "FAIL  credentials.vertex:gemini-2.5-flash" in output
+        assert "403 PERMISSION_DENIED" in output
+        assert "OK    credentials.cloudflare" in output
+        assert code == 1
 
 
 class TestTheAllGoogleDeployment:

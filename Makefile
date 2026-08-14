@@ -144,8 +144,8 @@ backup: ## Dump the database (§16.10). DATABASE_URL required; PG_RUN for docker
 restore-drill: ## Restore the latest dump into a scratch DB and prove the data came back
 	PYTHON="$(ABS_PY)" sh infra/backup/restore-drill.sh $(DUMP)
 
-launch-check: ## Preflight a deployment before a child touches it. Add STRICT=--strict
-	cd backend && $(ABS_PY) manage.py launch_check $(STRICT)
+launch-check: ## Preflight a deployment. STRICT=--strict; LIVE=--live probes every vendor
+	cd backend && $(ABS_PY) manage.py launch_check $(STRICT) $(LIVE)
 
 flags: ## Show or pull a feature flag: make flags ARGS="set media.illustrations off"
 	cd backend && $(ABS_PY) manage.py flags $(ARGS)

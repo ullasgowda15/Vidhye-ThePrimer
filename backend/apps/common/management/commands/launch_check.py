@@ -54,11 +54,21 @@ class Command(BaseCommand):
             action="store_true",
             help="Treat every warning as a failure. What a release pipeline should use.",
         )
+        parser.add_argument(
+            "--live",
+            action="store_true",
+            help=(
+                "Ask each configured vendor whether the credential we hold actually works. "
+                "Makes real calls: ElevenLabs speaks a word and the Gemini image probe "
+                "draws one picture, so a run costs a couple of credits and a few cents."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         checks: list[Check] = [
             *self._safety(),
             *self._privacy(),
+            *self._credentials(live=options["live"]),
             *self._durability(),
             *self._spend(),
             *self._monitoring(),
@@ -265,6 +275,109 @@ class Command(BaseCommand):
             )
         ]
 
+    # -- credentials (§16.10, §16.6) --------------------------------------
+    def _credentials(self, *, live: bool) -> list[Check]:
+        """Are the keys real, and does the vendor agree?
+
+        Every other section in this command reads configuration. This one is here
+        because a deployment can be perfectly configured and completely unable to
+        make a picture or a sound, and that is not a hypothetical: the pilot
+        launched with `.env` holding the *names* of three credentials rather than
+        the credentials, passed this preflight, and told a four-year-old a
+        fallback story with no illustration and nothing spoken.
+
+        The offline rows would have caught two of the three on a laptop. The third
+        — a project id spelled correctly and rejected anyway — is what `--live` is
+        for, and why not passing it is a warning rather than a silence.
+        """
+        from apps.common import preflight
+        from apps.media.adapters import image as image_adapters
+        from apps.media.adapters import tts as tts_adapters
+        from apps.media.exceptions import MediaConfigurationError
+
+        checks = []
+
+        # Softened under DEBUG for the same reason `durability.memory_key` is: a
+        # laptop legitimately runs on the repo's own insecure defaults, and a
+        # preflight that refuses on a laptop is a preflight nobody runs. Outside
+        # development it is a refusal, because there is no reading of
+        # `CLOUDFLARE_ACCOUNT_ID=YOUR_CLOUDFLARE_ACCOUNT_ID` that is fine.
+        unfilled = preflight.placeholders()
+        checks.append(
+            Check(
+                "credentials.placeholders",
+                OK if not unfilled else (WARN if settings.DEBUG else FAIL),
+                "no credential is still the word describing it"
+                if not unfilled
+                else "still holding the placeholder from .env.example: " + ", ".join(unfilled),
+            )
+        )
+
+        # The illustrator. `select_image_provider` is the product's own answer, so
+        # a FAIL here is the exact error a child's beat would hit on a cache miss.
+        try:
+            illustrator = image_adapters.select_image_provider()
+            verdict, detail = OK, f"IMAGE_PROVIDER={illustrator.name} has credentials"
+        except MediaConfigurationError as exc:
+            verdict, detail = FAIL, str(exc)
+        checks.append(Check("credentials.illustrator", verdict, detail))
+
+        # And the voice, where an empty chain is the one §4.9 calls unplayable: a
+        # missing picture is a beat a child can still be told, a missing voice is a
+        # screen a pre-reader cannot read and nothing to tap.
+        try:
+            chain = [provider.name for provider in tts_adapters.select_tts_providers()]
+            verdict, detail = OK, f"voice chain: {', '.join(chain)}"
+        except MediaConfigurationError as exc:
+            chain, verdict, detail = [], FAIL, str(exc)
+        checks.append(Check("credentials.voice", verdict, detail))
+
+        # A fallback that is named and uncredentialled is the failure that only
+        # appears during the outage it was supposed to cover. Both adapters skip
+        # one silently at runtime (`media.image_fallback_unconfigured`, and a
+        # voice chain that quietly has one member) — correct there, and exactly
+        # what this row exists to say out loud beforehand.
+        absent = [
+            f"{setting}={name}"
+            for setting, names, configured in (
+                (
+                    "IMAGE_FALLBACK_PROVIDERS",
+                    list(settings.IMAGE_FALLBACK_PROVIDERS),
+                    _configured_image_fallbacks(),
+                ),
+                ("TTS_FALLBACK_PROVIDERS", list(settings.TTS_FALLBACK_PROVIDERS), chain),
+            )
+            for name in names
+            if name and name not in configured
+        ]
+        checks.append(
+            Check(
+                "credentials.fallbacks",
+                WARN if absent else OK,
+                "every named fallback has credentials"
+                if not absent
+                else "named but uncredentialled, so absent at the moment it is needed: "
+                + ", ".join(absent),
+            )
+        )
+
+        if not live:
+            checks.append(
+                Check(
+                    "credentials.reachable",
+                    WARN,
+                    "not probed. Re-run with --live before letting a family in: a key can be "
+                    "well-formed, correctly wired and refused by the vendor.",
+                )
+            )
+            return checks
+
+        for probe in preflight.probe_all():
+            checks.append(
+                Check(f"credentials.{probe.name}", OK if probe.ok else FAIL, probe.detail)
+            )
+        return checks
+
     # -- durability (§16.10, §11.10) --------------------------------------
     def _durability(self) -> list[Check]:
         checks = []
@@ -437,6 +550,25 @@ class Command(BaseCommand):
             checks.append(Check("monitoring.metrics", FAIL, f"the metrics page raises: {exc!r}"))
 
         return checks
+
+
+def _configured_image_fallbacks() -> list[str]:
+    """Which of `IMAGE_FALLBACK_PROVIDERS` could actually be called.
+
+    Built from the adapters' own registry and their own `is_configured()`, and
+    deliberately *not* from `select_image_providers()`: that one consults the
+    quota cooldowns in Redis, so a provider resting after a bad afternoon would
+    read here as a provider with no credentials. Two very different problems, and
+    the preflight is about the permanent one.
+    """
+    from apps.media.adapters import image as image_adapters
+
+    configured = []
+    for name in settings.IMAGE_FALLBACK_PROVIDERS:
+        factory = image_adapters.IMAGE_PROVIDERS.get(name)
+        if factory is not None and factory().is_configured():
+            configured.append(name)
+    return configured
 
 
 def _pricing_covers_configured_providers() -> bool:

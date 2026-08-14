@@ -141,6 +141,12 @@ Two related settings, for completeness:
 
 ### 5. Verify
 
+- [ ] `python manage.py launch_check --live --strict` on the deployed box. This is
+      the one that catches a credential the vendor refuses; nothing else here does.
+      The pilot shipped with `CLOUDFLARE_ACCOUNT_ID=YOUR_CLOUDFLARE_ACCOUNT_ID`,
+      `ELEVENLABS_VOICE_ID=YOUR_ELEVENLABS_VOICE_ID` and a GCP project answering
+      `403 CONSUMER_INVALID`, and every other check on this page passed. `--live`
+      calls each vendor; the Gemini image probe draws one picture and costs cents.
 - [ ] `curl https://<api-host>/api/health/` returns `{"status":"ok",...}`
 - [ ] `/api/docs/` renders
 - [ ] `python manage.py createsuperuser` (one-off shell), then log into `/admin/`
