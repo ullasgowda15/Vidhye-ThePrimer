@@ -44,7 +44,8 @@ export default function ChildHome() {
   // a distinction this screen deliberately does not draw — see the footer.
   const { data } = useHealth();
   const { data: me, isLoading } = useMe();
-  const authenticated = useAuthStore((state) => state.accessToken !== null);
+  const status = useAuthStore((state) => state.status);
+  const authenticated = status === 'authenticated';
   const ok = data?.status === 'ok';
 
   // **Read the session, not just the cache.** `useMe` is disabled when there is
@@ -55,10 +56,19 @@ export default function ChildHome() {
   // name is not something to leave resting on one of them.
   const children = authenticated ? (me?.children ?? []) : [];
 
+  // **`loading` holds still**, the same three-state rule `ProtectedRoute`
+  // documents. The session is restored by one refresh at app load, so for the
+  // first moment of every cold start there is no token *and no answer yet*;
+  // reading that as "signed out" flashed the marketing page at a family on their
+  // way to a story, which is the child-surface version of flashing a login form.
+  if (status === 'loading') {
+    return <main className="min-h-full bg-bg" data-testid="session-restoring" />;
+  }
+
   // Nobody signed in, or signed in with no child yet: this visitor is a grown-up
   // deciding, not a child playing. `isLoading` is held back rather than treated
   // as "no children", so a family on a slow connection never flashes a sales page
-  // at a child on the way to their story.
+  // at a child on the way to their story either.
   if (!authenticated || (!isLoading && children.length === 0)) {
     return <Landing />;
   }

@@ -126,6 +126,47 @@ describe('auth store', () => {
   });
 });
 
+describe('the rotation race between tabs', () => {
+  // ROTATE_REFRESH_TOKENS and BLACKLIST_AFTER_ROTATION are both on, so spending
+  // the cookie invalidates it — and the in-flight guard only deduplicates within
+  // one tab. A parent with the dashboard open who hands the tablet to their child
+  // is two tabs bootstrapping at once, and the loser used to be signed out.
+  it('retries once when another tab has just rotated the cookie', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, { detail: 'token blacklisted' }))
+      .mockResolvedValueOnce(jsonResponse(200, { access: 'a-fresh' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const token = await useAuthStore.getState().refresh();
+
+    expect(token).toBe('a-fresh');
+    expect(useAuthStore.getState().status).toBe('authenticated');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after the second 401, because then the session really is over', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(401, { detail: 'expired' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const token = await useAuthStore.getState().refresh();
+
+    expect(token).toBeNull();
+    expect(useAuthStore.getState().status).toBe('anonymous');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a server hiccup, which says nothing about the session', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(502, {}));
+    useAuthStore.setState({ accessToken: 'a1', status: 'authenticated' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAuthStore.getState().refresh();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().status).toBe('authenticated');
+  });
+});
 describe('session restore', () => {
   it('restores the session from the cookie in one call', async () => {
     useAuthStore.setState({ status: 'loading' });

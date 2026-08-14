@@ -29,6 +29,15 @@ import { ApiError, api, connectAuth, type Me, type User } from '@/lib/api/client
 export const PARENT_GATE_TTL_MS = 15 * 60 * 1000;
 
 /**
+ * How long to wait before retrying a refresh that came back 401.
+ *
+ * Long enough for another tab's rotated `Set-Cookie` to reach the shared jar,
+ * short enough that a session which really has ended still resolves promptly —
+ * this only ever delays reaching a login form. See `refresh`.
+ */
+export const REFRESH_RACE_RETRY_MS = 250;
+
+/**
  * Whether we know yet.
  *
  * `loading` is the state the app starts in and holds until the bootstrap refresh
@@ -124,32 +133,54 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   refresh: async () => {
     if (inFlightRefresh) return inFlightRefresh;
 
-    inFlightRefresh = api
-      .refresh()
-      .then((tokens) => {
-        // The rotated refresh token arrives as a Set-Cookie; there is nothing for
-        // us to store, which is the entire benefit.
-        set({ accessToken: tokens.access, status: 'authenticated' });
-        return tokens.access;
-      })
-      .catch((caught: unknown) => {
+    const spendCookie = async (): Promise<string> => {
+      const tokens = await api.refresh();
+      // The rotated refresh token arrives as a Set-Cookie; there is nothing for
+      // us to store, which is the entire benefit.
+      set({ accessToken: tokens.access, status: 'authenticated' });
+      return tokens.access;
+    };
+
+    inFlightRefresh = spendCookie()
+      .catch(async (caught: unknown) => {
         // **Only a 401 is an answer about the session.** A 429, a 502 or a dropped
         // connection means we do not know yet, and treating "do not know" as "you
         // are signed out" is how a server hiccup evicts a parent from a session
         // that was still valid — then sends them to a login form to fix a password
         // that was never wrong.
-        //
-        // (The 401-retry path in `client.ts` still ends the session on any failed
-        // refresh, and should: there we already have a 401 in hand, so the access
-        // token is known dead rather than merely unconfirmed.)
-        if (caught instanceof ApiError && caught.status === 401) {
-          set({ accessToken: null, status: 'anonymous', user: null });
-        } else if (get().status === 'loading') {
+        if (!(caught instanceof ApiError && caught.status === 401)) {
           // A cold start has no token to preserve either way, and holding
           // `loading` forever would leave `ProtectedRoute` on a blank screen.
-          set({ status: 'anonymous' });
+          if (get().status === 'loading') set({ status: 'anonymous' });
+          return null;
         }
-        return null;
+
+        // **A 401 might be a rotation race rather than the end of the session.**
+        // `ROTATE_REFRESH_TOKENS` and `BLACKLIST_AFTER_ROTATION` are both on, so
+        // spending the cookie invalidates it — and `inFlightRefresh` only
+        // deduplicates *within one tab*. Open the dashboard and the child's story
+        // side by side and both bootstrap at load: one wins, the other presents a
+        // cookie that was alive a moment ago and gets signed out. That is not a
+        // developer's problem with three tabs open; it is a parent who has the
+        // dashboard open handing the tablet to their child, and §14.5 says the
+        // child must never land on a login form.
+        //
+        // The winner has already put a fresh cookie in the jar this tab shares,
+        // so trying exactly once more is usually enough. The wait is for that
+        // `Set-Cookie` to land. If the second attempt also 401s the session
+        // really is over, and one extra request is a cheap price for not evicting
+        // a family mid-story.
+        await new Promise((resolve) => setTimeout(resolve, REFRESH_RACE_RETRY_MS));
+        try {
+          return await spendCookie();
+        } catch (second: unknown) {
+          if (second instanceof ApiError && second.status === 401) {
+            set({ accessToken: null, status: 'anonymous', user: null });
+          } else if (get().status === 'loading') {
+            set({ status: 'anonymous' });
+          }
+          return null;
+        }
       })
       .finally(() => {
         inFlightRefresh = null;

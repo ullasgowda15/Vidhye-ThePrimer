@@ -127,6 +127,19 @@ describe('the front door', () => {
     ).toBeInTheDocument();
   });
 
+  it('holds still while the session is being restored', () => {
+    // Three states, not two — the rule ProtectedRoute documents, applied to the
+    // child surface. A cold start has no token and no answer yet; reading that
+    // as 'signed out' flashed the marketing page at a family on their way to a
+    // story, which is the child-surface version of flashing a login form.
+    stubApi({ health: HEALTHY, '/me': ONE_CHILD });
+    useAuthStore.setState({ accessToken: null, status: 'loading', user: null });
+
+    renderWithProviders(<ChildHome />);
+
+    expect(screen.getByTestId('session-restoring')).toBeInTheDocument();
+    expect(screen.queryByText(/start a storybook/i)).toBeNull();
+  });
   it('gives every sibling their own star', async () => {
     // The defect this replaced: the front door opened the first profile and nothing
     // else, so a second child could not reach their own story from it at all.
