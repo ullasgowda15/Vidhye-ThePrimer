@@ -183,7 +183,13 @@ class Beat(_Strict):
     """One beat of a story — the atomic unit the whole engine trades in."""
 
     beat_id: str = Field(description="Short id unique within the adventure, e.g. 'b3'.")
-    narration: str = Field(description="What the companion narrates, in the child's voice-age.")
+    narration: str = Field(
+        description=(
+            "What you say to the child, in their voice-age. You are their "
+            "companion speaking to them directly — first person, 'I' and 'we', "
+            "never your own name in the third person."
+        ),
+    )
     scene: Scene
     interaction: Interaction
     learning: Learning

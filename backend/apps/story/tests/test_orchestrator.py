@@ -1158,6 +1158,73 @@ class TestTheBeatDoesNotReadTheTapBackToTheChild:
         assert "Name that action in the narration" not in rule
 
 
+class TestTheCompanionSpeaksAsItself:
+    """§4.5, §19.2. The companion is the one talking, not a character being
+    described.
+
+    What a founder read on the transparency page: "Mini, you and Kany counted
+    those three strong branches together! Kany was so happy for Mini. … Kany sees
+    something bright … Kany is so glad we were together!" Every sentence a third
+    party narrating two people, one of whom is supposed to be the speaker.
+
+    Not a style preference. The whole product rests on a child being *known* by
+    someone — the day-two greeting, the remembered companion name, the imprint
+    hello that already says "Hi Mini! I'm Kany." A friend who refers to themselves
+    in the third person is a narrator reading about one, and a four-year-old hears
+    that long before they could name it.
+    """
+
+    def test_the_narration_that_prompted_this_is_reported(self) -> None:
+        narration = (
+            "Mini, you and Kany counted those three strong branches together! "
+            "Kany was so happy for Mini. Now, look down here, Mini. Kany sees "
+            "something bright, near Mini's little shoes!"
+        )
+
+        assert orchestrator.narration_in_third_person(narration, companion_name="Kany") is True
+
+    @pytest.mark.parametrize(
+        "narration",
+        [
+            "I see something bright, Mini! Come and look with me.",
+            "You and I counted them together, Mini!",
+            "Manu, here we are! We found the Big Bone Steps. I see Starry Cat.",
+            # The imprint hello, which has always been first person and must not
+            # start failing a check written for the beats.
+            "Hi Mini! I'm Kany. I've been waiting to meet you.",
+            "My name is Kany, and I am so glad you are here.",
+            # Another character's name is not the companion's.
+            "Elara points to a warm, cozy spot beside the big Hollow Oak tree.",
+        ],
+        ids=[
+            "first-person",
+            "you-and-I",
+            "we-and-I",
+            "imprint-hello",
+            "my-name-is",
+            "another-character",
+        ],
+    )
+    def test_a_companion_speaking_as_itself_is_left_alone(self, narration: str) -> None:
+        assert orchestrator.narration_in_third_person(narration, companion_name="Kany") is False
+
+    def test_an_unnamed_companion_is_never_reported(self) -> None:
+        """A child who has not named one yet. An empty name would otherwise match
+        everywhere."""
+        assert orchestrator.narration_in_third_person("Kany sees it", companion_name="") is False
+
+    def test_the_rule_reaches_the_model_in_the_user_turn(self) -> None:
+        """The identity layer says it too, but that is a page away at the top of
+        the system prompt and the defect survived it once already."""
+        assert "first person" in story_prompts.VOICE_RULE
+        assert "Kany sees a bright leaf" in story_prompts.VOICE_RULE
+
+        # Every beat, not just the ones that follow a tap.
+        for is_first in (True, False):
+            rendered = story_prompts.beat_request(seq=1, beat_id="b1", is_first=is_first)
+            assert story_prompts.VOICE_RULE in rendered
+
+
 class TestAFallbackTitlePromisesOnlyWhatItControls:
     """The title is written before any beat exists, so it may only name something
     every beat is already bound to.

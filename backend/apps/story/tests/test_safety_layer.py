@@ -149,7 +149,13 @@ class TestABlockedBeatBecomesAWarmBeat:
 
         assert beat.narration.strip()
         assert adventure.child.first_name in beat.narration
-        assert "Pip" in beat.narration
+        # The companion's *voice*, not its name. This used to assert "Pip" was in
+        # the text, which the pool satisfied by narrating the companion from
+        # outside — "Pip stops still and points at the grass" — and a fallback
+        # written that way is a beat the child can tell apart from the others,
+        # which is the one thing this test exists to prevent. Now it says "I", so
+        # the name is correctly absent and the check is that it speaks at all.
+        assert orchestrator.narration_in_third_person(beat.narration, companion_name="Pip") is False
         assert beat.scene["illustration_prompt"].strip()
         assert len(beat.options) >= 2
         assert (beat.interaction or {}).get("prompt_audio")

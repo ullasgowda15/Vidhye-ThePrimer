@@ -284,14 +284,23 @@ def _companion_state(child: Child) -> str:
     appearance = (
         _instruction_text(companion.visual_descriptor, cap=LINE_CHARS) or "not yet described"
     )
+    # **"You are", not "Companion:".** This block used to open `Companion: Sparkle,
+    # a <archetype>.`, which reads as one more character in the scene — and the
+    # model wrote it that way: "Sparkle is with us. Sparkle thinks she looks a
+    # little sad", from a speaker who had just said "I see the Shell Garden". A
+    # name introduced as a third party stays a third party however many times the
+    # identity layer asks for the first person, because this block is the one that
+    # says who the name belongs to.
     lines = [
-        f"Companion: {_instruction_text(companion.name, cap=NAME_CHARS)}, a {companion.archetype}.",
-        f"Appearance (canonical, never contradict): {appearance}.",
+        f"You are {_instruction_text(companion.name, cap=NAME_CHARS)}, "
+        f"a {companion.archetype}. That is you, the one speaking — not another "
+        f"character standing nearby. Say 'I', never your own name.",
+        f"Your appearance (canonical, never contradict): {appearance}.",
     ]
     if companion.personality:
         # From the built-in catalogue rather than from a text box, so it is dumped
         # rather than scrubbed — and dumped as JSON, which cannot carry a tag.
-        lines.append(f"Personality: {json.dumps(companion.personality, sort_keys=True)}")
+        lines.append(f"Your personality: {json.dumps(companion.personality, sort_keys=True)}")
     return "\n".join(lines)
 
 

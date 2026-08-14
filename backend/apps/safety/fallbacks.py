@@ -61,7 +61,7 @@ FALLBACK_EVIDENCE_KEY = "safe_fallback"
 _YOUNGER: tuple[dict[str, Any], ...] = (
     {
         "narration": (
-            "{companion} stops still and points at the grass. A tiny snail is going "
+            "I stop still and point at the grass. A tiny snail is going "
             "somewhere, very slowly. {child}, look how shiny its little shell is!"
         ),
         "setting": "a sunny patch of soft grass",
@@ -84,7 +84,7 @@ _YOUNGER: tuple[dict[str, Any], ...] = (
     },
     {
         "narration": (
-            "A warm little breeze comes past and {companion} laughs. Their ears wobble! "
+            "A warm little breeze comes past and I laugh. My ears wobble! "
             "{child}, the breeze wants to play with us."
         ),
         "setting": "an open meadow with the wind moving through it",
@@ -110,8 +110,8 @@ _YOUNGER: tuple[dict[str, Any], ...] = (
     },
     {
         "narration": (
-            "{companion} finds a smooth round stone and holds it up. It is warm from the "
-            "sun. 'Feel that, {child}! The sun left it here for us.'"
+            "I find a smooth round stone and hold it up. It is warm from the "
+            "sun. Feel that, {child}! The sun left it here for us."
         ),
         "setting": "a quiet bank of smooth sun-warmed stones",
         "illustration_prompt": (
@@ -139,10 +139,10 @@ _YOUNGER: tuple[dict[str, Any], ...] = (
 _OLDER: tuple[dict[str, Any], ...] = (
     {
         "narration": (
-            "{companion} crouches down and goes very quiet. Under the fern there is a "
+            "I crouch down and go very quiet. Under the fern there is a "
             "line of tiny ants, all carrying something, all going the same way. "
-            "'Look, {child},' {companion} whispers. 'They're taking it home. "
-            "Everyone is doing their bit.'"
+            "Look, {child} — I think they're taking it home. "
+            "Everyone is doing their bit."
         ),
         "setting": "the cool green shade beneath a fern",
         "illustration_prompt": (
@@ -171,8 +171,8 @@ _OLDER: tuple[dict[str, Any], ...] = (
     {
         "narration": (
             "The light has gone gold and long, the way it does near the end of an "
-            "afternoon. {companion} sits down beside {child} and lets out a happy sigh. "
-            "'This is my favourite bit of the day,' they say. 'The quiet bit.'"
+            "afternoon. I sit down beside you, {child}, and let out a happy sigh. "
+            "This is my favourite bit of the day. The quiet bit."
         ),
         "setting": "a slope of grass in late golden afternoon light",
         "illustration_prompt": (
@@ -202,9 +202,9 @@ _OLDER: tuple[dict[str, Any], ...] = (
     },
     {
         "narration": (
-            "{companion} has found a puddle, and the puddle has found the sky. The whole "
-            "sky is in it, upside down, clouds and all. '{child},' says {companion}, "
-            "'we are standing on the sky.'"
+            "I have found a puddle, and the puddle has found the sky. The whole "
+            "sky is in it, upside down, clouds and all. {child}, "
+            "we are standing on the sky!"
         ),
         "setting": "a still puddle on a path, reflecting the sky",
         "illustration_prompt": (

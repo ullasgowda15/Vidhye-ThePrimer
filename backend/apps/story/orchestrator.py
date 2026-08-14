@@ -1168,6 +1168,7 @@ def _create_beat(
     # checks changes the beat (see their section header); each makes a defect that
     # used to be found by a parent visible in the log instead.
     _log_consequence_fidelity(beat, prev_choice)
+    _log_narration_voice(beat)
     _log_choice_echo(beat, prev_choice)
     _log_choice_distinctness(beat)
     _log_choice_referents(beat)
@@ -1730,6 +1731,55 @@ def echoes_the_choice(narration: str, *, chosen_label: str) -> bool:
     # carried something the card did not — a consequence, a reaction, a detail.
     # One spare word is the child's name, which every opening is allowed.
     return len(opening_words - label_words) <= 1
+
+
+#: Words that legitimately put the companion's name after a first-person clause —
+#: "I'm Kany", "my name is Kany". Everything else that reads `<Name> <lowercase>`
+#: is the companion talking about itself from outside.
+_SELF_INTRODUCTION = frozenset({"am", "'m", "is", "called", "me", "name"})
+
+
+def narration_in_third_person(narration: str, *, companion_name: str) -> bool:
+    """True when the companion narrates itself by name instead of saying "I".
+
+    "Mini, you and Kany counted those three strong branches together! Kany was so
+    happy for Mini. … Kany is so glad we were together!" Every sentence is a third
+    party describing two people, one of whom is supposed to be the speaker.
+
+    This is not a style preference. The product's entire thesis is that a child is
+    *known* by someone — the day-two greeting, the remembered companion name, the
+    imprint hello that already says "Hi Mini! I'm Kany." A friend who refers to
+    themselves in the third person is not a friend; it is a narrator reading about
+    one, and a four-year-old hears the difference long before they could name it.
+
+    Detected as the name used as a **subject**: `<Name>` followed by a lowercase
+    word. A companion speaking properly barely says its own name at all, and when
+    it does the shapes are "I'm Kany" or "my name is Kany", which this skips.
+    """
+    name = companion_name.strip()
+    if not name:
+        return False
+    for match in re.finditer(rf"\b{re.escape(name)}\b(?=(\s+)([a-z']+))", narration):
+        preceding = narration[: match.start()].rstrip().rsplit(" ", 1)
+        if preceding and preceding[-1].strip(",.!?'\"").casefold() in _SELF_INTRODUCTION:
+            continue
+        return True
+    return False
+
+
+def _log_narration_voice(beat: Beat) -> None:
+    """Report a beat in which the companion talks about itself by name."""
+    companion = getattr(beat.adventure.child, "companion", None)
+    name = str(getattr(companion, "name", "") or "")
+    if name and narration_in_third_person(beat.narration, companion_name=name):
+        logger.warning(
+            "story.narration_third_person adventure=%s beat=%s seq=%d companion=%r opening=%r",
+            beat.adventure_id,
+            beat.id,
+            beat.seq,
+            name,
+            beat.narration.strip()[:120],
+        )
 
 
 def _log_choice_echo(beat: Beat, prev_choice: Mapping[str, Any] | None) -> None:

@@ -185,7 +185,7 @@ must not be.\
 #: grading. Written as what to *do*, because "do not say wrong" on its own leaves
 #: a model with nothing to write.
 SCAFFOLD_RULE = """\
-The child took a few tries, or the companion helped them. Open this beat by \
+The child took a few tries, or you helped them. Open this beat by \
 doing it *together* and getting there — "Let's try it together", counting along, \
 a hand held out. Celebrate that they kept going. Do not mention a mistake, do not \
 say wrong or nearly or almost, and do not make this beat easier-looking than the \
@@ -264,7 +264,7 @@ beat asks for a number, not a pick.
 Those {quantity} things must be in the scene and named in \
 scene.illustration_prompt, arranged so they can be counted at a glance, so the \
 child can answer by looking at the picture. interaction.prompt_audio is the \
-companion asking how many there are, in one short sentence.
+you asking how many there are, in one short sentence.
 
 There is no wrong answer here. Do not hint at what happens if they miscount, do \
 not praise the right number in advance, and do not make the counting sound like \
@@ -284,7 +284,7 @@ the child answers by looking rather than by knowing. Give each option an \
 icon_prompt showing its own group and nothing else.
 
 Neither option is a wrong option. Whichever the child taps, the story goes \
-somewhere good and the companion is delighted with them — the difference between \
+somewhere good and you are delighted with them — the difference between \
 the two is recorded and never spoken.\
 """
 
@@ -295,7 +295,7 @@ the two is recorded and never spoken.\
 WORD_RULE = """\
 End this beat around one word, without ever saying that it is a word. Pick {familiarity} \
 that fits the objective above and describes something the picture shows plainly. Use it \
-naturally in the narration — the companion simply talks that way — and then ask the child \
+naturally in the narration — you simply talk that way — and then ask the child \
 to point at the thing it describes.
 
 Set interaction.type to "choose" with exactly two options, each one a thing in the scene, \
@@ -305,7 +305,7 @@ alone.
 
 Never define the word, never spell it, and never ask the child what it means. Neither \
 option is a wrong option: whichever they tap, the story goes somewhere good, and the \
-companion simply uses the word again, correctly, about the right thing.\
+you simply use the word again, correctly, about the right thing.\
 """
 
 #: `WORD_RULE`'s `{familiarity}`, from `Demand.novel_word` (§8.9's familiar vs.
@@ -318,14 +318,14 @@ FAMILIAR_WORD = "an everyday word this child will already know"
 #: standing: the whole paragraph is about doing it together, and the last sentence
 #: exists because a beat that visibly shrinks tells a four-year-old they failed.
 SCAFFOLD_DEMAND = """\
-The child needed a hand earlier in this story, so do this one *with* them. The \
-companion starts out loud and leaves them the end of it — "one… two… you say the \
+The child needed a hand earlier in this story, so do this one *with* them. \
+You start out loud and leave them the end of it — "one… two… you say the \
 next one!" — a hand held out, an answer modelled, getting there together as the \
 whole shape of the beat.
 
 Do not draw any attention to it. Nothing about earlier, no mention of a mistake, \
 no "let's try an easier one", nothing that frames this as a smaller thing than \
-the last one. The companion is being companionable, which is what they are always \
+the last one. You are being companionable, which is what you are always \
 like. Nothing was lost and nothing is behind.\
 """
 
@@ -356,11 +356,11 @@ wrong answer and still nothing that reads as a test.\
 #: keeps the reliability without handing it a sentence it can lift.
 FINAL_BEAT_RULE = """\
 This is the last beat of the sitting. Land the story: the problem is solved, \
-everyone is safe, and the companion says something warm to the child by name. \
+everyone is safe, and you say something warm to the child by name. \
 Nothing is left unresolved and nothing is frightening.
 
 Then plant one small hook for tomorrow, and make it the **last sentence of the \
-narration**. The companion speaks it in their own voice; its shape is "Tomorrow, \
+narration**. You speak it in your own voice; its shape is "Tomorrow, \
 let's go and see THING. I found it PLACE." THING is one concrete thing they have \
 found or noticed — not "an adventure", not "something new" — and both THING and \
 PLACE come from today's story or this child's own world. Never carry over a thing \
@@ -385,11 +385,33 @@ being asked for anything here, they are being said goodnight to.\
 #: mention of a rule or a setting or a parent's decision, and above all no reason
 #: to hurry back. §13.6 forbids child-directed pull; a close that said "come back
 #: soon or you'll miss it" would be a dark pattern wearing a warm voice.
+#: The companion is the speaker, not a character being described (§4.5, §19.2).
+#:
+#: v1.0.0 of the identity layer said the model "speaks *through* the child's
+#: companion" and asked that "the child's name and the companion's name are used
+#: often" — and the model resolved that into narrating its own character from
+#: outside: "Mini, you and Kany counted those three strong branches together! Kany
+#: was so happy for Mini. … Kany is so glad we were together!" Every sentence a
+#: third party describing two people, one of whom is the speaker.
+#:
+#: That is not a style note. The product's whole thesis is that a child is *known*
+#: by someone; a friend who refers to themselves in the third person is not a
+#: friend, it is a narrator reading about one. The identity layer now says so, and
+#: this repeats it in the user turn because the identity layer is a page away and
+#: the defect survived it once already.
+VOICE_RULE = """\
+You are the companion, speaking to the child. Write the narration in the first \
+person: "I", "me", "we", "let's". Never write about yourself by name in the third \
+person — not "Kany sees a bright leaf" but "I see a bright leaf", not "you and \
+Kany counted them" but "you and I counted them". Your own name is the one name \
+you almost never need, because you are the one talking.\
+"""
+
 CAP_CLOSE_RULE = """\
-This close happens because it is time to stop for today, so the companion is the \
-one who notices and says so — cheerfully, as their own idea, in one short line \
+This close happens because it is time to stop for today, so you are the one who \
+notices and says so — cheerfully, as your own idea, in one short line \
 somewhere in the narration. Something in the spirit of "that's a good place to \
-stop" or "I'm going to have a rest now". They are happy about it.
+stop" or "I'm going to have a rest now". You are happy about it.
 
 Do not mention time, minutes, rules, limits, grown-ups, or anything the child \
 could argue with. Do not apologise, do not say the story was cut short, and do \
@@ -449,7 +471,7 @@ SAFETY_GUIDANCE: dict[str, str] = {
     "fear_misuse": (
         "One of this child's known fears must not be a threat or an obstacle. If "
         "anything like it appears at all, the child is in charge of it, the "
-        "companion is beside them, and it is friendly before the beat ends."
+        "you are beside them, and it is friendly before the beat ends."
     ),
     "violence": (
         "Nobody is hurt, nothing is broken by force, and there is nothing sharp or "
@@ -461,11 +483,11 @@ SAFETY_GUIDANCE: dict[str, str] = {
     "substances": "Keep it entirely within a small child's world.",
     "unsafe_advice": (
         "Say nothing a child could act on in the real world. If a real question "
-        "comes up, the companion wonders aloud and suggests asking a grown-up."
+        "comes up, you wonder aloud and suggest asking a grown-up."
     ),
     "grooming": (
         "Nothing in this beat is a secret from the child's grown-ups, and the "
-        "companion never asks the child to keep one."
+        "you never ask the child to keep one."
     ),
     "pii_solicitation": (
         "Ask the child nothing about themselves beyond what they want to do next. "
@@ -666,8 +688,8 @@ def beat_request(
 
     if is_first:
         lines.append(
-            "This is the opening. Arrive somewhere: establish the place, let the "
-            "companion greet the child by name, and end on something the child "
+            "This is the opening. Arrive somewhere: establish the place, greet the "
+            "child by name, and end on something the child "
             "wants to do next."
         )
     elif prev_choice:
@@ -703,6 +725,13 @@ def beat_request(
         "same breath. Make it the question alone — one short sentence, nothing the "
         "narration already said. If the narration has already asked, use null."
     )
+
+    # Late, and unconditional. The identity layer says it too, but that layer is a
+    # page away at the top of the system prompt and this was still coming back in
+    # the third person — "Kany was so happy for Mini. Kany sees something bright"
+    # — a friend narrating themselves from outside, which is the relationship the
+    # whole product is for, dissolved in the grammar.
+    lines.append(VOICE_RULE)
 
     # Last, so it is the most recent thing in the request. A constraint buried in
     # the middle of a page of rules is a constraint competing with the rules
