@@ -11,13 +11,6 @@
 export const themes = ['storyland', 'calm', 'night'] as const;
 export type ThemeName = (typeof themes)[number];
 
-/** `data-theme` value for a theme. Storyland is `:root`, so it has none. */
-export const themeAttribute: Record<ThemeName, string | undefined> = {
-  storyland: undefined,
-  calm: 'calm',
-  night: 'night',
-};
-
 // Per-world palettes are the layer *above* these (§15.1): same semantic tokens,
 // re-pointed by `data-world`. They live in `design/worlds.ts` because they are
 // keyed to the story engine's own world registry rather than to a UI surface.
@@ -97,5 +90,3 @@ export const tokens = {
   shadow,
   targetMin,
 } as const;
-
-export type Tokens = typeof tokens;

@@ -76,10 +76,10 @@ worker: ## Start the Celery worker
 superuser: ## Create an admin login
 	cd backend && $(ABS_PY) manage.py createsuperuser
 
-hello-beat: ## Generate one validated story Beat (needs an ANTHROPIC_API_KEY or OPENROUTER_API_KEY)
+hello-beat: ## Generate one validated story Beat (needs live credentials for the configured provider)
 	cd backend && $(ABS_PY) manage.py hello_beat
 
-smoke: ## Live AI smoke test — real provider calls (needs OPENROUTER_API_KEY). Never in CI.
+smoke: ## Live AI smoke test — real provider calls (needs live provider credentials). Never in CI.
 	cd backend && $(ABS_PY) manage.py smoke_ai $(SMOKE_ARGS)
 
 render-companion: ## Render a companion's reference set + 3 scenes: make render-companion CHILD=<uuid>

@@ -78,10 +78,6 @@ class Flag:
     #: refuse a bad one is before it is stored.
     validate: Callable[[str], str | None] | None = None
 
-    @property
-    def is_bool(self) -> bool:
-        return self.default in TRUE | FALSE
-
 
 #: Accepted spellings. Generous on input because these get typed into an admin
 #: form at speed; `enabled()` is strict about anything outside the two sets.

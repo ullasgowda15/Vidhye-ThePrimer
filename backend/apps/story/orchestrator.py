@@ -720,11 +720,6 @@ def create_adventure(child: Child, *, session: PlaySession | None = None) -> Adv
     return adventure
 
 
-async def begin_adventure(child: Child, *, session: PlaySession | None = None) -> Adventure:
-    """`create_adventure` for an async caller, off the event loop (§16.4)."""
-    return await _offload(create_adventure, child, session=session)
-
-
 def current_adventure(child: Child) -> Adventure | None:
     """The story this child is in the middle of, if there is one (§18.4).
 

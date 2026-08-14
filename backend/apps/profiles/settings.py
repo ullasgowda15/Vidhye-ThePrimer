@@ -34,7 +34,7 @@ treats as "anything goes".
 from __future__ import annotations
 
 import datetime
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -293,8 +293,3 @@ def settings_for(child: Child) -> ChildSettings:
         text_on=bool(child.text_on),
         accessibility=Accessibility.from_json(child.accessibility),
     )
-
-
-def avoid_topics_for(child: Child) -> Sequence[str]:
-    """Shorthand for the one setting two safety modules read on every beat."""
-    return settings_for(child).avoid_topics

@@ -28,10 +28,6 @@ from apps.safety.models import Action, SafetyIncident, Severity
 
 logger = logging.getLogger(__name__)
 
-#: Severities at which `escalation` is engaged. Read here rather than at the call
-#: sites so "what counts as serious" has one definition.
-ESCALATION_SEVERITIES = frozenset({Severity.HIGH, Severity.CRITICAL})
-
 
 def record(
     *,

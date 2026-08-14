@@ -17,8 +17,3 @@ app = Celery("primer")
 # All Celery config lives in Django settings under the CELERY_ prefix.
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
-
-
-@app.task(bind=True, ignore_result=True)
-def debug_task(self) -> None:  # pragma: no cover - diagnostic helper
-    print(f"Request: {self.request!r}")

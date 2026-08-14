@@ -399,12 +399,6 @@ def objective_by_code(code: str | None) -> Objective | None:
     return Objective.objects.filter(code=code).first()
 
 
-def progress_for(child: Child, objective: Objective) -> LearningProgress:
-    """This child's row for this objective, created on first use."""
-    progress, _ = LearningProgress.objects.get_or_create(child=child, objective=objective)
-    return progress
-
-
 def starting_difficulty(progress: LearningProgress) -> float:
     """Where a sitting on this objective begins (§10.4).
 

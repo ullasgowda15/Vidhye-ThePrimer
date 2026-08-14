@@ -108,8 +108,3 @@ def _client(project: str, location: str, credentials_path: str) -> Any:
     # API (an API key, consumer terms) and Vertex (a service account, the GCP
     # project's billing and terms). §13.8 is a statement about the second one.
     return genai.Client(vertexai=True, project=project, location=location, credentials=credentials)
-
-
-def forget_client() -> None:
-    """Drop the cached client. For tests and for a credential rotation."""
-    _client.cache_clear()

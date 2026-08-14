@@ -9,7 +9,8 @@ This module is the enforcement half of that sentence. It answers two questions
 and nothing else:
 
     winding_down(adventure) -> is this sitting at its cap?
-    window_open(child)      -> may a story start right now?
+    gate_for(child)         -> may a story start right now, and what does the
+                               companion say if not?
 
 **Why it is a module and not a branch in the orchestrator.** Because §13.6 is the
 one part of the product designed to work *against* our own engagement metric, and
@@ -62,7 +63,7 @@ from dataclasses import dataclass
 from django.utils import timezone
 
 from apps.profiles.models import Child
-from apps.profiles.settings import ChildSettings, settings_for
+from apps.profiles.settings import settings_for
 from apps.story.models import Adventure, PlaySession
 
 logger = logging.getLogger(__name__)
@@ -113,19 +114,13 @@ def companion_name(child: Child) -> str:
     return getattr(companion, "name", None) or "Your friend"
 
 
-def window_open(child: Child, *, controls: ChildSettings | None = None) -> bool:
-    """Is the child inside their daily time window (§13.6)?
-
-    True whenever no window is set, which is the default. See
-    `profiles.settings.TimeWindow` for the wrapping case (19:00 to 07:00) and for the
-    timezone caveat, which is real and is written down rather than hidden.
-    """
-    controls = controls or settings_for(child)
-    return controls.time_window.is_open()
-
-
 def gate_for(child: Child) -> Gate:
     """May this child start a story right now, and what does the companion say?
+
+    The window itself is `profiles.settings.TimeWindow.is_open()` — see it for the
+    wrapping case (19:00 to 07:00) and for the timezone caveat, which is real and is
+    written down rather than hidden. It is read here and nowhere else, so "the door
+    is shut" and "here is how a companion says so" cannot drift apart.
 
     Only the window closes this door. The **cap does not**, and that is worth
     being explicit about: a cap is a bound on one sitting, so the honest response
@@ -201,22 +196,6 @@ def sitting_started_at(child: Child, session: PlaySession) -> datetime.datetime:
             SITTING_LOOKBACK,
         )
     return start
-
-
-def session_minutes(session: PlaySession | None) -> float:
-    """How long **one session row** has been running, in minutes.
-
-    Measured from `started_at` to now for a live sitting, and to `ended_at` for a
-    finished one — so this is meaningful in a report as well as in the loop.
-    Negative clock skew floors at zero rather than reading as a sitting that has
-    not begun.
-
-    Not what the cap is measured against; see `sitting_minutes`.
-    """
-    if session is None:
-        return 0.0
-    end = session.ended_at or timezone.now()
-    return max(0.0, (end - session.started_at).total_seconds() / 60.0)
 
 
 def sitting_minutes(child: Child, session: PlaySession | None) -> float:

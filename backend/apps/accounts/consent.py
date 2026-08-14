@@ -70,10 +70,6 @@ def active_consent(parent: User, consent_type: str | None = None) -> ConsentReco
     )
 
 
-def has_consent(parent: User, consent_type: str | None = None) -> bool:
-    return active_consent(parent, consent_type) is not None
-
-
 def require_consent(parent: User, consent_type: str | None = None) -> ConsentRecord:
     """Return the active grant, or refuse the operation.
 
