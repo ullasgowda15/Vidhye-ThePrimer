@@ -151,6 +151,7 @@ Run here, on each commit. The P1/P2-1/2/3 pass is `5dd9727`; the P2-4/P2-5/P2-6 
 | `makemigrations --check --dry-run` | **No changes detected** — no schema change in either pass, including the `kind=llm` decision that avoided one |
 | CI (first pass) | **green, run `31762474728`** on `5dd9727` — all five jobs (Backend, Frontend, Evals, Dependencies, Backend image) |
 | CI (follow-up) | **green, run `31764232250`** on `c9132b9` — all five jobs |
+| CI (final tree) | **green, run `31764795731`** on `e77fae3` — all five jobs. This is the run to quote: it is the last commit of the pass, with this report in it. |
 
 One correction to the record for a future reader, since the run list shows it: the follow-up commit's *own* run (`31764185406`, on `4f09096`) reads **cancelled**, and did not fail. `c9132b9` — a documentation-only commit landing the next session's brief — was pushed while it was in flight, and CI's concurrency rule superseded it. `31764232250` runs the same code plus that one markdown file, and it is green on all five jobs.
 
