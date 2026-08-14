@@ -85,6 +85,38 @@ describe('auth store', () => {
     expect(useAuthStore.getState().parentVerifiedUntil).toBeNull();
   });
 
+  it('presents the token to the server before dropping it', async () => {
+    // The ordering bug. Clearing locally first meant the logout arrived with no
+    // Authorization header, the server answered 401, and the client answered the
+    // 401 with a silent refresh from the very cookie being revoked.
+    useAuthStore.setState({ accessToken: 'a1', status: 'authenticated' });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(204, null));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAuthStore.getState().logout();
+
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer a1');
+    expect(useAuthStore.getState().accessToken).toBeNull();
+  });
+
+  it('never rebuilds the session it is ending', async () => {
+    // The security bug, end to end: sign out, then pass the adult gate, and you
+    // were signed back in. A 401 on logout must not be answered by a refresh.
+    useAuthStore.setState({ accessToken: 'a1', status: 'authenticated' });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, { detail: 'expired' }))
+      .mockResolvedValue(jsonResponse(200, { access: 'a-new' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().accessToken).toBeNull();
+    expect(useAuthStore.getState().status).toBe('anonymous');
+    const called = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(called.filter((u) => u.includes('/auth/refresh'))).toHaveLength(0);
+  });
   it('expires the parent gate', () => {
     useAuthStore.setState({ parentVerifiedUntil: Date.now() - 1 });
     expect(useAuthStore.getState().isParentVerified()).toBe(false);

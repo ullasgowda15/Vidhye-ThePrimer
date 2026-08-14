@@ -191,7 +191,29 @@ class RefreshView(TokenRefreshView):
 class LogoutView(APIView):
     """End the session: blacklist the refresh token and delete its cookie."""
 
-    permission_classes = [IsAuthenticated]
+    # Every docstring in this module is published as the endpoint's description in
+    # `/api/schema/`, so the reasoning below is a comment: it is for whoever
+    # changes this class, not for whoever integrates against it, and a note about
+    # a vulnerability we used to have does not belong in a public API document.
+    #
+    # **`AllowAny` is a tightening rather than a loosening.** This view
+    # authenticates the *cookie* — it reads it, blacklists what it names, clears
+    # it — and never touches `request.user`. Requiring an access token as well
+    # meant the credential that actually keeps a session alive for days could only
+    # be revoked while a 15-minute one happened to be valid, so a parent whose
+    # access token had expired could not sign out at all: the request 401'd and
+    # the refresh cookie lived on.
+    #
+    # Worse, the client answers a 401 with a silent refresh, so that 401 was
+    # satisfied *from the very cookie being revoked* — minting a fresh session on
+    # the way out. Signing out signed you back in.
+    #
+    # There is nothing here for an unauthenticated caller to take: without a
+    # cookie `post` does nothing at all, and with one they are by definition the
+    # holder of that session, which is exactly who may end it. `AuthUserThrottle`
+    # is a `UserRateThrottle`, which falls back to per-IP limiting for anonymous
+    # callers, so opening this up does not open a hole to hammer.
+    permission_classes = [AllowAny]
     throttle_classes = [AuthUserThrottle]
 
     @extend_schema(

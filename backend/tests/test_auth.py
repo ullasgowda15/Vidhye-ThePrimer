@@ -191,8 +191,42 @@ def test_logout_blacklists_the_session_and_deletes_the_cookie(auth, parent) -> N
     assert auth.post(REFRESH_URL).status_code == 401
 
 
-def test_logout_requires_authentication(api) -> None:
-    assert api.post(LOGOUT_URL).status_code == 401
+def test_logout_revokes_the_cookie_without_an_access_token(api, parent) -> None:
+    """The credential logout destroys is the **cookie**, so the cookie is the only
+    one it may require.
+
+    This used to assert `401` for an unauthenticated caller, and that guard was
+    the security bug rather than the protection against one. Two things followed
+    from it:
+
+    * A parent whose 15-minute access token had expired could not sign out. The
+      request 401'd and the refresh cookie — the credential that actually keeps a
+      session alive for days — lived on.
+    * The client answers a 401 with a silent refresh, so the 401 was satisfied
+      *from the very cookie being revoked*, minting a new session on the way out
+      and marking the store authenticated again. Signing out signed you back in.
+
+    There is nothing here for an unauthenticated caller to take: without a cookie
+    the view does nothing, and with one they are by definition the holder of that
+    session — which is exactly who is entitled to end it.
+    """
+    api.post(LOGIN_URL, {"email": parent.email, "password": PASSWORD}, format="json")
+    # The access token is never presented; only the cookie the login set.
+    assert api.cookies.get(COOKIE) is not None
+
+    response = api.post(LOGOUT_URL)
+
+    assert response.status_code == 204
+    assert response.cookies[COOKIE].value == ""
+    # And the session is genuinely dead, not merely forgotten by this client.
+    assert api.post(REFRESH_URL).status_code == 401
+
+
+def test_logout_without_a_session_is_a_quiet_no_op(api) -> None:
+    """No cookie, nothing to revoke. It answers 204 rather than an error, because
+    a client asking to be signed out when it already is has got what it wanted —
+    and an error here only tempts a client to keep the token and retry."""
+    assert api.post(LOGOUT_URL).status_code == 204
 
 
 def test_me_returns_the_parent_and_their_children(auth, parent, consent, child_payload) -> None:

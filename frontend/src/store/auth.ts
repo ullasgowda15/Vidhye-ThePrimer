@@ -100,11 +100,25 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
-    // Clear locally first: whatever the server says, this device is signed out.
-    // The cookie needs the server (it is httpOnly), so the call is still made —
-    // but a failed blacklist must not strand the parent in a half-signed-out UI.
-    set({ accessToken: null, status: 'anonymous', user: null, parentVerifiedUntil: null });
-    await api.logout().catch(() => undefined);
+    // **Tell the server while we still can, then clear.** This used to clear
+    // locally first, on the reasoning that whatever the server says this device
+    // is signed out. The reasoning was right and the order was fatal: with the
+    // access token already gone the logout arrived unauthenticated, the server
+    // answered 401, and `client.request` did what it does with a 401 — refreshed
+    // silently from the cookie it was being asked to revoke, marking the store
+    // authenticated again. Sign out, pass the adult gate, and you were back in.
+    //
+    // The `finally` keeps the original property: a failed blacklist still leaves
+    // this device signed out rather than stranding a parent in a half-signed-out
+    // UI. What it no longer does is leave the *session* alive.
+    try {
+      await api.logout();
+    } catch {
+      // Offline, or a token the server had already invalidated. Either way the
+      // local half below is what this device can still guarantee.
+    } finally {
+      set({ accessToken: null, status: 'anonymous', user: null, parentVerifiedUntil: null });
+    }
   },
 
   refresh: async () => {

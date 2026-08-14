@@ -1,7 +1,6 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 
-import { useMe } from '@/lib/api/queries';
-import { useAuthStore } from '@/store/auth';
+import { useLogout, useMe } from '@/lib/api/queries';
 
 import type { ChildSummary } from './dashboard';
 import { FOCUS_RING, LINK, QuietButton, SkipLink } from './ui';
@@ -55,7 +54,11 @@ export function DashboardShell({
 }) {
   const navigate = useNavigate();
   const { data: me } = useMe();
-  const logout = useAuthStore((state) => state.logout);
+  // `useLogout`, not the store's `logout` directly: signing out has to forget the
+  // cached answers as well as the token. Calling the store here left `me` in the
+  // query cache, and the front door went on drawing a star per child with their
+  // first names on it for whoever picked the tablet up next.
+  const logout = useLogout();
 
   async function signOut() {
     await logout();

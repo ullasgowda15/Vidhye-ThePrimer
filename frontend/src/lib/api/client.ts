@@ -177,6 +177,17 @@ interface RequestOptions {
   /** Send the bearer token and retry once after a silent refresh. */
   authenticated?: boolean;
   /**
+   * Never answer a 401 here by refreshing.
+   *
+   * The silent refresh below exists so an expired access token is invisible, and
+   * for every ordinary call that is right. For **logout** it is precisely wrong:
+   * a 401 there would be answered by minting a fresh session from the very cookie
+   * the request is trying to destroy — and `useAuthStore.refresh` sets
+   * `status: 'authenticated'` on its way through, so signing out signed you back
+   * in. That is not hypothetical; it is the bug this flag was added for.
+   */
+  noRefresh?: boolean;
+  /**
    * Send and accept the refresh cookie.
    *
    * Only the four `/auth/*` endpoints need this: the cookie is path-scoped
@@ -229,7 +240,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   // One silent refresh, then one retry. Access tokens live ~15 minutes, so a
   // parent reading the dashboard will hit this routinely; it must be invisible.
-  if (response.status === 401 && authenticated) {
+  // `noRefresh` opts out — see the flag: logout must never answer a 401 by
+  // rebuilding the session it is ending.
+  if (response.status === 401 && authenticated && !options.noRefresh) {
     const refreshed = await bridge.refresh();
     if (refreshed) {
       response = await send(path, options, refreshed);
@@ -311,7 +324,15 @@ export const api = {
     }),
 
   /** Blacklist the session server-side and clear the cookie. */
-  logout: () => request<null>(`${V1}/auth/logout`, { method: 'POST', withCookie: true }),
+  logout: () =>
+    request<null>(`${V1}/auth/logout`, {
+      method: 'POST',
+      withCookie: true,
+      // See `noRefresh`. Without it a logout that arrives unauthenticated is
+      // answered by a silent refresh, which mints a new session from the cookie
+      // being revoked and marks the store authenticated again.
+      noRefresh: true,
+    }),
 
   me: (signal?: AbortSignal) => request<Me>(`${V1}/me`, { signal }),
 

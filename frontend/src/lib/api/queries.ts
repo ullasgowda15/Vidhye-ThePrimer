@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback } from 'react';
 
 import { useAuthStore } from '@/store/auth';
 
@@ -500,6 +501,35 @@ export function useExportAccount() {
       return filename;
     },
   });
+}
+
+/**
+ * Sign out, and forget everything this account's session put in memory.
+ *
+ * **The cache clear is the point.** `useAuthStore.logout` drops the access token
+ * and blacklists the refresh cookie, which is enough to stop new requests — and
+ * not enough to stop *old answers*. `enabled: authenticated` disables a query; it
+ * does not evict what that query already fetched, so every hook went on returning
+ * its cached payload to whatever rendered next.
+ *
+ * That was visible on the front door: after signing out, `/` still read
+ * `me.children` and drew a star per child **with their first names on it**, for
+ * whoever picked the tablet up next. The names are the part that matters — this
+ * is a child's data on a signed-out screen (§13.7) — but the same stale cache
+ * backed reports, transcripts and memories too.
+ *
+ * `clear()` rather than `invalidate`: invalidating marks queries stale and
+ * refetches them, which for a session that has just ended is a burst of 401s on
+ * the way out.
+ */
+export function useLogout() {
+  const queryClient = useQueryClient();
+  const logout = useAuthStore((state) => state.logout);
+
+  return useCallback(async () => {
+    await logout();
+    queryClient.clear();
+  }, [logout, queryClient]);
 }
 
 /**
