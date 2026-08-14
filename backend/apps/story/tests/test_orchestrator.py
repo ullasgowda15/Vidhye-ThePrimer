@@ -17,6 +17,7 @@ import datetime
 import json
 import logging
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -322,8 +323,15 @@ def test_a_failed_plan_call_degrades_instead_of_raising(frog_lover, caplog) -> N
 
     assert adventure.plan["source"] == "fallback"
     assert adventure.plan["skeleton"] == list(orchestrator.FALLBACK_SKELETON)
-    # Built around what the child loves even in the degraded path.
-    assert "frogs" in adventure.plan["title"]
+    # The title names the **place**, never the child's interest. It used to
+    # interpolate the interest — "built around what they love even in the degraded
+    # path" — but this title is written before any beat exists and the fallback
+    # skeleton says nothing about the subject, so it was a promise made by a
+    # template that nothing downstream had to keep. One sitting shipped as "A day
+    # with cat at the Hollow Oak" and was about a snail from beat one to beat five.
+    # The parent reads this string on the transparency page beside the transcript.
+    assert adventure.plan["title"] == "A day at the Hollow Oak"
+    assert "frog" not in adventure.plan["title"].lower()
     assert "story.plan_failed" in caplog.text
     assert 5 <= adventure.estimated_beats <= 7
 
@@ -1041,6 +1049,145 @@ class TestThreeCardsThatAreOneAction:
             )
             == []
         )
+
+
+class TestACardMustNameWhatItActsOn:
+    """A label is the *whole* record of the child's tap.
+
+    `_guarded_generation` forwards it as the `Chose:` line and nothing else about
+    the option survives, so a label whose object is a pronoun asks the next beat
+    to resolve "it" against a narration it was never given — and a model resolving
+    it reaches for the most-talked-about noun rather than the one under the
+    child's finger.
+
+    The sitting that produced this: three cards about a feather, the child took
+    "Pick it up gently", and the next beat opened "The tiny snail felt so soft."
+    The feather was never mentioned again. `misattributed_options` cannot see this
+    — the narration quotes the chosen label faithfully — because what went wrong
+    is the *object*, not the action.
+    """
+
+    def test_the_label_that_lost_the_feather_is_reported(self) -> None:
+        """The real card set, verbatim."""
+        assert orchestrator.referentless_option_labels(
+            [
+                {"key": "pick_up", "label": "Pick it up gently"},
+                {"key": "leave", "label": "Leave the feather there"},
+                {"key": "more", "label": "Look for more feathers"},
+            ]
+        ) == ["Pick it up gently"]
+
+    @pytest.mark.parametrize(
+        "label",
+        ["Pick it up gently", "Watch it go", "Follow them", "Hold it"],
+        ids=lambda label: label.replace(" ", "-"),
+    )
+    def test_a_label_naming_nothing_is_reported(self, label: str) -> None:
+        assert orchestrator.referentless_option_labels([{"key": "k", "label": label}]) == [label]
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "Pick up the feather",
+            "Leave the feather there",
+            "Look for more feathers",
+            "Put it on a green leaf",
+            "Pick up the feather and hold it",
+            "Give it to Pip",
+            "Show me the stone",
+            "Wave hello",
+            "Count three frogs",
+        ],
+        ids=lambda label: label.replace(" ", "-"),
+    )
+    def test_a_label_that_names_its_object_is_left_alone(self, label: str) -> None:
+        """Including the ones that carry a pronoun *as well as* a noun. Crying wolf
+        here would train an operator to skim past the line that matters."""
+        assert orchestrator.referentless_option_labels([{"key": "k", "label": label}]) == []
+
+    def test_both_halves_of_the_rule_reach_the_model(self) -> None:
+        """A detector without the instruction only reports the same defect forever."""
+        assert "Pick it up gently" in story_prompts.CHOICE_RULE
+        assert "name the thing it acts on" in story_prompts.CHOICE_RULE
+        assert "same thing" in story_prompts.CONSEQUENCE_RULE
+        assert "creature standing next to it" in story_prompts.CONSEQUENCE_RULE
+
+
+class TestTheBeatDoesNotReadTheTapBackToTheChild:
+    """§4.9's calm surface has a prose half. The child pressed the card a second
+    ago; a beat that opens by telling them what they pressed is a machine
+    confirming an input, and it spends the sentence that decides whether a
+    four-year-old is still listening on the only thing they already know.
+    """
+
+    @pytest.mark.parametrize(
+        ("narration", "label"),
+        [
+            ("Manu chose to watch the little snail go. Sparkle watched too.", "Watch it go"),
+            ("Manu picked it up gently. The tiny snail felt so soft.", "Pick it up gently"),
+        ],
+        ids=["names-the-act-of-choosing", "restates-the-card"],
+    )
+    def test_the_two_flat_openings_are_reported(self, narration: str, label: str) -> None:
+        """Both taken verbatim from the sitting that prompted this."""
+        assert orchestrator.echoes_the_choice(narration, chosen_label=label) is True
+
+    @pytest.mark.parametrize(
+        ("narration", "label"),
+        [
+            ("Manu whispered a sweet sound. Right to the little snail!", "Whisper to the snail"),
+            ("The feather was softer than it looked.", "Pick up the feather"),
+            ("Manu reached out. The feather tickled!", "Pick up the feather"),
+            ("Down by the water, three frogs were waiting.", "Follow the river"),
+        ],
+        ids=["acts-in-the-world", "consequence-first", "reaches-then-reacts", "arrives-somewhere"],
+    )
+    def test_a_beat_that_shows_the_action_is_left_alone(self, narration: str, label: str) -> None:
+        assert orchestrator.echoes_the_choice(narration, chosen_label=label) is False
+
+    def test_the_rule_forbidding_it_reaches_the_model(self) -> None:
+        rule = story_prompts.CONSEQUENCE_RULE
+
+        assert "must not be the card, restated" in rule
+        assert "watched the little boats" in rule, "the counter-example is the useful part"
+        # The rule that used to sit here — "Name that action in the narration" —
+        # asked for the very sentence the one above forbids, and the model obeyed
+        # the nearer instruction. A live beat still opened "Manu watched the little
+        # boats" until this said `caused` instead.
+        assert "**caused**" in rule
+        assert "Name that action in the narration" not in rule
+
+
+class TestAFallbackTitlePromisesOnlyWhatItControls:
+    """The title is written before any beat exists, so it may only name something
+    every beat is already bound to.
+
+    It used to interpolate the child's first seed interest. One sitting came out
+    titled "A day with cat at the Hollow Oak" and was about a snail from beat one
+    to beat five — the outage that lost the plan had lost beat one too, the safety
+    pool served its pre-vetted snail, and the story followed the snail while the
+    title still advertised the cat. A parent reads that title on the transparency
+    page directly above the transcript.
+    """
+
+    def test_the_title_names_the_place_not_the_interest(self, child: Any) -> None:
+        child.interests = ["cat"]
+        setting = SimpleNamespace(name="the Hollow Oak")
+
+        plan = orchestrator._fallback_plan(child, setting)  # type: ignore[arg-type]
+
+        assert plan["title"] == "A day at the Hollow Oak"
+        assert "cat" not in plan["title"], "the fallback promised a subject it does not control"
+        assert plan["source"] == "fallback"
+
+    def test_a_missing_setting_still_yields_a_sentence(self, child: Any) -> None:
+        """No place either — the title still has to read like a title, because the
+        parent sees this one too."""
+        child.interests = []
+
+        plan = orchestrator._fallback_plan(child, None)
+
+        assert plan["title"] == "A day in the woods"
 
     def test_a_near_duplicate_decision_point_is_logged_and_still_offered(
         self, frog_lover, fake_ai, caplog

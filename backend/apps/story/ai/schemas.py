@@ -124,7 +124,12 @@ class ChoiceOption(_Strict):
 
     key: str = Field(description="Stable snake_case id for this option, e.g. 'follow_river'.")
     label: str = Field(
-        description="What the companion calls this option out loud — three to six plain words.",
+        description=(
+            "What the companion calls this option out loud — three to six plain "
+            "words, naming the thing it acts on. 'Pick up the feather', never "
+            "'Pick it up gently': the label is all the next beat is told about "
+            "what the child chose, so a pronoun with no noun leaves it guessing."
+        ),
     )
     icon_prompt: str = Field(
         description=(

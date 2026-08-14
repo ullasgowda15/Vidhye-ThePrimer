@@ -595,22 +595,30 @@ def build_plan(
 def _fallback_plan(child: Child, setting: worlds.Setting | None = None) -> dict[str, Any]:
     """A shape to tell a story against when the provider could not produce one.
 
-    Still in the child's own place, and still about what they love: the beats are
-    generated against this skeleton and are still personalised, so landing here
-    costs a generic *arc* rather than a generic world (§13's "the child never sees a
-    failure").
+    Still in the child's own place: the beats are generated against this skeleton
+    and are still personalised, so landing here costs a generic *arc* rather than a
+    generic world (§13's "the child never sees a failure").
 
-    The subject comes from the seed field rather than from the interest graph on
-    this path alone, and deliberately: graph topics are singularised for matching
-    ("frog"), and this string is the one place a topic is *read by a person* — the
-    adventure's title. A parent's own word is the better sentence.
+    **The title names the place and never the child's interest**, which is a
+    reversal. It used to read `A day with {interest} at {place}` on the reasoning
+    that a story about what they love should say so — but this title is written
+    *before* any beat exists and the fallback skeleton says nothing about the
+    subject, so it was a promise made by a template that nothing downstream was
+    obliged to keep.
+
+    It was not kept. One sitting was titled "A day with cat at the Hollow Oak" and
+    was about a snail from beat one to beat five: the same outage that lost the
+    plan had also lost beat one, the safety pool served its pre-vetted snail, and
+    the story followed the snail while the title still advertised the cat. The
+    parent reads that title on the transparency page next to the transcript, so
+    the one place it is seen is the one place the contradiction is plainest.
+
+    A place is safe to promise because the setting is already decided and every
+    beat is generated inside it. It also reads better: "A day in the Whispering
+    Woods" is a title, where "A day with cat" was a template with a slot in it.
     """
-    interests = [str(item) for item in (child.interests or []) if str(item).strip()]
-    subject = interests[0] if interests else ""
-    where = f" at {setting.name}" if setting is not None else ""
-    if not subject and not where:
-        subject = "a quiet corner of the woods"
-    title = f"A day with {subject}{where}" if subject else f"A day{where}"
+    where = setting.name if setting is not None else ""
+    title = f"A day at {where}" if where else "A day in the woods"
     return {
         "title": title,
         "skeleton": list(FALLBACK_SKELETON),
@@ -1160,7 +1168,9 @@ def _create_beat(
     # checks changes the beat (see their section header); each makes a defect that
     # used to be found by a parent visible in the log instead.
     _log_consequence_fidelity(beat, prev_choice)
+    _log_choice_echo(beat, prev_choice)
     _log_choice_distinctness(beat)
+    _log_choice_referents(beat)
     _log_lesson_leakage(beat, demand)
     # Folded into the bounded summary immediately, so the *next* beat's prompt
     # already knows this one happened without carrying its text (§8.6).
@@ -1620,6 +1630,122 @@ def alike_option_labels(options: Sequence[Mapping[str, Any]]) -> list[str]:
     return [label for labels in leading.values() if len(labels) > 1 for label in labels]
 
 
+#: Pronouns a label can use to point at an object it never names. Third-person
+#: only: "Pick **it** up", "Follow **them**" — the referent lives in the previous
+#: beat's narration, which the next generation is not given.
+#:
+#: "you" and "me" are deliberately absent. They refer to the child and the
+#: companion, who are named on every prompt and can never be ambiguous, so
+#: flagging "Show me the stone" would be crying wolf.
+_REFERENTLESS_PRONOUNS = frozenset({"it", "its", "them", "they", "him", "her", "his", "one"})
+
+#: What a label uses to introduce the thing it acts on. Presence of any of these
+#: is taken as "an object was named"; see `referentless_option_labels` for why the
+#: test is this blunt on purpose.
+_DETERMINERS = frozenset(
+    {"the", "a", "an", "more", "another", "some", "this", "that", "these", "those", "every"}
+)
+
+
+def referentless_option_labels(options: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Labels that act on a pronoun instead of naming their object.
+
+    The label is the entire record of what the child tapped: `_guarded_generation`
+    passes it forward as the `Chose:` line and nothing else about the option
+    survives. So "Pick it up gently" asks the next beat to resolve a pronoun
+    against a narration it cannot see, and a model resolving it picks the most
+    salient noun in the story rather than the one under the child's finger.
+
+    That is not theoretical. In one sitting the child chose "Pick it up gently"
+    over a feather; the next beat opened "The tiny snail felt so soft" and the
+    feather was never mentioned again. `misattributed_options` could not see it —
+    the narration quotes the chosen label faithfully — because the defect is the
+    *object*, not the action.
+
+    A label is only reported when it names *nothing* — a pronoun and no object at
+    all. "Pick up the feather and hold it" carries a pronoun and is fine, because
+    the referent is right there in the label.
+
+    The object is detected by its determiner ("the feather", "a flower", "more
+    feathers") or by a proper name mid-label ("Give it to Pip"), which is how
+    every label a model writes here introduces one. Deliberately not by trying to
+    identify nouns: a part-of-speech guess dressed up as a rule would flag
+    "Wave hello" and, per the note on `_LESSON_WORDS`, a probe that cries wolf is
+    a probe an operator stops reading.
+    """
+    flagged: list[str] = []
+    for option in options:
+        label = str(option.get("label") or "").strip()
+        words = re.findall(r"[A-Za-z']+", label)
+        if not {word.lower() for word in words} & _REFERENTLESS_PRONOUNS:
+            continue
+        introduces_object = any(word.lower() in _DETERMINERS for word in words) or any(
+            word[:1].isupper() for word in words[1:]
+        )
+        if not introduces_object:
+            flagged.append(label)
+    return flagged
+
+
+#: Narration reporting the *act of choosing* rather than showing what happened.
+#: Only the verbs that can mean nothing else — "picked" is absent on purpose,
+#: because picking up a feather is a real thing a child does in a story and the
+#: restatement half of `echoes_the_choice` catches the reportage version anyway.
+_CHOICE_REPORTAGE = re.compile(r"\b(chose|chooses|choose|choosing|decided|decides)\b", re.I)
+
+
+def echoes_the_choice(narration: str, *, chosen_label: str) -> bool:
+    """True when the beat opens by reading the child's own tap back to them.
+
+    "Manu chose to watch the little snail go." / "Manu picked it up gently." The
+    child pressed that card a second ago; a sentence telling them what they
+    pressed is a machine confirming an input, and it spends the opening line — the
+    one that decides whether a four-year-old is still listening — on the only
+    thing in the story they already know.
+
+    Two tells, because the flat opening comes in two shapes and neither catches
+    the other:
+
+    * **It names the act of choosing.** "Manu *chose to* watch the little snail
+      go." Explicit, and no amount of added detail redeems it.
+    * **It restates the card and adds nothing.** "Manu picked it up gently." after
+      "Pick it up gently" — no verb to search for, just the label with a name
+      bolted on.
+
+    A beat that opens "Manu whispered a sweet sound. Right to the little snail!"
+    after choosing "Whisper to the snail" is doing the right thing — the action is
+    happening in the world rather than being reported — and is flagged by neither.
+    """
+    opening = re.split(r"(?<=[.!?])\s", narration.strip(), maxsplit=1)[0]
+    if _CHOICE_REPORTAGE.search(opening):
+        return True
+
+    label_words = _content_words(chosen_label)
+    if not label_words:
+        return False
+    opening_words = _content_words(opening)
+    if not label_words <= opening_words:
+        return False
+    # The opening said everything the card said. It is an echo unless it also
+    # carried something the card did not — a consequence, a reaction, a detail.
+    # One spare word is the child's name, which every opening is allowed.
+    return len(opening_words - label_words) <= 1
+
+
+def _log_choice_echo(beat: Beat, prev_choice: Mapping[str, Any] | None) -> None:
+    """Report a consequence beat whose first sentence is the card, restated."""
+    chosen_label = str((prev_choice or {}).get("chosen_label") or "")
+    if chosen_label and echoes_the_choice(beat.narration, chosen_label=chosen_label):
+        logger.warning(
+            "story.consequence_echoes_choice adventure=%s beat=%s seq=%d chose=%r opening=%r",
+            beat.adventure_id,
+            beat.id,
+            beat.seq,
+            chosen_label,
+            beat.narration.strip()[:120],
+        )
+
+
 def _log_consequence_fidelity(beat: Beat, prev_choice: Mapping[str, Any] | None) -> None:
     """Report a consequence beat that names an action the child did not take."""
     if not prev_choice:
@@ -1650,6 +1776,24 @@ def _log_choice_distinctness(beat: Beat) -> None:
             beat.id,
             beat.seq,
             alike,
+        )
+
+
+def _log_choice_referents(beat: Beat) -> None:
+    """Report a card whose label acts on a pronoun it never names.
+
+    Logged at the beat that *offers* the option rather than the one that resolves
+    it, because that is the beat with the bug in it — by the time the next
+    generation guesses wrong, the label it guessed from is already on a card the
+    child has tapped.
+    """
+    if vague := referentless_option_labels(beat.options):
+        logger.warning(
+            "story.choice_options_referentless adventure=%s beat=%s seq=%d labels=%r",
+            beat.adventure_id,
+            beat.id,
+            beat.seq,
+            vague,
         )
 
 

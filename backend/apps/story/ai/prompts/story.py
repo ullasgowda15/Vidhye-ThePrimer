@@ -143,17 +143,38 @@ happened — bend the stage toward it, or leave the stage for a later beat.\
 #: constraint can be stated as something checkable rather than as a sentiment.
 CONSEQUENCE_RULE = """\
 The child has just chosen, and the DATA below says what they picked on its \
-`Chose:` line. That line is the fact this beat is written from. Name that action \
-in the narration — the place they went, the creature they helped, the thing they \
-tried — so it is unmistakably *their* choice that changed the world. Show the \
-change in scene.illustration_prompt too, not only in the words.
+`Chose:` line. That line is the fact this beat is written from: write what it \
+**caused**. The world answers the tap — the place they arrive at, the creature \
+that wakes, the thing that turns out to be softer than it looked — so that it is \
+unmistakably their choice that changed something. Show the change in \
+scene.illustration_prompt too, not only in the words.
 
 Never say the child chose, decided, wanted or tried anything other than the \
-`Chose:` line. "You chose to …" and "<name> chose to …" may be completed only \
-with that line or a plain paraphrase of it, and do not tell the child what they \
-meant to do next — a false sentence about their own action is one a pre-reader \
-cannot contest. Where the tap and the plan point in different directions, the \
-story goes where the child took it.
+`Chose:` line, and do not tell the child what they meant to do next — a false \
+sentence about their own action is one a pre-reader cannot contest. Where the tap \
+and the plan point in different directions, the story goes where the child took it.
+
+**The first sentence must not be the card, restated.** This is the rule most \
+often broken, so read it twice. If the `Chose:` line is "Watch the little boats", \
+the beat may not open "<name> watched the little boats" — that is the card read \
+back with a name on the front. Nor "<name> chose to watch the boats", which is \
+worse: it narrates the pressing rather than the world.
+
+Start where the tap *landed* instead. "The boats bobbed closer, and one had a \
+lantern on it." "The feather was softer than it looked." "Something under the \
+jetty moved." The child's action can appear later in the beat, once something has \
+happened because of it — but never as the opening report.
+
+The child pressed that card themselves a second ago. A sentence telling them what \
+they pressed is a machine confirming an input, and it spends the opening line — \
+the one that decides whether a small child is still listening — on the only thing \
+in the story they already know.
+
+Act on the **same thing** the `Chose:` line names. If they picked up the feather, \
+this beat is about the feather — not about the creature standing next to it, \
+however much more of the story that creature has had. Carrying the action across \
+to a different object is the same broken promise as ignoring the tap outright, \
+and it is harder to spot: the sentence still says what the child did.
 
 A beat that would have read the same after the other option is the one thing this \
 must not be.\
@@ -199,7 +220,13 @@ verbs, different outcomes.
 
 Give every option a short spoken label and an icon_prompt describing one simple \
 picture of it: a place, an object, an action, no characters and no writing in the \
-image.\
+image.
+
+Every label must name the thing it acts on. "Pick up the feather", not "Pick it \
+up gently" — the label is the *whole* of what the next beat is told about the \
+child's tap, so a pronoun standing in for a noun leaves the beat after this one \
+guessing which object was meant, and it will guess the one the story has talked \
+about most rather than the one the child pointed at.\
 """
 
 # ---------------------------------------------------------------------------
