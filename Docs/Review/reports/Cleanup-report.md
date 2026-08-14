@@ -197,7 +197,7 @@ development box and are unchanged by this pass.
 | `npm audit` (and `--omit=dev`) | **found 0 vulnerabilities** |
 | `makemigrations --check` | **No changes detected** — no migration added or invalidated |
 | `manage.py check` | **System check identified no issues (0 silenced)** |
-| CI | _(recorded in the follow-up commit, per the existing convention)_ |
+| CI | **green, run `31769124062`** on `7c54c81` — all five jobs (Backend, Frontend, Evals, Dependencies, Backend image) |
 
 Backend count is up from the 1464 in the Vertex-Embeddings report because the Vertex fix pass added
 tests. **No test was deleted in this pass** — nothing removed here had one, which is itself part of
