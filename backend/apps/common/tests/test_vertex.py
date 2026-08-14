@@ -33,6 +33,11 @@ class _Transport:
 
 
 class _ApiClient:
+    # `Any`, because one test swaps in a transport whose `is_closed` raises — the
+    # SDK's privates are read defensively and the fake has to be able to misbehave
+    # in the same way the real one might.
+    _httpx_client: Any
+
     def __init__(self, closed: bool) -> None:
         self._httpx_client = _Transport(closed)
 
