@@ -109,9 +109,23 @@ somebody actually cares about the morning after losing a database:
 |---|---|---|---|---|
 | 2026-08-13 | `primer-20260813T022013Z.dump` (205,135 bytes, local dev DB) | `primer_restore_drill` on the compose Postgres | 7 parents, 4 children, 15 adventures, 50 beats, 36 choices, 15 memories, 118 media; 2 children with a playable history; **15/15 sampled memories decrypted**; 118/118 media rows with URLs | ✅ **the data came back** |
 | 2026-08-13 | same dump | same | re-run with a deliberately wrong `MEMORY_ENCRYPTION_KEY` | ✅ **drill failed, exit 1** — `15 of 15 sampled memories are undecryptable`. The negative case, which is what makes the positive one mean something. |
+| 2026-08-14 | `primer-20260814T072420Z.dump` (369,422 bytes, local dev DB) | `primer_restore_drill` on the compose Postgres | 7 parents, 4 children, 4 companions, 17 adventures, 60 beats, 44 choices, 20 memories, 151 media, 25 events; 2 children with a playable history; **20/20 sampled memories decrypted**; 151/151 media rows with URLs | ✅ **the data came back** |
 
 > Both rows are needed. A drill that has only ever passed has not been shown to
 > be capable of failing.
+
+**Why the 2026-08-14 row exists.** `launch_check.durability.restore_drill` asks
+that the last entry here postdate the last schema change, and it did not: the
+newest migration (`accounts.0003_deletionreceipt`) landed at 13:57 on the 13th,
+after the dump the two rows above were taken from. So that row was re-earned
+against a dump containing the current schema rather than argued about.
+
+Re-running it also found why nobody had: `restore-drill.sh` invoked a bare
+`python`, which on a machine whose dependencies live in a virtualenv is an
+interpreter without Django. The restore succeeded and the *verification* — the
+half that makes it a drill — died on `ModuleNotFoundError`. It now takes a
+`PYTHON` override the way it already took `PG_RUN`, and `make restore-drill`
+passes the venv interpreter, so the documented command works as written.
 
 **Not yet drilled:** a restore against a *production* managed Postgres, because
 production is not provisioned yet (see `Docs/Runbooks/Launch.md`). The scripts

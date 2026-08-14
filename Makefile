@@ -142,7 +142,7 @@ backup: ## Dump the database (§16.10). DATABASE_URL required; PG_RUN for docker
 	sh infra/backup/backup.sh $(BACKUP_DIR)
 
 restore-drill: ## Restore the latest dump into a scratch DB and prove the data came back
-	sh infra/backup/restore-drill.sh $(DUMP)
+	PYTHON="$(ABS_PY)" sh infra/backup/restore-drill.sh $(DUMP)
 
 launch-check: ## Preflight a deployment before a child touches it. Add STRICT=--strict
 	cd backend && $(ABS_PY) manage.py launch_check $(STRICT)

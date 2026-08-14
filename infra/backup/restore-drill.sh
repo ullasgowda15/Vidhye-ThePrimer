@@ -29,6 +29,13 @@ set -eu
 DUMP="${1:-}"
 PG_RUN="${PG_RUN:-}"
 SCRATCH="${SCRATCH_DB:-primer_restore_drill}"
+# The interpreter that has Django installed. Same escape hatch as `PG_RUN` above
+# and for the same reason: a bare `python` is whatever is first on PATH, which on
+# a machine whose dependencies live in a virtualenv is an interpreter without
+# Django. The drill then restores the dump correctly and dies on the *verification*
+# — the half that makes it a drill — leaving `launch_check.durability.restore_drill`
+# permanently unclosable for a reason that has nothing to do with the backup.
+PYTHON="${PYTHON:-python}"
 
 if [ -z "${DATABASE_URL:-}" ]; then
     echo "DATABASE_URL is not set." >&2
@@ -82,7 +89,7 @@ echo "-- verifying (through Django, against the restored copy)"
 # both paths, and `exit $STATUS` at the end still fails the drill.
 STATUS=0
 cd backend
-DATABASE_URL="$SCRATCH_URL" python manage.py restore_drill || STATUS=$?
+DATABASE_URL="$SCRATCH_URL" "$PYTHON" manage.py restore_drill || STATUS=$?
 cd ..
 
 echo "-- dropping the scratch database"
