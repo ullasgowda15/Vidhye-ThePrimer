@@ -13,8 +13,13 @@ Providers:
   the pipeline (hashing, scan, storage, CDN URLs, cache) is exercisable and
   testable with no key and no spend, and so `render_companion` demonstrates
   character consistency across scenes without burning credits.
-* ``together`` / ``openai`` / ``google`` — declared, typed, unimplemented
-  (§19.3's fallback seam). They raise rather than silently not existing.
+* ``google`` — Imagen on Vertex AI, the failover for a spent Cloudflare
+  allocation (`IMAGE_FALLBACK_PROVIDERS`). It runs on the service account this
+  deployment already has, and it costs §8.2 consistency: it has never seen the
+  companion's FLUX reference set, so a fallback beat may not match. That trade
+  was made deliberately, and `Media.provider` records which model drew each row.
+* ``together`` / ``openai`` — declared, typed, unimplemented (§19.3's fallback
+  seam). They raise rather than silently not existing.
 
 **Capabilities are declared, not assumed.** Each provider states whether it can
 take a reference image, a negative prompt and a seed, and the pipeline sends
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from typing import Any, Protocol, runtime_checkable
 
 from django.conf import settings
@@ -255,12 +261,107 @@ class OpenAIImageProvider(_UnimplementedImageProvider):
     supports_image_reference = True
 
 
-class GoogleImageProvider(_UnimplementedImageProvider):
-    """Fallback seam — Google Imagen. Not implemented. Takes negatives + seed."""
+class GoogleImageProvider:
+    """Imagen on Vertex AI — the fallback for when Cloudflare's day is spent.
+
+    Built because the free Workers AI allocation is 10,000 neurons a day and a
+    single sitting spends a visible fraction of it: when it runs out mid-story the
+    child was getting safe stock art for the rest of the adventure. The founder's
+    call, made with the trade below stated, is that a real picture is worth more
+    than a matching one.
+
+    **What this costs, said plainly.** §8.2's character consistency lives in the
+    Cloudflare reference set, and Imagen has never seen it. A beat illustrated
+    here may show a companion that does not look like the companion — the same
+    creature described the same way by a different model, which is not the same
+    picture. `media.service` records the real provider on the row
+    (`provider_label`), so a parent reading the transparency page and a reviewer
+    reading `media.generated` can both tell which beats came from where.
+
+    Credentials, project and location are the ones `apps.common.vertex` already
+    holds: one service account for every Google route that touches child data
+    (§13.8). There is no second key to set.
+    """
 
     name = "google"
+    #: This is a *language* model drawing a picture, so the negatives go in as an
+    #: instruction it can read rather than as a `negative_prompt` field — which is
+    #: why the flag is `True` here while `CloudflareImageProvider`, a diffusion
+    #: model with no such field, leaves it `False`. Same §15.9 rule, opposite
+    #: answer, for the reason the capability flags exist.
     supports_negative_prompt = True
-    supports_seed = True
+    #: No seed on this API. Declared honestly rather than accepting one and
+    #: dropping it: §5.8's consistency handle simply is not available here, and a
+    #: provider that pretended otherwise would make the fallback's already-weaker
+    #: character continuity look like a bug in the seed derivation.
+    supports_seed = False
+    supports_image_reference = False
+
+    def __init__(self, model: str = "", location: str = "") -> None:
+        self._model = model or settings.GOOGLE_IMAGE_MODEL
+        self._location = location or settings.GOOGLE_IMAGE_LOCATION
+
+    @property
+    def provider_label(self) -> str:
+        """The honest name for `Media.provider`, so a fallback beat is findable."""
+        return f"google:{self._model}"
+
+    def is_configured(self) -> bool:
+        from apps.common import vertex
+
+        return vertex.is_configured()
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        negative_prompt: str = "",
+        seed: int | None = None,
+    ) -> bytes:
+        from google.genai import types
+
+        from apps.common import vertex
+
+        # `generate_content` with an IMAGE modality, not `generate_images`.
+        # Imagen is the obvious API and it is not available: every
+        # `imagen-*` id 404s on this project in `global` *and* in `us-central1`,
+        # because Imagen is separately allowlisted. `gemini-2.5-flash-image` is
+        # served by the same endpoint, the same service account and the same
+        # region as the beat model, so the fallback needs no second entitlement
+        # to acquire and no second thing to go wrong at 3am.
+        contents = prompt
+        if negative_prompt:
+            # No `negative_prompt` field on this API. Appended as its own labelled
+            # clause rather than folded into the scene description, because
+            # §15.9's negatives are a safety control and a diffusion model reading
+            # "no text" as the tokens *text* is the bug that painted a watermark
+            # into a picture. A language model reads the instruction as one.
+            contents = f"{prompt}\n\nDo not include any of the following: {negative_prompt}"
+
+        try:
+            response = vertex.client(location=self._location).models.generate_content(
+                model=self._model,
+                contents=contents,
+                config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+            )
+        except Exception as exc:
+            raise MediaProviderError(
+                f"Gemini image request failed for '{self._model}': {exc}"
+            ) from exc
+
+        for candidate in getattr(response, "candidates", None) or []:
+            for part in getattr(getattr(candidate, "content", None), "parts", None) or []:
+                blob = getattr(part, "inline_data", None)
+                if blob is not None and getattr(blob, "data", None):
+                    return bytes(blob.data)
+
+        # A refused prompt comes back as text with no image part rather than as an
+        # error, so this has to read as a refusal: a caller that treated it as a
+        # transport blip would retry something the vendor has already declined.
+        raise MediaProviderError(
+            f"Gemini returned no image for '{self._model}' — the prompt was most "
+            f"likely refused, or answered with words instead of a picture."
+        )
 
 
 IMAGE_PROVIDERS: dict[str, type] = {
@@ -321,3 +422,102 @@ def select_image_provider() -> ImageProvider:
             "draw offline placeholder art while developing."
         )
     return provider
+
+
+def select_image_providers() -> list[ImageProvider]:
+    """The primary followed by every configured fallback, quota-aware.
+
+    Mirrors `tts.select_tts_providers` in shape, and differs from it in what a
+    caller may assume: an empty `IMAGE_FALLBACK_PROVIDERS` gives a one-element
+    chain, which is the behaviour this module had before failover existed.
+
+    A provider inside a `media.quota` cooldown is moved to the **back** rather
+    than removed. `quota` guesses reset windows, and a chain that dropped its last
+    member on that guess would raise "nothing configured" for a child whose
+    primary was in fact fine — so a cooldown costs a vendor its place in the queue
+    and nothing more.
+
+    A fallback that is unknown or uncredentialled is skipped with a log line
+    rather than raising. The primary is the one whose misconfiguration is an
+    error, because that is the one somebody chose on purpose.
+    """
+    from apps.media import quota
+
+    chain: list[ImageProvider] = [select_image_provider()]
+    for name in settings.IMAGE_FALLBACK_PROVIDERS:
+        if name == settings.IMAGE_PROVIDER:
+            continue
+        factory = IMAGE_PROVIDERS.get(name)
+        if factory is None:
+            logger.warning("media.image_fallback_unknown provider=%s", name)
+            continue
+        candidate = factory()
+        if not candidate.is_configured():
+            logger.info("media.image_fallback_unconfigured provider=%s", name)
+            continue
+        chain.append(candidate)
+
+    live = [p for p in chain if not quota.is_exhausted(p.name)]
+    resting = [p for p in chain if quota.is_exhausted(p.name)]
+    if resting:
+        logger.info(
+            "media.image_quota_skip resting=%s trying=%s",
+            ",".join(p.name for p in resting),
+            ",".join(p.name for p in live) or "-",
+        )
+    return live + resting
+
+
+def generate_with_failover(
+    prompt: str,
+    *,
+    negative_prompt_for: Any,
+    seed: int | None,
+) -> tuple[bytes, ImageProvider]:
+    """Draw `prompt`, trying each configured provider in turn.
+
+    Returns the bytes and the provider that produced them, because the caller
+    records the real one on the row — a fallback beat has to be findable
+    afterwards, both for a parent reading the transparency page and for anyone
+    asking why one picture in an adventure looks unlike the others (§8.2).
+
+    `negative_prompt_for` is a callable rather than a string: the §15.9 negatives
+    are only sent to providers that declare a real `negative_prompt` field, and
+    which provider is being asked is not known until the loop is running.
+
+    If the whole chain fails the **last** error is raised, so `media.service`
+    treats it exactly as it treated a single provider's failure — stock art, a
+    playable beat, and an incident. Failover changes what a child usually sees,
+    never what happens when everything is out.
+    """
+    from apps.media import quota
+
+    chain = select_image_providers()
+    last_error: Exception | None = None
+
+    for index, provider in enumerate(chain):
+        started = time.monotonic()
+        try:
+            return (
+                provider.generate(
+                    prompt,
+                    negative_prompt=(
+                        negative_prompt_for() if supports(provider, "supports_negative_prompt") else ""
+                    ),
+                    seed=seed if supports(provider, "supports_seed") else None,
+                ),
+                provider,
+            )
+        except (MediaProviderError, MediaConfigurationError) as exc:
+            last_error = exc
+            quota.mark_exhausted(provider.name, exc)
+            remaining = chain[index + 1 :]
+            logger.warning(
+                "media.image_failover failed=%s after_ms=%d next=%s error=%s",
+                provider.name,
+                (time.monotonic() - started) * 1000,
+                remaining[0].name if remaining else "-",
+                exc,
+            )
+
+    raise last_error or MediaConfigurationError("No image provider was available.")

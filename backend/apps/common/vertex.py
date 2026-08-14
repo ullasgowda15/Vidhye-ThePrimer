@@ -79,8 +79,15 @@ def is_configured() -> bool:
     return not missing_settings()
 
 
-def client() -> Any:
+def client(*, location: str = "") -> Any:
     """A `genai.Client` in Vertex mode, authenticated by the service account.
+
+    `location` overrides `GOOGLE_CLOUD_LOCATION` for callers whose model is not
+    served where the text models are. That is not hypothetical tidiness: the
+    grader and the beat model require `global` (Flash-Lite is not served from
+    `asia-south1`), and Imagen is not published to `global` at all — asking for it
+    there returns a 404 that reads like a missing permission. One service account,
+    one project, two regions; the cache below is already keyed on all three.
 
     Cached on the three settings that define it, which is worth a sentence: the
     credential object holds the OAuth token it exchanged the service-account key
@@ -110,7 +117,7 @@ def client() -> Any:
     """
     key = (
         str(settings.GOOGLE_CLOUD_PROJECT),
-        str(settings.GOOGLE_CLOUD_LOCATION),
+        location or str(settings.GOOGLE_CLOUD_LOCATION),
         str(settings.GOOGLE_APPLICATION_CREDENTIALS),
     )
     candidate = _client(*key)

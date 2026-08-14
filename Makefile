@@ -150,6 +150,9 @@ launch-check: ## Preflight a deployment before a child touches it. Add STRICT=--
 flags: ## Show or pull a feature flag: make flags ARGS="set media.illustrations off"
 	cd backend && $(ABS_PY) manage.py flags $(ARGS)
 
+quota: ## Which media providers are resting on a quota cooldown: make quota ARGS="--clear google"
+	cd backend && $(ABS_PY) manage.py quota $(ARGS)
+
 prompts: ## Show or roll back a prompt version: make prompts ARGS="rollback system_identity 1.0.0"
 	cd backend && $(ABS_PY) manage.py prompts $(ARGS)
 

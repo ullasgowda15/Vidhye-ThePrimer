@@ -175,13 +175,39 @@ def test_a_voice_key_maps_to_a_vendor_voice(settings) -> None:
 
 
 def test_declared_but_unbuilt_providers_raise_rather_than_vanish() -> None:
-    for provider in (TogetherImageProvider(), OpenAIImageProvider(), GoogleImageProvider()):
+    """`google` is deliberately absent from this list — it is built now, and is
+    covered by `test_quota.py` as the image failover."""
+    for provider in (TogetherImageProvider(), OpenAIImageProvider()):
         assert provider.is_configured() is False
         with pytest.raises(NotImplementedError):
             provider.generate("anything")
 
     with pytest.raises(NotImplementedError):
         OpenAITTSProvider().synthesize("hello", "warm_low")
+
+
+def test_the_image_fallback_declares_only_what_its_api_really_has() -> None:
+    """The capability flags are the whole reason nothing gets smuggled into a
+    prompt string, so a newly built provider has to answer them honestly.
+
+    `gemini-2.5-flash-image` is a language model drawing a picture: it reads a
+    negative instruction, and it has no seed. Declaring a seed it silently
+    discarded would make §5.8's consistency handle look present when the fallback
+    simply does not have one.
+    """
+    from django.conf import settings
+
+    provider = GoogleImageProvider()
+
+    assert provider.supports_negative_prompt is True
+    assert provider.supports_seed is False
+    assert provider.supports_image_reference is False
+    # The row has to name the model, not the slot: a fallback beat is the one
+    # somebody will later ask why it looks different (§8.2).
+    assert provider.provider_label == f"google:{settings.GOOGLE_IMAGE_MODEL}"
+    # No Vertex credentials in the suite, so it reports itself unusable and the
+    # chain skips it rather than raising mid-story.
+    assert provider.is_configured() is False
 
 
 def test_the_offline_image_provider_is_deterministic() -> None:

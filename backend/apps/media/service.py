@@ -524,20 +524,31 @@ def _generate_image(
     them, and no caller gets to substitute their own. A provider with no
     `negative_prompt` field receives nothing — folding negations into the
     positive prompt is what painted the companion's name into a picture.
+
+    **An injected `provider` is used alone**, exactly as on the audio side: a test
+    double asking for a specific failure must get that failure, not a fallback
+    quietly rescuing it.
     """
-    chosen = provider or image_adapters.select_image_provider()
-    return (
-        chosen.generate(
-            prompt,
-            negative_prompt=(
-                negative_prompt()
-                if image_adapters.supports(chosen, "supports_negative_prompt")
-                else ""
+    if provider is not None:
+        return (
+            provider.generate(
+                prompt,
+                negative_prompt=(
+                    negative_prompt()
+                    if image_adapters.supports(provider, "supports_negative_prompt")
+                    else ""
+                ),
+                seed=seed if image_adapters.supports(provider, "supports_seed") else None,
             ),
-            seed=seed if image_adapters.supports(chosen, "supports_seed") else None,
-        ),
-        image_adapters.provider_label(chosen),
+            image_adapters.provider_label(provider),
+        )
+
+    data, chosen = image_adapters.generate_with_failover(
+        prompt,
+        negative_prompt_for=negative_prompt,
+        seed=seed,
     )
+    return data, image_adapters.provider_label(chosen)
 
 
 def _generate_audio(

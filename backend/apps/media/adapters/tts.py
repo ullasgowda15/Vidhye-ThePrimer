@@ -419,8 +419,27 @@ def synthesize_with_failover(
     raised: the caller (`media.service`) treats it exactly as it treated a
     single provider's failure, so `MEDIA_TURN_BUDGET_S` is still the backstop.
     """
+    from apps.media import quota
+
     chain = providers if providers is not None else select_tts_providers()
     last_error: MediaError | None = None
+
+    # A provider known to be out is moved to the back rather than dropped. Dropped
+    # would be wrong twice: `quota` guesses the reset window, and a chain that
+    # skipped its last member because Redis said so would raise "no provider
+    # available" for a child whose primary was in fact fine. Reordered, the
+    # cooldown costs a vendor its place in the queue and nothing more, and the
+    # provider still gets tried if everything ahead of it fails.
+    if providers is None:
+        live = [p for p in chain if not quota.is_exhausted(p.name)]
+        resting = [p for p in chain if quota.is_exhausted(p.name)]
+        if resting:
+            logger.info(
+                "media.tts_quota_skip resting=%s trying=%s",
+                ",".join(p.name for p in resting),
+                ",".join(p.name for p in live) or "-",
+            )
+        chain = live + resting
 
     for index, provider in enumerate(chain):
         started = time.monotonic()
@@ -431,6 +450,7 @@ def synthesize_with_failover(
             # `synthesize` when no voice resolves, and a primary that cannot name
             # a voice is exactly when the fallback should speak.
             last_error = exc
+            quota.mark_exhausted(provider.name, exc)
             remaining = chain[index + 1 :]
             # `after_ms` matters as much as the error. A provider that *refuses*
             # slowly spends the turn budget before the fallback has said a word —

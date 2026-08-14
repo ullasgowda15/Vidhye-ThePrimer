@@ -725,6 +725,30 @@ IMAGE_MODEL = env("IMAGE_MODEL", default="@cf/black-forest-labs/flux-1-schnell")
 # flux-1-schnell is a few-step distilled model; 4 is its default and 8 its ceiling.
 IMAGE_STEPS = env.int("IMAGE_STEPS", default=4)
 
+# Where illustrations go when the primary cannot serve them — a spent daily
+# allocation, most often (`media.quota`). Tried in order, after the primary.
+#
+# Imagen runs on the Vertex service account this deployment already has, so this
+# needs no second key. What it does cost is §8.2's character consistency: the
+# companion's reference set was drawn by FLUX and Imagen has never seen it, so a
+# fallback beat may show a companion that does not quite look like the companion.
+# That trade was made deliberately — a real picture beats safe stock art — and
+# `Media.provider` records which model drew each row so it stays visible.
+#
+# Empty disables image failover entirely and restores the pre-existing behaviour:
+# a blocked or exhausted provider yields stock art and a still-playable beat.
+IMAGE_FALLBACK_PROVIDERS = env.list("IMAGE_FALLBACK_PROVIDERS", default=["google"])
+# `gemini-2.5-flash-image`, not Imagen. Imagen is the obvious choice and it is not
+# available: every `imagen-*` id 404s on this project in `global` and in
+# `us-central1` alike, because Imagen is separately allowlisted. This model is
+# served by the same endpoint and the same service account as the beat model, so
+# the fallback needs no second entitlement to acquire and nothing extra to expire.
+GOOGLE_IMAGE_MODEL = env("GOOGLE_IMAGE_MODEL", default="gemini-2.5-flash-image")
+# Its own region, because model availability is per-region and the image model
+# does not have to live where the text models do. Empty means "wherever
+# GOOGLE_CLOUD_LOCATION points".
+GOOGLE_IMAGE_LOCATION = env("GOOGLE_IMAGE_LOCATION", default="")
+
 # ElevenLabs is the companion's voice.
 ELEVENLABS_API_KEY = env("ELEVENLABS_API_KEY", default="")
 ELEVENLABS_VOICE_ID = env("ELEVENLABS_VOICE_ID", default="")
