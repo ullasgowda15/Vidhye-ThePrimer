@@ -50,6 +50,20 @@ export default function Children() {
                   </p>
                 ) : null}
                 <div className="mt-4 flex flex-wrap items-center gap-3">
+                  {/* Per child, and that is the point. There used to be one
+                      "Back to the story" link at the foot of this page pointing
+                      at `/`, which opened whichever profile happened to be first
+                      — so on a two-child account the second child's story was
+                      unreachable from the dashboard, and a parent tapping their
+                      name's card got their sibling's evening.
+
+                      `/welcome/:childId` rather than `/story/:childId`: §4.5's
+                      hello is how a sitting starts, and a parent handing the
+                      tablet over should be handing over the same doorway the
+                      child's own star goes through. */}
+                  <Link to={`/welcome/${child.id}`} className={`text-2 ${LINK}`}>
+                    Open {child.first_name}&apos;s story
+                  </Link>
                   <Link to={`/parent/child/${child.id}/reports`} className={`text-2 ${LINK}`}>
                     Reports
                   </Link>
@@ -71,8 +85,12 @@ export default function Children() {
         <Link to="/parent/onboarding">
           <PrimaryButton type="button">Add a child</PrimaryButton>
         </Link>
+        {/* Deliberately "the front door" rather than "back to the story". With
+            more than one child there is no single story to go back to, and this
+            link claiming otherwise is what sent every parent to the first
+            profile. Each child's own doorway is on their card above. */}
         <Link to="/" className={`text-2 ${LINK}`}>
-          Back to the story
+          Back to the front door
         </Link>
       </div>
     </DashboardShell>

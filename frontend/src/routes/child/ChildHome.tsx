@@ -1,6 +1,8 @@
 import { Link, useNavigate } from 'react-router-dom';
 
 import { useHealth, useMe } from '@/lib/api/queries';
+import Landing from '@/routes/Landing';
+import { useAuthStore } from '@/store/auth';
 
 /**
  * The child landing surface — Storyland theme (PRODUCT.md §15.1).
@@ -17,12 +19,23 @@ import { useHealth, useMe } from '@/lib/api/queries';
  * on wrongly — a child with no history is greeted with the first-meeting hello
  * there, which is the scene they would otherwise have seen at `/meet`.
  *
- * One child per account at MVP, so the first child on `/me` is *the* child. A
- * picker belongs here when siblings do.
+ * **Two audiences arrive at `/`, and they are asking different questions.** A
+ * child holding a tablet their parent set up wants the star. A stranger wants to
+ * know what this is. They used to get the same page — a storybook inviting them
+ * to tap a star, with no answer to "should I trust this with my four-year-old?" —
+ * so a visitor with no child profile now gets `Landing` instead. A family never
+ * sees it, and a child is never handed marketing.
+ *
+ * **Siblings each get their own star.** This used to open `children[0]` and
+ * nothing else, so on a two-child account the younger one could not reach their
+ * own story from the front door at all — their parent's dashboard link went to
+ * the same place. With more than one profile the star becomes one star per child,
+ * named, which is also the only version a pre-reader can use: they cannot read a
+ * dropdown, but they know their own name when a grown-up reads it once.
  *
  * Note what is deliberately absent. No text the child must read to navigate, no
- * error state, no spinner. If there is no session or no child yet, the star simply
- * stays a star — a four-year-old must never be shown a system failure (§14.5), and
+ * error state, no spinner. If there is no session yet, the star simply stays a
+ * star — a four-year-old must never be shown a system failure (§14.5), and
  * "nothing happened" is a far better answer than an explanation they cannot read.
  */
 export default function ChildHome() {
@@ -30,10 +43,27 @@ export default function ChildHome() {
   // Only `data` is read. Whether the health check *failed* or is merely slow is
   // a distinction this screen deliberately does not draw — see the footer.
   const { data } = useHealth();
-  const { data: me } = useMe();
+  const { data: me, isLoading } = useMe();
+  const authenticated = useAuthStore((state) => state.accessToken !== null);
   const ok = data?.status === 'ok';
 
-  const child = me?.children?.[0];
+  // **Read the session, not just the cache.** `useMe` is disabled when there is
+  // no token, and a disabled query still hands back whatever it fetched last —
+  // so after signing out this page went on rendering a star per child, with
+  // their first names on it, for whoever picked the tablet up next. `useLogout`
+  // now clears the cache, and this is the second lock on the same door: a child's
+  // name is not something to leave resting on one of them.
+  const children = authenticated ? (me?.children ?? []) : [];
+
+  // Nobody signed in, or signed in with no child yet: this visitor is a grown-up
+  // deciding, not a child playing. `isLoading` is held back rather than treated
+  // as "no children", so a family on a slow connection never flashes a sales page
+  // at a child on the way to their story.
+  if (!authenticated || (!isLoading && children.length === 0)) {
+    return <Landing />;
+  }
+
+  const only = children.length === 1 ? children[0] : null;
 
   return (
     <main className="min-h-full bg-bg text-text flex flex-col items-center justify-center p-6 text-center">
@@ -43,22 +73,48 @@ export default function ChildHome() {
         </p>
         <h1 className="font-display text-7 leading-[1.1] mt-4 text-primary">The Primer</h1>
         <p className="font-display text-4 mt-5 text-text">
-          Your story is waking up. Tap the star when you&apos;re ready to begin.
+          {children.length > 1
+            ? 'Whose story is it tonight?'
+            : "Your story is waking up. Tap the star when you're ready to begin."}
         </p>
 
         {/* Sized to the child target minimum from the start — retrofitting
             touch targets later is how you end up with a frustrated toddler. */}
-        <button
-          type="button"
-          onClick={() => {
-            if (child) navigate(`/welcome/${child.id}`);
-          }}
-          className="mt-6 min-h-target min-w-target rounded-full bg-accent px-7 text-5 font-display text-surface shadow-card transition-transform duration-base hover:scale-[1.03] active:scale-95"
-          aria-label="Begin the story"
-          data-testid="begin-story"
-        >
-          ★
-        </button>
+        {only ? (
+          <button
+            type="button"
+            onClick={() => navigate(`/welcome/${only.id}`)}
+            className="mt-6 min-h-target min-w-target rounded-full bg-accent px-7 text-5 font-display text-surface shadow-card transition-transform duration-base motion-safe:hover:scale-[1.03] motion-safe:active:scale-95"
+            aria-label="Begin the story"
+            data-testid="begin-story"
+          >
+            ★
+          </button>
+        ) : (
+          <ul className="mt-6 flex flex-wrap items-center justify-center gap-5">
+            {children.map((child) => (
+              <li key={child.id}>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/welcome/${child.id}`)}
+                  className="flex min-h-target min-w-target flex-col items-center gap-2 rounded-lg px-4 py-3 transition-transform duration-base motion-safe:hover:scale-[1.03] motion-safe:active:scale-95"
+                  aria-label={`Begin ${child.first_name}'s story`}
+                  data-testid={`begin-story-${child.id}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="flex h-16 w-16 items-center justify-center rounded-full bg-accent text-5 font-display text-surface shadow-card"
+                  >
+                    ★
+                  </span>
+                  {/* Read aloud by whoever hands the tablet over. A pre-reader
+                      cannot read their name, but they recognise it being said. */}
+                  <span className="font-display text-3 text-text">{child.first_name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       <footer className="mt-6 flex items-center gap-2 text-1 text-text-muted">
