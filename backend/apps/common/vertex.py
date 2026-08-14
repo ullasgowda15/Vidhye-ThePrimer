@@ -88,12 +88,63 @@ def client() -> Any:
     beat, every safety grade and every image. Keyed on the values rather than
     memoised outright so a test — or a settings reload — gets a client that
     matches the configuration it just set.
+
+    **The cached client is checked for a closed transport before it is handed
+    out**, because the cache outlives the connection pool inside it. A `genai.
+    Client` owns an httpx pool; once that pool is closed, every call made through
+    it raises `Cannot send a request, as the client has been closed` *locally and
+    instantly* — no socket, no retry, no vendor involved. `lru_cache` then hands
+    the same dead object to the next caller forever, so a pool that closes once
+    takes every generation in the process down with it until a restart.
+
+    That is not hypothetical: it is what produced the adventure whose title
+    promised a cat and whose story was about a snail. `build_plan` and beat one
+    both failed 158ms apart — far too fast to have left the machine — and fell
+    back independently, one to a templated title built from the child's interest
+    and the other to a pre-vetted beat from the safety pool. Two unrelated
+    emergency paths, one dead socket, and a child who was promised something the
+    story never contained.
+
+    Rebuilding costs one token exchange and only happens when the alternative is a
+    guaranteed failure, so the trade is not close.
     """
-    return _client(
+    key = (
         str(settings.GOOGLE_CLOUD_PROJECT),
         str(settings.GOOGLE_CLOUD_LOCATION),
         str(settings.GOOGLE_APPLICATION_CREDENTIALS),
     )
+    candidate = _client(*key)
+    if _transport_closed(candidate):
+        # Whole-cache clear rather than surgery on one entry: `lru_cache` exposes
+        # no single-key eviction, the cache holds at most four clients, and a
+        # sibling rebuilding costs one token exchange it would have paid anyway.
+        logger.warning("vertex.client_rebuilt reason=closed_transport project=%s", key[0])
+        _client.cache_clear()
+        candidate = _client(*key)
+    return candidate
+
+
+def _transport_closed(candidate: Any) -> bool:
+    """True when this client's **sync** httpx pool has been closed.
+
+    Only the sync pool, because only the sync API is called here — `router`,
+    `moderation` and the embedding adapter all use `models.generate_content` /
+    `models.embed_content` and none of them touches `.aio`. Checking the async
+    pool as well would risk rebuilding on every call in a process that had merely
+    finished with an event loop, which is a token round-trip per beat to fix a
+    problem nobody has.
+
+    Reaching into `_api_client` is reaching into the SDK's privates, so every step
+    is guarded and *anything unexpected reads as healthy*. A client that is fine
+    and gets rebuilt costs a token exchange; a broken predicate that raises here
+    would take down the call it was added to protect.
+    """
+    try:
+        transport = getattr(getattr(candidate, "_api_client", None), "_httpx_client", None)
+        return bool(transport is not None and getattr(transport, "is_closed", False))
+    except Exception:  # pragma: no cover - defensive, see the docstring
+        logger.exception("vertex.health_check_failed")
+        return False
 
 
 @lru_cache(maxsize=4)
