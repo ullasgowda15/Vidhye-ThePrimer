@@ -450,6 +450,18 @@ def _gemini_node(node: Any, defs: dict[str, Any], seen: tuple[str, ...]) -> Any:
                 f"union (which becomes anyOf or nullable), or flatten the "
                 f"{key} branches into the parent object."
             )
+        # A `properties` value is a map of **field names**, not a schema node, so
+        # the keyword rules below must not touch its keys — only its values.
+        # Conflating the two deleted `StoryPlan.title`, a field that happens to
+        # share a name with an annotation keyword, out of `properties` while
+        # `required` kept it, and Vertex 400s that pair on every request:
+        # "required fields ['title'] are not defined in the schema properties".
+        # Every plan fell back silently for as long as this read the two alike.
+        if key == "properties" and isinstance(value, dict):
+            converted[key] = {
+                name: _gemini_node(subschema, defs, seen) for name, subschema in value.items()
+            }
+            continue
         if key in _GEMINI_UNSUPPORTED_KEYWORDS:
             continue
         if key == "const":

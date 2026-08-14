@@ -80,6 +80,12 @@ class ImageModerator(Protocol):
 
     name: str
 
+    #: The model id actually being called. `name` identifies the *provider*, and
+    #: on its own it cannot answer the question an operator asks of the gate —
+    #: `launch_check` reported "google-vision is configured" while the tester was
+    #: checking that `IMAGE_MODERATION_MODEL` was the model they set.
+    model: str
+
     def is_configured(self) -> bool: ...
 
     def classify(self, data: bytes, content_type: str) -> tuple[bool, str]:
@@ -99,6 +105,10 @@ class ClaudeImageModerator:
     def __init__(self, api_key: str = "", model: str = "") -> None:
         self._api_key = api_key or settings.ANTHROPIC_API_KEY
         self._model = model or settings.IMAGE_MODERATION_MODEL
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     def is_configured(self) -> bool:
         return bool(self._api_key)
@@ -187,6 +197,10 @@ class GeminiImageModerator:
 
     def __init__(self, model: str = "") -> None:
         self._model = model or settings.IMAGE_MODERATION_MODEL
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     def is_configured(self) -> bool:
         from apps.common import vertex

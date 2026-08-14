@@ -179,8 +179,8 @@ class Command(BaseCommand):
         else:
             verdict, detail = (
                 OK,
-                f"IMAGE_MODERATION=auto, and {moderator.name} is configured to look "
-                "at every generated picture",
+                f"IMAGE_MODERATION=auto, and {moderator.name} ({moderator.model}) is "
+                "configured to look at every generated picture",
             )
         checks.append(Check("safety.image_gate", verdict, detail))
 

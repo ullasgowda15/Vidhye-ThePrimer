@@ -190,7 +190,7 @@ def test_an_sdk_error_becomes_a_warm_beat_and_not_a_dead_screen(
 # Day 7, P0-2 — a guard that could not run was recorded as a pass
 # ---------------------------------------------------------------------------
 def test_a_classifier_that_cannot_run_is_a_degradation_and_never_a_pass(
-    child: Any, provider: Any, settings: Any, score: Any
+    child: Any, provider: Any, settings: Any, monkeypatch: Any, score: Any
 ) -> None:
     """**The symptom:** with the model-backed guard unable to answer, the pipeline
     recorded the beat as having passed the guard. The strongest safety layer in
@@ -198,14 +198,30 @@ def test_a_classifier_that_cannot_run_is_a_degradation_and_never_a_pass(
 
     "We could not check" and "we checked and it was fine" must never be the same
     row (§13.3).
+
+    **The outage is injected at the router seam, not by blanking credentials.**
+    This test used to empty `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, which
+    stopped simulating anything the day the grader moved to Vertex: those
+    credentials come from a service-account file, so the classifier ran normally,
+    returned a legitimate pass, and *both* assertions below failed. Read from the
+    outside that looked like the Day-7 defect had come back; what had actually
+    happened is that the guard for it had quietly stopped guarding, and the
+    property went unchecked against the provider we ship. Every provider reaches
+    the network through `classifier._router`, so breaking it there cannot rot the
+    same way the next time a provider changes.
     """
+    from apps.safety import classifier as safety_classifier
     from apps.safety.models import SafetyIncident
     from apps.story import orchestrator
+    from apps.story.ai import router as ai_router
     from apps.story.models import Beat
 
     settings.SAFETY_CLASSIFIER_ENABLED = True
-    settings.ANTHROPIC_API_KEY = ""
-    settings.OPENROUTER_API_KEY = ""
+
+    def _unreachable(*args: Any, **kwargs: Any) -> Any:
+        raise ai_router.ProviderError("simulated grader outage")
+
+    monkeypatch.setattr(safety_classifier, "_router", _unreachable)
 
     adventure = orchestrator.create_adventure(child)
     beat = orchestrator.create_beat(adventure, seq=1)

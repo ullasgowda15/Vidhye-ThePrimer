@@ -140,7 +140,7 @@ def test_a_second_model_agrees_the_beats_are_age_appropriate(
 
     score = Score("age.model_grader")
     for turn in run.turns:
-        ok, reason = graders.age_by_model(turn.narration, age=str(child.age_years))
+        ok, reason = graders.age_by_model(turn.narration, age=str(child.age))
         score.record(ok, f"beat {turn.seq}: {reason}")
 
     score.assert_at_least(thresholds.gate_for("age.model_grader"))

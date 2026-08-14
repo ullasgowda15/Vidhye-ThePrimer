@@ -325,9 +325,46 @@ class TestTheImageGate:
 
         incident = SafetyIncident.objects.get(category="image_blocked")
         assert incident.action_taken == Action.SUBSTITUTED
-        assert incident.severity == Severity.HIGH
+        # Absorbed, so not a stop-the-line event: the gate refused a picture, safe
+        # stock art went out in its place and the child saw a whole beat. Filing
+        # this as HIGH held `launch_check.monitoring.open_incidents` red on a
+        # healthy run — and a diffusion model emits a watermark often enough that
+        # a working gate would have blocked the launch indefinitely.
+        assert incident.severity == Severity.MEDIUM
         assert incident.beat_id == beat.id
         assert incident.detail["substituted"] is True
+
+    def test_a_block_with_no_stock_art_left_is_the_serious_one(
+        self, adventure: Adventure, fake_ai: Any, monkeypatch: Any
+    ) -> None:
+        """The other half of the severity split, and the half §22.5 is about.
+
+        Substitution failing is the case where the refusal actually reached the
+        child: no picture, and nothing chosen to stand in for one. That is the
+        stop-the-line event, and it must stay separable from the ordinary absorbed
+        block above — otherwise the queue has one row type meaning two things and
+        the preflight cannot tell them apart.
+        """
+        beat = orchestrator.create_beat(adventure, seq=1)
+        monkeypatch.setattr(
+            orchestrator.companion_service,
+            "render_scene",
+            lambda *a, **k: (_ for _ in ()).throw(MediaBlocked("blocked: nsfw")),
+        )
+        stock_gone = orchestrator.media_stock.StockUnavailable("no stock art installed")
+        monkeypatch.setattr(
+            orchestrator.media_stock,
+            "safe_illustration",
+            lambda *a, **k: (_ for _ in ()).throw(stock_gone),
+        )
+
+        media = orchestrator.illustrate_beat(beat)
+
+        assert media is None
+        incident = SafetyIncident.objects.get(category="image_blocked")
+        assert incident.action_taken == Action.BLOCKED
+        assert incident.severity == Severity.HIGH
+        assert incident.detail["substituted"] is False
 
     def test_the_substitution_is_stable_across_replays(
         self, adventure: Adventure, fake_ai: Any, monkeypatch: Any

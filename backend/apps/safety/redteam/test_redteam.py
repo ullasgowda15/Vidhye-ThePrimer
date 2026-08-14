@@ -573,17 +573,32 @@ def test_every_fallback_beat_passes_its_own_policy(parent: Any) -> None:
 # ---------------------------------------------------------------------------
 # The guard's own failure mode
 # ---------------------------------------------------------------------------
-def test_an_unreachable_classifier_is_never_a_pass(target: Child, settings: Any) -> None:
+def test_an_unreachable_classifier_is_never_a_pass(
+    target: Child, settings: Any, monkeypatch: Any
+) -> None:
     """§13.2: a check that did not run must not report that it did.
 
-    The classifier is switched on with no credentials, so the call fails. The
-    deterministic verdict has to stand, the decision has to say it is degraded,
-    and an incident has to be filed — because the alternative, silently, is a
-    product whose strongest guard has been off since the key expired.
+    The classifier is switched on and the call to it fails. The deterministic
+    verdict has to stand, the decision has to say it is degraded, and an incident
+    has to be filed — because the alternative, silently, is a product whose
+    strongest guard has been off since the key expired.
+
+    The failure is injected at `classifier._router`, the seam every provider
+    reaches the network through. This test used to blank `ANTHROPIC_API_KEY` and
+    `OPENROUTER_API_KEY` instead, which named two providers the grader no longer
+    uses: after the move to Vertex it passed only because the *test environment*
+    happens to have no service-account credentials, which is a property of the
+    machine and not of the product. Its sibling in `evals/test_regression.py` was
+    the same shape and went red for a defect that did not exist.
     """
+    from apps.story.ai import router as ai_router
+
     settings.SAFETY_CLASSIFIER_ENABLED = True
-    settings.ANTHROPIC_API_KEY = ""
-    settings.OPENROUTER_API_KEY = ""
+
+    def _unreachable(*args: Any, **kwargs: Any) -> Any:
+        raise ai_router.ProviderError("simulated grader outage")
+
+    monkeypatch.setattr(pipeline.classifier, "_router", _unreachable)
 
     decision = pipeline.guard_output(_beat("Pip found a gun behind the tree."), target)
 

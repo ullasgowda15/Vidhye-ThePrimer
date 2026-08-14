@@ -159,6 +159,100 @@ class TestTheBeatContractSurvivesTranslation:
         }
         types.Schema.model_validate(gemini_schema(json_schema_for(contracts[model_name])))
 
+    @pytest.mark.parametrize(
+        "model_name", ["Beat", "StoryPlan", "SessionMemories", "SafetyVerdict"]
+    )
+    def test_no_required_field_is_translated_out_of_its_own_properties(
+        self, model_name: str
+    ) -> None:
+        """Every name in `required` must still be a key in `properties`.
+
+        `types.Schema.model_validate` above cannot catch this: a schema that has
+        lost a property is still a *valid* schema, so the suite stayed green while
+        `StoryPlan.title` — a field whose name collides with an annotation keyword
+        — was being stripped out of `properties` by the keyword filter and left
+        behind in `required`. Vertex rejects that pair outright ("required fields
+        ['title'] are not defined in the schema properties") and every story plan
+        fell back to the skeleton for it.
+
+        Checked over the whole tree rather than the root, because the collision is
+        a property *name* problem and the next one will be some nested model's
+        field called `format` or `enum`.
+        """
+        from pydantic import BaseModel
+
+        from apps.memory.prompts import SessionMemories
+        from apps.safety.classifier import SafetyVerdict
+        from apps.story.ai.schemas import StoryPlan
+
+        contracts: dict[str, type[BaseModel]] = {
+            "Beat": Beat,
+            "StoryPlan": StoryPlan,
+            "SessionMemories": SessionMemories,
+            "SafetyVerdict": SafetyVerdict,
+        }
+        converted = gemini_schema(json_schema_for(contracts[model_name]))
+
+        def walk(node: Any, path: str) -> None:
+            if isinstance(node, list):
+                for index, item in enumerate(node):
+                    walk(item, f"{path}[{index}]")
+                return
+            if not isinstance(node, dict):
+                return
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                missing = set(node.get("required") or []) - set(properties)
+                assert not missing, (
+                    f"{model_name}{path}: {sorted(missing)} is required but was "
+                    f"translated out of properties"
+                )
+                for name, subschema in properties.items():
+                    walk(subschema, f"{path}.{name}")
+                return
+            for key, value in node.items():
+                walk(value, f"{path}.{key}")
+
+        walk(converted, "")
+
+    def test_a_field_named_like_a_schema_keyword_survives_translation(self) -> None:
+        """The general form of the `StoryPlan.title` defect, pinned directly.
+
+        `title`, `enum`, `format` and `items` are all annotation keywords *and*
+        perfectly ordinary field names. The filter that removes the keyword must
+        never reach into a `properties` map, where those strings are the child's
+        field names and mean nothing of the sort.
+        """
+        schema = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "title": "Title"},
+                "enum": {"type": "string"},
+                "format": {"type": "string"},
+                "examples": {"type": "string"},
+                "nested": {
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                    "required": ["title"],
+                },
+            },
+            "required": ["title", "enum", "format", "examples", "nested"],
+        }
+
+        converted = gemini_schema(schema)
+
+        assert set(converted["properties"]) == {
+            "title",
+            "enum",
+            "format",
+            "examples",
+            "nested",
+        }
+        # The annotation keyword on the *field* is still removed — only the name is
+        # protected.
+        assert "title" not in converted["properties"]["title"]
+        assert converted["properties"]["nested"]["properties"] == {"title": {"type": "string"}}
+
     def test_no_reference_survives_anywhere_in_the_tree(self) -> None:
         """Gemini resolves no references, so a `$ref` left in a nested `$def` is a
         400 the top-level shape would not reveal."""

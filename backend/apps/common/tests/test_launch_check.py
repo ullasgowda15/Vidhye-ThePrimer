@@ -188,10 +188,18 @@ class TestEachCheckCatchesItsOwnFailure:
     ) -> None:
         """The positive half. `OK` now means a moderator exists and is named — the
         difference between "the setting is auto" and "Claude's vision model will
-        look at every illustration"."""
+        look at every illustration".
+
+        The **model** is part of that naming, which the test's own title has always
+        said and its assertion did not: the row printed a provider id
+        (`google-vision`) on the one screen where a tester is verifying the model
+        they configured."""
+        from django.conf import settings as django_settings
+
         output, code = run()
         assert "OK    safety.image_gate" in output
-        assert "anthropic-vision is configured" in output
+        assert "anthropic-vision" in output
+        assert django_settings.IMAGE_MODERATION_MODEL in output
         assert code == 0
 
     def test_a_dump_older_than_the_disclosure_promises_blocks_the_launch(
@@ -331,13 +339,18 @@ class TestTheAllGoogleDeployment:
         which is the whole reason `GeminiImageModerator` exists. Asserted through
         the preflight *and* through `select_moderator()`, because the finding this
         row was fixed for is precisely those two disagreeing."""
+        from django.conf import settings as django_settings
+
         from apps.media import moderation
 
         assert isinstance(moderation.select_moderator(), moderation.GeminiImageModerator)
 
         output, _ = run()
         assert "OK    safety.image_gate" in output
-        assert "google-vision is configured" in output
+        assert "google-vision" in output
+        # The model too, not just the provider: an operator reading this row is
+        # checking the gate against the `IMAGE_MODERATION_MODEL` they set.
+        assert django_settings.IMAGE_MODERATION_MODEL in output
 
     def test_the_beat_route_is_priced(self, all_google: None) -> None:
         """Otherwise cost/session — the number the pilot is judged on — is missing

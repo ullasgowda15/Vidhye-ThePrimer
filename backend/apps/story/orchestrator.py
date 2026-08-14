@@ -2520,6 +2520,16 @@ def _substitute_illustration(beat: Beat, refusal: str) -> Media | None:
     A stock file that cannot be read leaves the beat with no picture rather than
     raising, because `stream_media` would swallow a raise into the same outcome
     with a worse log line.
+
+    **Severity follows the outcome, not the refusal.** A block the substitution
+    absorbed is the gate working: the picture was refused, safe stock art went out
+    in its place, and the child saw a complete beat. That is worth a row somebody
+    reads this week (`MEDIUM`), not a stop-the-line event — and filing it as `HIGH`
+    made `launch_check.monitoring.open_incidents` red on a healthy run, because
+    diffusion models emit a watermark often enough that a gate doing its job would
+    keep a launch permanently blocked. §22.5's stop-the-line is reserved for the
+    case where substitution *also* failed and the beat went out with no picture at
+    all.
     """
     child = beat.adventure.child
     logger.error("story.illustration_blocked beat=%s reason=%s", beat.id, refusal)
@@ -2530,17 +2540,18 @@ def _substitute_illustration(beat: Beat, refusal: str) -> Media | None:
         logger.exception("story.stock_illustration_failed beat=%s", beat.id)
         media = None
 
+    substituted = media is not None
     safety_incidents.record(
         category="image_blocked",
-        action=Action.SUBSTITUTED if media is not None else Action.BLOCKED,
-        severity=Severity.HIGH,
+        action=Action.SUBSTITUTED if substituted else Action.BLOCKED,
+        severity=Severity.MEDIUM if substituted else Severity.HIGH,
         child=child,
         adventure=beat.adventure,
         beat=beat,
         detail={
             "seq": beat.seq,
             "reason": refusal[:300],
-            "substituted": bool(media),
+            "substituted": substituted,
             "stock": str(media.id) if media is not None else None,
         },
     )
