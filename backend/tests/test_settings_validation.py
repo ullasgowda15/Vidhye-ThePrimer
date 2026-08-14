@@ -230,7 +230,19 @@ PROD_ENV = {
     "AI_BEAT_MODEL": "claude-opus-5",
     "AI_SAFETY_MODEL": "claude-haiku-4-5-20251001",
     "AI_MEMORY_MODEL": "claude-haiku-4-5-20251001",
+    # The embedding route is named rather than left on its default, and the Vertex
+    # trio is blanked rather than left absent, for the same reason every other
+    # value here is pinned: `settings.base` reads the repository's own `.env` at
+    # boot, so an unset key in this dict is not "unset" — it is whatever the
+    # machine running the tests happens to have. `EMBEDDING_PROVIDER` defaults to
+    # `google`, so without these four lines this baseline would be a *Vertex*
+    # deployment on the founder's laptop and a broken one in CI.
+    "EMBEDDING_PROVIDER": "openai",
     "EMBEDDING_MODEL": "text-embedding-3-small",
+    "IMAGE_MODERATION_PROVIDER": "auto",
+    "GOOGLE_CLOUD_PROJECT": "",
+    "GOOGLE_CLOUD_LOCATION": "",
+    "GOOGLE_APPLICATION_CREDENTIALS": "",
 }
 
 
@@ -315,13 +327,20 @@ def test_prod_refuses_to_boot_on_a_training_permitted_route(setting: str) -> Non
 
 
 def _vertex_env(credentials: str) -> dict[str, str]:
-    """A `PROD_ENV` overlay for the all-Google deployment."""
+    """A `PROD_ENV` overlay for the all-Google deployment.
+
+    All four child-data routes, because that is what `.env.example` and
+    `Docs/Hosting.md §4` now describe: beats, the grader, the memory digest and
+    the embeddings, on one service account.
+    """
     return {
         "AI_PROVIDER_ORDER": "google",
         "ANTHROPIC_API_KEY": "",
         "AI_BEAT_MODEL": "gemini-2.5-flash",
         "AI_SAFETY_MODEL": "gemini-2.5-flash-lite",
         "AI_MEMORY_MODEL": "gemini-2.5-flash-lite",
+        "EMBEDDING_PROVIDER": "google",
+        "EMBEDDING_MODEL": "gemini-embedding-001",
         "GOOGLE_CLOUD_PROJECT": "primer-test",
         "GOOGLE_CLOUD_LOCATION": "global",
         "GOOGLE_APPLICATION_CREDENTIALS": credentials,
@@ -386,6 +405,51 @@ def test_the_image_moderator_alone_is_enough_to_require_vertex(
     assert code != 0
     assert "IMAGE_MODERATION_PROVIDER" in stderr
     assert "GOOGLE_APPLICATION_CREDENTIALS" in stderr
+
+
+def test_the_embedding_route_alone_is_enough_to_require_vertex() -> None:
+    """The Vertex review's P1-1, and the quietest of the three routes.
+
+    `EMBEDDING_PROVIDER` defaults to `google` (`settings/base.py`), so this is not
+    an exotic configuration — it is what a box gets by saying nothing at all. The
+    guard listed only `AI_PROVIDER_ORDER` and `IMAGE_MODERATION_PROVIDER`, so a
+    deployment with no Vertex credentials booted, served stories, and then:
+    `select_embedding_provider()` raises `MediaConfigurationError`, `consolidation`
+    catches it as the `MediaError` it is and writes the memory with no vector, and
+    `retrieval._nearest` filters on `embedding__isnull=False` and finds nothing.
+    Every sitting remembered, no sitting ever recalled semantically, nothing
+    failing and nothing paging. The other two routes degrade loudly enough to be
+    noticed in a day; this one is invisible until somebody asks why the companion
+    never brings anything up.
+    """
+    code, stderr = _boot_prod(
+        EMBEDDING_PROVIDER="google",
+        EMBEDDING_MODEL="gemini-embedding-001",
+    )
+
+    assert code != 0, "prod booted with google embeddings and no Vertex credentials"
+    assert "ImproperlyConfigured" in stderr
+    assert "EMBEDDING_PROVIDER" in stderr
+    # It has to say what the silence costs, or the operator reads it as a
+    # formality and sets the three settings to whatever makes the boot stop.
+    assert "no vector" in stderr
+
+    problem = next(line for line in stderr.splitlines() if "EMBEDDING_PROVIDER" in line)
+    assert problem.isascii(), problem
+
+
+def test_google_embeddings_with_the_credentials_set_boot(service_account_file: str) -> None:
+    """The other half, and the reason the guard is a list rather than a hard no:
+    an Anthropic-LLM box embedding on Vertex is a legitimate deployment, and it
+    boots as long as it has the credential it depends on."""
+    code, stderr = _boot_prod(
+        EMBEDDING_PROVIDER="google",
+        EMBEDDING_MODEL="gemini-embedding-001",
+        GOOGLE_CLOUD_PROJECT="primer-test",
+        GOOGLE_CLOUD_LOCATION="global",
+        GOOGLE_APPLICATION_CREDENTIALS=service_account_file,
+    )
+    assert code == 0, stderr
 
 
 def test_google_further_down_the_order_is_absence_rather_than_misconfiguration(

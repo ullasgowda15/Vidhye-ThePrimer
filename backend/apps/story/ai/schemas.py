@@ -341,8 +341,6 @@ _GEMINI_UNSUPPORTED_KEYWORDS = frozenset(
         "additionalProperties",
         "unevaluatedProperties",
         "patternProperties",
-        "allOf",
-        "oneOf",
         "not",
         "if",
         "then",
@@ -352,6 +350,20 @@ _GEMINI_UNSUPPORTED_KEYWORDS = frozenset(
         "title",
     }
 )
+
+#: Keywords Gemini has no equivalent for that are **refused** rather than dropped.
+#:
+#: Everything in `_GEMINI_UNSUPPORTED_KEYWORDS` above is safe to remove: dropping
+#: `additionalProperties` or `title` loosens the wire schema and costs nothing,
+#: because what comes back is validated against the Pydantic model anyway. These
+#: two are the opposite. An `allOf`/`oneOf` node carries the *whole* meaning of the
+#: field — a constrained subclass, a discriminated union, a `Literal` union — so
+#: dropping it sends Gemini a node with a description and no type, which is exactly
+#: the silent contract loss `GeminiSchemaError` exists to prevent. Neither appears
+#: in any contract we generate today (Beat, StoryPlan, SessionMemories,
+#: SafetyVerdict, SessionHighlight, ReturningGreetingText); this is here so that the
+#: day one does, a person is told rather than a model left guessing.
+_GEMINI_UNCONVERTIBLE_KEYWORDS = frozenset({"allOf", "oneOf"})
 
 #: The `format` values Gemini accepts, per type. Anything else is dropped rather
 #: than passed through: Pydantic emits `uuid`, `email`, `date` and `binary` from
@@ -369,10 +381,12 @@ class GeminiSchemaError(ValueError):
     """A contract that cannot be expressed in Gemini's subset.
 
     Raised by `gemini_schema` rather than returned as a half-converted schema,
-    because the two ways this can happen — a `$ref` that resolves to nothing, and
-    a recursive model — are both bugs in *our* contract that would otherwise
-    surface as a provider 400 on every generation, which reads in a log as a
-    vendor problem.
+    because the three ways this can happen — a `$ref` that resolves to nothing, a
+    recursive model, and an `allOf`/`oneOf` node — are all bugs in *our* contract.
+    The first two would otherwise surface as a provider 400 on every generation,
+    which reads in a log as a vendor problem; the third would not surface at all,
+    which is worse: the field would simply reach Gemini untyped and be filled in
+    by guesswork.
     """
 
 
@@ -398,6 +412,9 @@ def gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
       as, it is not in Gemini's subset, and losing it on the wire costs nothing:
       the strictness it buys is applied when the response is validated, which is
       where it was always enforced anyway.
+    * **`allOf`/`oneOf` are refused, not dropped.** Unlike the keywords above,
+      those two *are* the field's meaning, so quietly removing one would send a
+      typeless node (`_GEMINI_UNCONVERTIBLE_KEYWORDS`).
 
     Applied by `router.GoogleProvider` and nowhere else. Every other provider
     keeps the schema `json_schema_for` produced, which is why this is a separate
@@ -425,6 +442,14 @@ def _gemini_node(node: Any, defs: dict[str, Any], seen: tuple[str, ...]) -> Any:
 
     converted: dict[str, Any] = {}
     for key, value in node.items():
+        if key in _GEMINI_UNCONVERTIBLE_KEYWORDS:
+            raise GeminiSchemaError(
+                f"'{key}' cannot be expressed in Gemini's schema subset, and "
+                f"dropping it would send a typeless node describing a field the "
+                f"model must get exactly right. Express the contract as an anyOf "
+                f"union (which becomes anyOf or nullable), or flatten the "
+                f"{key} branches into the parent object."
+            )
         if key in _GEMINI_UNSUPPORTED_KEYWORDS:
             continue
         if key == "const":

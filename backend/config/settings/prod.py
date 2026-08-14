@@ -87,10 +87,19 @@ if IMAGE_MODERATION == "off":  # noqa: F405
 # So the check happens at boot, where "this deployment cannot do what it says"
 # is still a sentence somebody reads.
 #
-# Only when Google is the *intended* one: first in `AI_PROVIDER_ORDER`, or named
-# as the image moderator. Google sitting further down the order is a fallback
-# nobody configured, which is absence rather than misconfiguration - the same
-# reading `TTS_FALLBACK_PROVIDERS` gets.
+# The embedding route degrades the quietest of the three, which is why it is in
+# this list rather than trusted to the two above it. `EMBEDDING_PROVIDER` defaults
+# to `google`, so a box that never mentions Vertex at all is still on it:
+# `select_embedding_provider()` raises `MediaConfigurationError`, `consolidation`
+# catches it as the `MediaError` it is and writes the memory *without* a vector,
+# and `retrieval._nearest` filters on `embedding__isnull=False` and finds nothing.
+# Every sitting is remembered; no sitting is ever recalled semantically. Nothing
+# fails, nothing pages, and the product's moat is simply absent.
+#
+# Only when Google is the *intended* one: first in `AI_PROVIDER_ORDER`, named as
+# the image moderator, or named as the embedding provider. Google sitting further
+# down the order is a fallback nobody configured, which is absence rather than
+# misconfiguration - the same reading `TTS_FALLBACK_PROVIDERS` gets.
 #
 # Plain ASCII, like the other guards: this is read in a terminal, and the Windows
 # console renders a section sign as a replacement character.
@@ -100,6 +109,7 @@ _wants_vertex = [
     for label, wanted in (
         ("AI_PROVIDER_ORDER", bool(_order) and _order[0] == "google"),
         ("IMAGE_MODERATION_PROVIDER", IMAGE_MODERATION_PROVIDER == "google"),  # noqa: F405
+        ("EMBEDDING_PROVIDER", EMBEDDING_PROVIDER == "google"),  # noqa: F405
     )
     if wanted
 ]
@@ -120,8 +130,9 @@ if _wants_vertex:
             "(13.8, Docs/Hosting.md section 3). Set GOOGLE_CLOUD_PROJECT, "
             "GOOGLE_CLOUD_LOCATION and GOOGLE_APPLICATION_CREDENTIALS (an absolute "
             "path to the service-account JSON on this box). Without them nothing "
-            "calls Gemini: every beat degrades to the pre-vetted fallback and the "
-            "image gate reports moderation=absent."
+            "calls Gemini: every beat degrades to the pre-vetted fallback, the "
+            "image gate reports moderation=absent, and every memory is stored with "
+            "no vector, which turns semantic recall off for good."
         )
 
     from pathlib import Path

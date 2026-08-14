@@ -57,6 +57,11 @@ def launchable(settings: Any, db: Any, tmp_path: Any) -> None:
     settings.AI_MEMORY_MODEL = "claude-haiku-4-5-20251001"
     settings.EMBEDDING_MODEL = "gemini-embedding-001"
     settings.IMAGE_MODERATION = "auto"
+    # `auto` resolves to a *moderator*, not to a string, and the preflight now
+    # asks which. Anthropic is first in the auto order and has a key here, so this
+    # deployment's gate is Claude's vision model no matter what the machine's own
+    # `.env` says about Google — pinned for the same reason the models above are.
+    settings.IMAGE_MODERATION_PROVIDER = "auto"
     settings.MEMORY_ENCRYPTION_KEY = "6H0y0AGRTP-cKQ0RRW9x8p2yh4Y3iCJqQyLwLQ4qSAI="
     settings.MEDIA_STORAGE = "s3"
     settings.INFERENCE_BUDGET_USD_PER_WINDOW = 25.0
@@ -149,6 +154,45 @@ class TestEachCheckCatchesItsOwnFailure:
     def test_a_clean_route_set_reports_ok(self, launchable: None) -> None:
         output, _ = run()
         assert "OK    privacy.provider_terms" in output
+
+    def test_an_image_gate_with_nothing_to_run_blocks_the_launch(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """The Vertex review's P1-2. `IMAGE_MODERATION=auto` is a *string*, and
+        this row used to report it back: `OK safety.image_gate IMAGE_MODERATION=auto`
+        while `select_moderator()` returned `None` and every scan logged
+        `moderation=absent`. A preflight row that says OK about a gate that is off
+        is worse than no row, because this screen is what a founder reads before
+        letting a family in.
+
+        Exactly the upgrade `safety.grader_reachable` got eight lines above: stop
+        asking what the setting says, ask the thing that would run.
+        """
+        from apps.media import moderation
+
+        settings.ANTHROPIC_API_KEY = ""
+        settings.GOOGLE_CLOUD_PROJECT = ""
+        settings.GOOGLE_CLOUD_LOCATION = ""
+        settings.GOOGLE_APPLICATION_CREDENTIALS = ""
+
+        # The premise, asserted rather than assumed: there really is no moderator.
+        assert moderation.select_moderator() is None
+
+        output, code = run()
+        assert "FAIL  safety.image_gate" in output
+        assert "moderation=absent" in output
+        assert code == 1
+
+    def test_a_configured_image_gate_says_which_model_looks_at_the_picture(
+        self, launchable: None
+    ) -> None:
+        """The positive half. `OK` now means a moderator exists and is named — the
+        difference between "the setting is auto" and "Claude's vision model will
+        look at every illustration"."""
+        output, code = run()
+        assert "OK    safety.image_gate" in output
+        assert "anthropic-vision is configured" in output
+        assert code == 0
 
     def test_a_dump_older_than_the_disclosure_promises_blocks_the_launch(
         self, launchable: None, settings: Any, tmp_path: Any
@@ -256,6 +300,8 @@ class TestTheAllGoogleDeployment:
         settings.AI_BEAT_MODEL = "gemini-2.5-flash"
         settings.AI_SAFETY_MODEL = "gemini-2.5-flash-lite"
         settings.AI_MEMORY_MODEL = "gemini-2.5-flash-lite"
+        settings.IMAGE_MODERATION_PROVIDER = "google"
+        settings.IMAGE_MODERATION_MODEL = "gemini-2.5-flash-lite"
 
     def test_it_passes_the_preflight(self, all_google: None) -> None:
         output, code = run()
@@ -279,6 +325,19 @@ class TestTheAllGoogleDeployment:
         output, _ = run()
         assert "OK    privacy.provider_terms" in output
         assert "gemini-2.5-flash" in output
+
+    def test_the_image_gate_runs_on_the_vertex_credentials_alone(self, all_google: None) -> None:
+        """No Anthropic key anywhere, and the gate is still a real vision call —
+        which is the whole reason `GeminiImageModerator` exists. Asserted through
+        the preflight *and* through `select_moderator()`, because the finding this
+        row was fixed for is precisely those two disagreeing."""
+        from apps.media import moderation
+
+        assert isinstance(moderation.select_moderator(), moderation.GeminiImageModerator)
+
+        output, _ = run()
+        assert "OK    safety.image_gate" in output
+        assert "google-vision is configured" in output
 
     def test_the_beat_route_is_priced(self, all_google: None) -> None:
         """Otherwise cost/session — the number the pilot is judged on — is missing

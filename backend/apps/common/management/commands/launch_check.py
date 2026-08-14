@@ -150,20 +150,39 @@ class Command(BaseCommand):
             )
         )
 
-        moderation = settings.IMAGE_MODERATION
-        checks.append(
-            Check(
-                "safety.image_gate",
-                OK if moderation == "auto" else (WARN if moderation else FAIL),
-                f"IMAGE_MODERATION={moderation}"
-                + (
-                    ""
-                    if moderation == "auto"
-                    else " - generated pictures are structurally"
-                    " scanned but not looked at (13.8)."
-                ),
+        # **Whether a moderator exists**, not what the setting says. This row used
+        # to read `IMAGE_MODERATION` and nothing else, so it printed `OK` on `auto`
+        # while `select_moderator()` returned `None` — the gate structurally off,
+        # every scan logging `moderation=absent`, on the one screen a founder reads
+        # before letting a family in. That is the same question `grader_reachable`
+        # eight lines above was upgraded from ("is a key set" -> "ask the selected
+        # provider"); this row was left on the older kind.
+        from apps.media import moderation as image_moderation
+
+        mode = str(settings.IMAGE_MODERATION)
+        moderator = image_moderation.select_moderator() if mode == "auto" else None
+        if mode != "auto":
+            verdict, detail = (
+                (WARN if mode else FAIL),
+                f"IMAGE_MODERATION={mode} - generated pictures are structurally"
+                " scanned but not looked at (13.8).",
             )
-        )
+        elif moderator is None:
+            verdict, detail = (
+                FAIL,
+                "IMAGE_MODERATION=auto, but no vision provider is credentialled: "
+                "every generated picture is structurally scanned and never looked "
+                "at, and every scan logs moderation=absent (13.8). Give the gate a "
+                "vision model - an ANTHROPIC_API_KEY, or the GOOGLE_CLOUD_* "
+                "settings with IMAGE_MODERATION_PROVIDER=google.",
+            )
+        else:
+            verdict, detail = (
+                OK,
+                f"IMAGE_MODERATION=auto, and {moderator.name} is configured to look "
+                "at every generated picture",
+            )
+        checks.append(Check("safety.image_gate", verdict, detail))
 
         # The pre-vetted beats. A pool that has been emptied by a refactor is a
         # blocked generation with nothing to serve in its place.

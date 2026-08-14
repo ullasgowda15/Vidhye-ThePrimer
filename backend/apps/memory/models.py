@@ -54,9 +54,11 @@ from apps.common.crypto import EncryptedTextField
 from apps.common.models import UUIDModel
 
 #: The width of one embedding vector. Fixed in the column, so it is fixed for the
-#: table: changing providers to one with a different native width is a migration
-#: and a re-embed, not a config flip. 1536 is §17.3's number and the native width
-#: of the shipped provider (`media.adapters.embedding`).
+#: table: changing it is a migration and a re-embed, not a config flip. 1536 is
+#: §17.3's number, and it is a *truncation* rather than the shipped provider's
+#: native width — `gemini-embedding-001` is a Matryoshka model whose native output
+#: is 3072 and whose prefixes are usable embeddings, so it is asked for 1536
+#: (`output_dimensionality`) and re-normalized (`media.adapters.embedding`).
 EMBEDDING_DIMENSIONS = 1536
 
 

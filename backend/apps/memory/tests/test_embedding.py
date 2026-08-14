@@ -226,6 +226,32 @@ class TestTheVertexEmbeddingProvider:
         with pytest.raises(MediaProviderError, match="3072 dimensions for an"):
             adapter.embed("anything")
 
+    def test_a_width_the_column_cannot_hold_fails_before_anything_is_spent(
+        self, vertex_embeddings, settings
+    ) -> None:
+        """The Vertex review's P2-2. `memory.embedding` is pinned at a module
+        constant, and the guard used to compare against `EMBEDDING_DIMENSIONS` —
+        which meant setting the env var to 3072 made the check *agree* with the
+        mistake: the provider was asked for 3072, returned 3072, passed a guard
+        whose message then claimed the column was `vector(3072)`, and Postgres
+        rejected the insert at the end of a consolidation run instead.
+
+        Now the setting is checked against the column, before the call, so the
+        message names the real constraint and a misconfigured box does not spend
+        money producing vectors it cannot store.
+        """
+        client = vertex_embeddings([0.5] * 3072)
+        settings.EMBEDDING_DIMENSIONS = 3072
+
+        with pytest.raises(MediaConfigurationError) as caught:
+            adapter.embed("anything")
+
+        message = str(caught.value)
+        assert "EMBEDDING_DIMENSIONS=3072" in message
+        assert f"vector({EMBEDDING_DIMENSIONS})" in message
+        assert "migration" in message
+        assert not client.calls, "the provider was called for a vector nothing could store"
+
     def test_an_empty_response_is_an_error_not_an_empty_vector(self, vertex_embeddings) -> None:
         vertex_embeddings([])
 
@@ -286,30 +312,99 @@ def test_the_shipped_embedding_route_needs_no_openai_account(settings) -> None:
     assert getattr(provider, "credential_env_var", "") == "GOOGLE_APPLICATION_CREDENTIALS"
 
 
-def test_the_documented_configuration_is_the_all_google_one() -> None:
-    """`.env.example` is what somebody copies, so it is where a doc/code drift
-    actually costs something — the previous build shipped three documents saying
-    `AI_PROVIDER_ORDER=gemini`, which is not a provider.
+def _env_example_lines() -> list[str]:
+    """`.env.example`, as lines.
 
     Read from the file rather than from `settings`: the resolved setting reflects
     whatever `.env` the machine happens to have (a developer running offline sets
-    `EMBEDDING_PROVIDER=local`, correctly), so asserting on it would be a test
-    that passes in CI and fails on the founder's laptop for a good reason.
+    `EMBEDDING_PROVIDER=local`, correctly), so asserting on it would be a test that
+    passes in CI and fails on the founder's laptop for a good reason.
     """
     from pathlib import Path
 
     from django.conf import settings as django_settings
 
     example = Path(django_settings.REPO_ROOT) / ".env.example"
-    lines = example.read_text(encoding="utf-8").splitlines()
+    return example.read_text(encoding="utf-8").splitlines()
 
+
+def test_the_documented_configuration_is_the_all_google_one() -> None:
+    """`.env.example` is what somebody copies, so it is where a doc/code drift
+    actually costs something — the previous build shipped three documents saying
+    `AI_PROVIDER_ORDER=gemini`, which is not a provider.
+
+    **The whole deployment, not just the embedding route.** This test used to
+    assert the three `EMBEDDING_*` lines and nothing else, so it passed on a file
+    whose documented LLM was Claude and whose documented image gate was `auto` —
+    which is the file the Vertex review found (P1-3): a template describing two
+    different deployments, one route pre-switched to Google and the rest left on
+    Anthropic. Copied verbatim that is a box `prod.py` now refuses to boot, and
+    before the P1-1 guard it was a box that booted and silently never embedded
+    anything. A test named for one deployment has to check the whole of it.
+    """
+    lines = _env_example_lines()
+
+    # The LLM half: the router, the writer, the grader.
+    assert "AI_PROVIDER_ORDER=google" in lines
+    assert "AI_BEAT_MODEL=gemini-2.5-flash" in lines
+    assert "AI_SAFETY_MODEL=gemini-2.5-flash-lite" in lines
+    # The image gate. `auto` is not good enough here: it takes the first provider
+    # with credentials, Anthropic first, so on the all-Google deployment it is the
+    # setting that most easily says one thing and does another (P1-2).
+    assert "IMAGE_MODERATION=auto" in lines
+    assert "IMAGE_MODERATION_PROVIDER=google" in lines
+    assert "IMAGE_MODERATION_MODEL=gemini-2.5-flash-lite" in lines
+    # The embedding half.
     assert "EMBEDDING_PROVIDER=google" in lines
     assert "EMBEDDING_MODEL=gemini-embedding-001" in lines
     # 1536 is what makes this a no-migration move: `gemini-embedding-001` is a
     # Matryoshka model asked for a prefix of its native 3072.
     assert "EMBEDDING_DIMENSIONS=1536" in lines
-    # And no OpenAI credential is presented as something to fill in.
+    # And the credential block the four routes above share is present for the
+    # operator to fill in, rather than being something they have to discover.
+    for key in ("GOOGLE_CLOUD_PROJECT=", "GOOGLE_APPLICATION_CREDENTIALS="):
+        assert [line for line in lines if line.startswith(key)], key
+    # No OpenAI credential is presented as something to fill in.
     assert not [line for line in lines if line.startswith("OPENAI_API_KEY=")]
+
+
+def test_the_other_providers_survive_as_commented_alternatives() -> None:
+    """The seams are real, and the template has to keep saying so.
+
+    `anthropic` and `openrouter` are implemented, selectable and tested; flipping
+    the file to one deployment must not read as deleting the other two. The rule
+    is that every alternative is present and commented — one comment character
+    away, never uncommented next to a value that contradicts it.
+    """
+    lines = _env_example_lines()
+    commented = [line.strip().lstrip("#").strip() for line in lines if line.strip().startswith("#")]
+
+    assert "AI_PROVIDER_ORDER=anthropic" in commented
+    assert any(line.startswith("AI_BEAT_MODEL=claude-opus-5") for line in commented)
+    assert any(line.startswith("AI_SAFETY_MODEL=claude-haiku") for line in commented)
+    # And an Anthropic key is still somewhere to put one, just not a requirement.
+    assert [line for line in lines if line.startswith("ANTHROPIC_API_KEY=")]
+
+
+def test_the_column_comment_says_where_1536_comes_from() -> None:
+    """The Vertex review's P2-3, and the one place the sweep missed.
+
+    The constant's comment called 1536 "the native width of the shipped provider".
+    `gemini-embedding-001`'s native width is **3072**; 1536 is a Matryoshka
+    truncation, and that is precisely the fact which makes "no migration, no index
+    rebuild" true. Every other file states it correctly. A comment that is wrong
+    about the single thing it exists to explain will be trusted by whoever next
+    considers changing the number.
+    """
+    from pathlib import Path
+
+    from apps.memory import models as memory_models
+
+    source = Path(str(memory_models.__file__)).read_text(encoding="utf-8")
+    header = source.split("EMBEDDING_DIMENSIONS = 1536")[0]
+
+    assert "3072" in header
+    assert "native width of the shipped provider" not in header
 
 
 def test_the_embedding_model_still_satisfies_the_training_rule() -> None:

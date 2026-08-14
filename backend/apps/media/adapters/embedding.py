@@ -384,25 +384,44 @@ def embed(
     to the storing case because that is the overwhelming majority of calls and
     because a wrong default should be the one that affects the smaller side.
 
-    Raises `MediaConfigurationError` when no provider is usable and
-    `MediaProviderError` when one was reached and did not answer. Both are
-    `MediaError`, which is the single exception the consolidation job catches
-    before writing the memory without a vector.
+    Raises `MediaConfigurationError` when no provider is usable or when the
+    configured width is not the column's, and `MediaProviderError` when a provider
+    was reached and did not answer. Both are `MediaError`, which is the single
+    exception the consolidation job catches before writing the memory without a
+    vector.
     """
     if not text.strip():
         raise MediaProviderError("Refusing to embed an empty string.")
 
+    # The **column's** width, not the setting's. `memory.embedding` is pinned at a
+    # module constant, so a guard that compared against `EMBEDDING_DIMENSIONS`
+    # agreed with whatever the env var said: set it to 3072, and a 3072-wide vector
+    # passed a check whose message claimed the column was vector(3072), and
+    # Postgres rejected the insert at the end of a consolidation run instead. The
+    # setting is what the provider is *asked* for; this is what can be stored — so
+    # a disagreement between them is checked here, before anything is spent on a
+    # vector that could not be written down.
+    from apps.memory.models import EMBEDDING_DIMENSIONS as COLUMN_DIMENSIONS
+
+    if settings.EMBEDDING_DIMENSIONS != COLUMN_DIMENSIONS:
+        raise MediaConfigurationError(
+            f"EMBEDDING_DIMENSIONS={settings.EMBEDDING_DIMENSIONS}, but "
+            f"memory.embedding is vector({COLUMN_DIMENSIONS}) - every vector this "
+            "produces would be rejected by Postgres on insert. The width is a "
+            "column, so changing it is a migration plus a re-embed of every row, "
+            "not a config flip."
+        )
+
     chosen = provider if provider is not None else select_embedding_provider()
     vector = chosen.embed(text, task=task)
 
-    expected = settings.EMBEDDING_DIMENSIONS
-    if len(vector) != expected:
+    if len(vector) != COLUMN_DIMENSIONS:
         # Loud rather than truncated or padded. A silently reshaped vector is a
         # vector that ranks wrongly forever, and the failure would surface as
         # "retrieval feels random" months later.
         raise MediaProviderError(
             f"Embedding provider '{chosen.name}' returned {len(vector)} dimensions, "
-            f"but memory.embedding is vector({expected}). Either point "
+            f"but memory.embedding is vector({COLUMN_DIMENSIONS}). Either point "
             "EMBEDDING_PROVIDER at a model of that width or migrate the column."
         )
     return vector

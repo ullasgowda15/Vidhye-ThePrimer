@@ -219,6 +219,38 @@ class TestTheBeatContractSurvivesTranslation:
         with pytest.raises(GeminiSchemaError, match="refers to itself"):
             gemini_schema(recursive)
 
+    @pytest.mark.parametrize("keyword", ["oneOf", "allOf"])
+    def test_a_union_gemini_cannot_express_is_refused_rather_than_dropped(
+        self, keyword: str
+    ) -> None:
+        """The Vertex review's P2-1, and the one failure in this file that is about
+        what does *not* happen.
+
+        `allOf`/`oneOf` used to sit in `_GEMINI_UNSUPPORTED_KEYWORDS` and be
+        dropped like `title` and `additionalProperties`. Dropping those two is
+        free — the strictness they buy is applied when the response is validated.
+        Dropping a union is not: the field reaches Gemini as a description with no
+        `type` at all, the request succeeds, and the model fills the node in by
+        guesswork. That is a silent contract loss on a request that never errors,
+        which is the exact thing `GeminiSchemaError` exists to prevent and the one
+        shape a 400 would never reveal.
+
+        Neither appears in any contract we generate today (the parametrized test
+        above covers all four). This is here for the day a `Literal` union or a
+        constrained subclass arrives and somebody has to be told.
+        """
+        toy = {
+            "type": "object",
+            "properties": {
+                "expected": {
+                    "description": "what the child should answer",
+                    keyword: [{"type": "integer"}, {"type": "string"}],
+                }
+            },
+        }
+        with pytest.raises(GeminiSchemaError, match=keyword):
+            gemini_schema(toy)
+
     def test_a_dangling_reference_is_refused_too(self) -> None:
         with pytest.raises(GeminiSchemaError, match="does not resolve"):
             gemini_schema({"type": "object", "properties": {"a": {"$ref": "#/$defs/Missing"}}})
