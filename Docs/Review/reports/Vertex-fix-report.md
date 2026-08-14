@@ -88,43 +88,71 @@ The new check runs **before** the provider call, so a misconfigured box does not
 
 ---
 
-## Left undone, deliberately
+---
 
-| id | what | why, and what closes it |
-|---|---|---|
-| **P2-4** | No `thinking_config` cap on the beat / safety / memory routes. | **Do not cap blind.** The build measured 1,136 vs 1,572 output tokens for the *same* prompt — a 38% spread that is entirely thinking — against `MAX_OUTPUT_TOKENS = 8000`. A cap chosen without data could truncate beat quality, which is the product. Measure the spread against cost and the fallback rate in the **first live sitting**, then decide. Noted in `PROGRESS.md`. |
-| **P2-5** | Embeddings are not cost-traced, so `cost/session` under-counts. | Small, and on the Day-8 consolidation path this build had no reason to enter. `cost.record` is called from `ModelRouter.generate_structured` and `media.service._get_or_generate`; `embed_content` goes through neither. Size it from the same live sitting. Noted in `PROGRESS.md`. |
-| **P2-6** | Vertex's own abuse-monitoring logging and its retention (a §13.7 question, not the §13.8 one `Hosting.md §3` already answers honestly). | **Founder decision, flagged rather than written.** §13.8 — inputs excluded from training — is settled and is stated as the purchasing fact it is. What is unaddressed anywhere is that Vertex retains prompts for abuse monitoring under its own policy, and whether a **data-logging-exemption request** belongs on the launch checklist. That is a call about what to tell parents and what to ask Google for, not a code fix; see below. |
+## The remaining P2s, closed in a follow-up pass
+
+The three items above were where the brief stopped. On review of the report the founder took the remaining ones in the same sitting; this is what changed.
+
+### P2-5 — embeddings are cost-traced (**fixed**)
+
+`cost.record` is documented as being called from the two places money is spent and nowhere else, precisely so a caller cannot forget. Embeddings were the exception that proved it: they go through neither `ModelRouter.generate_structured` nor `media.service._get_or_generate`, so every consolidation run and every branch-point recall was real money `cost/session` did not count.
+
+The span now goes in at **`adapters.embedding.embed()`** — the seam every caller already has to use, which makes it the third and, as long as nothing else calls a vendor directly, the last:
+
+- **`GoogleEmbeddingProvider` gained a `last_usage`**, set from Vertex's own `ContentEmbeddingStatistics.token_count` and read *before* the width checks that can raise, so a call that answered and was then refused still writes its span. Same convention, same ordering and same reasoning as the LLM providers'.
+- **A provider with no meter is estimated from characters and marked `estimated: True`**, mirroring `router._trace_llm_cost`. An unmarked estimate on a paid route would read as a measurement.
+- **A call that never reached the model writes nothing** — `last_usage is not None` is the test, as in `generate_structured`. Inventing a price for a call that was never billed over-reports spend, which is the same dishonesty as under-reporting it.
+- **Priced**: `google:gemini-embedding-001` at `("0.15", "0.00")`, `openai:text-embedding-3-small` at `("0.02", "0.00")`, `local-hash` at a known zero. The zero output rate is a fact — embeddings bill on input only — not a missing entry, which would mean "we do not know".
+- **Recorded as `kind=llm, operation="embedding"`.** An embedding *is* a token-billed model call, `_by_operation` keeps it separable in the dashboard, and a fourth `CostKind` would have been a migration on a column whose existing rows would then disagree with the new ones. If that split ever needs to be first-class, it should be made deliberately.
+
+Note the consequence, because it is a behaviour change and not only a metric: `cost.record` feeds `budget.spend`, so embedding spend now counts against the §18.8 breaker. That is correct — the breaker is meant to count exactly what the cost table counts — and it means the cap is now measuring slightly more than it was.
+
+**Proved by** four tests in `TestEmbeddingsAreCostTraced`: a priced span from a real token count, the estimated path marked as estimated, no span when the call never reached the model, and a span that survives a refused-for-width response. The rates are list prices, and `pricing.py`'s docstring already says what that means.
+
+### P2-4 — thinking tokens are now visible (**instrumented, still uncapped**)
+
+The cap itself is still deliberately not set, for the reason the brief gave: the 1,136↔1,572-token spread has to be measured against cost and fallback rate before anything is capped, or the product's own quality is the thing being trimmed.
+
+What changed is that the first live sitting will now actually produce the number. `_gemini_usage` still folds `thoughts_token_count` into the output side — that is right, Gemini bills thinking at the output rate — and now *also* reports it as **`thoughts_tokens`** on the span's `units`. `cost.price` reads `input_tokens` and `output_tokens` only, so the arithmetic is untouched; the number is simply there, in the `cost.span` log line and in the stored row. Absent when the vendor reports no count, rather than stored as a zero we did not measure.
+
+**Proved by** `test_thinking_is_reported_on_its_own_as_well_as_folded_in`, which asserts the key *and* that pricing is identical with and without it, plus `test_a_vendor_that_reports_no_thinking_count_is_not_given_a_zero`.
+
+### P2-6 — written down and put on the launch checklist (**founder decision recorded**)
+
+Not a code fix, and still not one. What was missing was that the question existed at all:
+
+- **`Docs/Hosting.md §3`** now ends with the distinction stated plainly — "not used for training" is not "not retained". Vertex keeps prompts for its own **abuse monitoring** under Google's policy, unaffected by the §13.8 exclusion, which for this product means a child's first name, fears, retrieved memories and the verbatim session digest sit in a Google-side log for that period. That is **§13.7**, a data-logging exemption is the only lever, and the paragraph says outright that it is not a substitute for reading the current terms.
+- **`Docs/Runbooks/Launch.md §2`** carries it as an explicit item: read the terms, decide, write the decision down. Either answer is defensible for a closed alpha; not having looked is not.
+
+## The two founder actions — now on the runbook, not only in this report
+
+Both were carried forward from the build's own report, and both are still outstanding — neither is closable from a session. They have moved from prose here to checkboxes in `Docs/Runbooks/Launch.md`, where the pre-launch work actually gets read:
+
+1. **Issue a fresh Vertex service-account key and delete the old one** (`Launch.md §1`). The build's key sat in a OneDrive-synced folder. No key material has ever been committed — the review checked every commit in the history — but a key that has been through a sync client's cache has left the box it was issued for. The runbook makes the deletion explicit: a rotation that leaves the old key valid is a copy.
+2. **Set the GCP budget alerts** (`Launch.md §2`, `Hosting.md §5`). Our breaker can only stop what it counts. It counts more now that P2-5 is fixed, but the vendor-side alert is the one that catches a runaway our own meter under-reads, which is exactly why it should live in a different system from ours.
 
 Nothing else in the review's finding table was touched.
-
-## Two founder actions, restated
-
-Both are carried forward from the build's own report and both are still outstanding. Neither is code, and neither is closable from this session.
-
-1. **Rotate the Vertex service-account key.** It sat in a OneDrive-synced folder. No key material has ever been committed (the review checked all 81 commits), and the `.gitignore` rules for it are a safety net rather than the plan — but a key that has been in a sync client's cache is a key that has left the box. Issue a new one, point `GOOGLE_APPLICATION_CREDENTIALS` at it outside the repository, and delete the old one in the GCP console.
-2. **Set the GCP budget alerts** (`Hosting.md §5`) **before a family plays.** `INFERENCE_BUDGET_USD_PER_WINDOW` is our own breaker and it does its job — over the cap children get cached art and pre-vetted warm beats, never an error — but it does not know what Google is billing. The budget alert is the one that catches a runaway that our own meter under-counts, which, per P2-5, it currently does by the embedding share.
-
-**And one decision to make:** P2-6. Read Vertex's abuse-monitoring retention terms and decide whether to file a data-logging-exemption request before the pilot. If the answer is yes, it belongs on `Docs/Runbooks/Launch.md`; either way `Hosting.md §3` should end up with one honest sentence about it, written by the person who made the call.
 
 ---
 
 ## Verification
 
-Run here, on the fix commit:
+Run here, on each commit. The P1/P2-1/2/3 pass is `5dd9727`; the P2-4/P2-5/P2-6 follow-up is the commit this report is filed with.
 
 | gate | result |
 |---|---|
 | `make lint` (ruff check + format, backend and evals) | **All checks passed**; 234 + 9 files already formatted |
 | `mypy` | **Success: no issues found in 262 source files** |
-| backend `pytest` | **1,474 passed**, exit 0 — 1,464 before this pass plus exactly the **10 new tests** below |
-| frontend `npm run test` | **183 passed** (13 files) — untouched by this pass, run as the other half of `make test` |
+| backend `pytest` | **1,480 passed**, exit 0 — 1,464 before this work, plus the **10 tests** of the first pass and the **6** of the follow-up |
+| frontend `npm run test` | **183 passed** (13 files) — untouched by either pass, run as the other half of `make test` |
 | `pytest evals/` — the ship gate | **44 passed, 1 skipped** (the skip is the live-only model grader) |
 | `pip-audit -r backend/requirements.txt` | **No known vulnerabilities found** |
-| `makemigrations --check --dry-run` | **No changes detected** — no schema change in this pass |
-| CI | **green, run `CI_RUN_ID`** |
+| `makemigrations --check --dry-run` | **No changes detected** — no schema change in either pass, including the `kind=llm` decision that avoided one |
+| CI (first pass) | **green, run `31762474728`** on `5dd9727` — all five jobs (Backend, Frontend, Evals, Dependencies, Backend image) |
+| CI (follow-up) | **green, run `FOLLOWUP_RUN_ID`** |
 
-The ten new tests, by the fix they hold down:
+The sixteen new tests, by the fix they hold down:
 
 | fix | test | file |
 |---|---|---|
@@ -138,5 +166,13 @@ The ten new tests, by the fix they hold down:
 | P2-1 | `test_a_union_gemini_cannot_express_is_refused_rather_than_dropped[oneOf]` / `[allOf]` | `tests/test_google_provider.py` |
 | P2-2 | `test_a_width_the_column_cannot_hold_fails_before_anything_is_spent` | `apps/memory/tests/test_embedding.py` |
 | P2-3 | `test_the_column_comment_says_where_1536_comes_from` | `apps/memory/tests/test_embedding.py` |
+| P2-4 | `test_thinking_is_reported_on_its_own_as_well_as_folded_in` | `tests/test_google_provider.py` |
+| P2-4 | `test_a_vendor_that_reports_no_thinking_count_is_not_given_a_zero` | `tests/test_google_provider.py` |
+| P2-5 | `TestEmbeddingsAreCostTraced::test_a_vertex_embedding_writes_a_priced_span` | `apps/memory/tests/test_embedding.py` |
+| P2-5 | `…::test_a_provider_with_no_meter_is_estimated_and_says_so` | `apps/memory/tests/test_embedding.py` |
+| P2-5 | `…::test_a_call_that_never_reached_the_model_is_not_priced` | `apps/memory/tests/test_embedding.py` |
+| P2-5 | `…::test_a_metered_call_that_is_then_refused_still_writes_its_span` | `apps/memory/tests/test_embedding.py` |
+
+Two existing meter tests changed rather than being added to, because their subject changed: `test_usage_is_read_from_gemini_and_thinking_is_priced` and `test_a_metered_generation_that_is_then_refused_is_still_costed` asserted `last_usage` by whole-dict equality, so the new `thoughts_tokens` key belongs in them. Their pricing assertions are unchanged, which is the point.
 
 The safety axis the review verified clean is untouched and still green: nothing here changes a provider, the orchestrator, the streaming path, the safety classifier, the fallback pool or the moderation wrapper's fail-closed posture. Two of the six changes make a guard *stricter* (P1-1, P2-1) and one makes a preflight row *harder to pass* (P1-2), which is the direction that matters.

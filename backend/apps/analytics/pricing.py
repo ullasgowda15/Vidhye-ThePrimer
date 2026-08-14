@@ -57,6 +57,18 @@ LLM_PRICES: dict[str, tuple[str, str]] = {
     # rate that applies to both.
     "google:gemini-2.5-flash": ("0.30", "2.50"),
     "google:gemini-2.5-flash-lite": ("0.10", "0.40"),
+    # Embeddings, which are billed on input tokens only — hence a zero output
+    # rate rather than a missing one, because "this route produces no billable
+    # output" is a fact and `None` would mean "we do not know what this costs".
+    # They are traced as `kind=llm, operation=embedding` (see
+    # `media.adapters.embedding._trace_embedding_cost`), so they are priced from
+    # this table like every other token-billed call.
+    "google:gemini-embedding-001": ("0.15", "0.00"),
+    "openai:text-embedding-3-small": ("0.02", "0.00"),
+    # `local-hash` is a hashing trick, not a model. Genuinely free, and stored as
+    # a known zero rather than left unknown — the same call the image and voice
+    # tables make for their own offline renderers.
+    "local-hash": ("0.00", "0.00"),
     # OpenRouter free routes — genuinely zero, and stored as a known zero.
     "openrouter:nvidia/nemotron-3-super-120b-a12b:free": ("0.00", "0.00"),
     # The scripted provider in the test suite. It has no model and costs nothing,

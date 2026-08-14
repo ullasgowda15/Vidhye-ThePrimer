@@ -67,6 +67,8 @@ So: never a free prompt-reselling route for **any** of them. On OpenRouter that 
 
 What none of that proves is that a given *paid* route's terms actually exclude training — that is a purchasing decision, and it belongs to whoever signs up. The guard catches the specific cheap mistake that has already happened once.
 
+**And one thing §13.8 does not cover, stated here so it is not mistaken for covered.** "Not used for training" is not "not retained". Vertex AI keeps prompts and responses for its own **abuse monitoring** under Google's policy, separate from and unaffected by the training exclusion above — which for this product means a child's beat prompt (first name, age band, fears, retrieved memories) and the verbatim memory digest sit in a Google-side log for that retention period. That is a **§13.7 retention question, not a §13.8 training one**, and nothing in this codebase can change it: Google grants a **data-logging exemption** on request, per project, and it is the only lever. Whether to file one before the pilot is a founder decision and is on `Docs/Runbooks/Launch.md` as an explicit item rather than left implied. Re-read the current Vertex abuse-monitoring terms when deciding — retention periods are a vendor fact that changes without notice, and this paragraph is not a substitute for reading them.
+
 ---
 
 ## 4. Configuration — the exact switches

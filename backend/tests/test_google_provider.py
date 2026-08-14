@@ -436,7 +436,55 @@ class TestTheMeter:
         provider = GoogleProvider(model="gemini-2.5-flash")
         provider.generate_json(system="s", messages=[], schema=beat_json_schema())
 
-        assert provider.last_usage == {"input_tokens": 986, "output_tokens": 1356}
+        assert provider.last_usage == {
+            "input_tokens": 986,
+            "output_tokens": 1356,
+            "thoughts_tokens": 220,
+        }
+
+    def test_thinking_is_reported_on_its_own_as_well_as_folded_in(self, vertex: Any) -> None:
+        """The Vertex review's P2-4, instrumented rather than guessed at.
+
+        Folding thinking into the output side is right for the *price* and useless
+        for the decision the first live sitting has to make: whether to set a
+        `thinking_config` cap. The build measured 1,136 against 1,572 output tokens
+        for the same prompt — a 38% spread that is entirely thinking — and that
+        spread is invisible in a number with thinking already added into it.
+
+        So it is carried twice, and the second copy must cost nothing: `cost.price`
+        reads `input_tokens` and `output_tokens` only, which is what this asserts.
+        A key that changed the arithmetic would be a cost regression dressed as
+        instrumentation.
+        """
+        from apps.analytics import cost
+        from apps.analytics.models import CostKind
+
+        vertex(_response(json.dumps(VALID_BEAT), usage=(986, 1136, 220)))
+        provider = GoogleProvider(model="gemini-2.5-flash")
+        provider.generate_json(system="s", messages=[], schema=beat_json_schema())
+
+        assert provider.last_usage is not None
+        assert provider.last_usage["thoughts_tokens"] == 220
+        label = "google:gemini-2.5-flash"
+        assert cost.price(CostKind.LLM, label, provider.last_usage) == cost.price(
+            CostKind.LLM, label, {"input_tokens": 986, "output_tokens": 1356}
+        )
+
+    def test_a_vendor_that_reports_no_thinking_count_is_not_given_a_zero(self) -> None:
+        """A reported zero and an unreported count are different facts, and the
+        one that would mislead is inventing the first. Exercised through
+        `_gemini_usage` directly, because it is the shape of the *response* that
+        is under test."""
+        from apps.story.ai.router import _gemini_usage
+
+        metadata = type(
+            "U",
+            (),
+            {"prompt_token_count": 40, "candidates_token_count": 12, "thoughts_token_count": None},
+        )()
+        usage = _gemini_usage(type("R", (), {"usage_metadata": metadata})())
+
+        assert usage == {"input_tokens": 40, "output_tokens": 12}
 
     def test_a_metered_generation_that_is_then_refused_is_still_costed(self, vertex: Any) -> None:
         """Day-14 P1-5, mirrored. A blocked beat cost input tokens; the meter is
@@ -448,7 +496,11 @@ class TestTheMeter:
         with pytest.raises(ProviderError):
             provider.generate_json(system="s", messages=[], schema=beat_json_schema())
 
-        assert provider.last_usage == {"input_tokens": 900, "output_tokens": 0}
+        assert provider.last_usage == {
+            "input_tokens": 900,
+            "output_tokens": 0,
+            "thoughts_tokens": 0,
+        }
 
     def test_a_call_that_never_reached_the_model_reports_no_usage(self, vertex: Any) -> None:
         """The other half: `_generate_traced` keys on `last_usage is not None` to

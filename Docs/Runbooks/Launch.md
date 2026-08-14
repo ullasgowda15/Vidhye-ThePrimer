@@ -49,6 +49,19 @@ The environment variables that are new as of Day 15 and have **no safe default**
 | `INFERENCE_BUDGET_WINDOW_S` | Defaults to 3600. An hour is long enough that a busy bedtime does not trip it and short enough that a trip clears itself the same evening. |
 | `MEMORY_ENCRYPTION_KEY` | §11.10. Already required since Day 8. Generate it once, store it where the database backups are *not*. |
 
+**And one credential to replace rather than copy:**
+
+- [ ] **Issue a fresh Vertex service-account key, and delete the old one.** The
+      key used during the build sat in a OneDrive-synced folder. No key material
+      has ever been committed — the Vertex review checked every commit in the
+      history, and `.gitignore` covers the filename patterns — but a key that has
+      been through a sync client's cache has left the box it was issued for, and
+      that is the only fact that matters. Create the new one, point
+      `GOOGLE_APPLICATION_CREDENTIALS` at it **outside the repository**
+      (`~/.config/primer/vertex-sa.json`, owner-read-only), confirm the app boots,
+      then **delete the old key in the GCP console** — a rotation that leaves the
+      old key valid is a copy, not a rotation.
+
 Then, with the app running and before any child touches it:
 
 ```bash
@@ -76,6 +89,20 @@ tell whether a backup has ever been put back.
       job requires. Add yourself as a required reviewer on it: it is the last
       place a human sits between a tag and a four-year-old, and it costs one
       click per release.
+- [ ] **GCP budget alerts on the Vertex project** (`Docs/Hosting.md §5`).
+      `INFERENCE_BUDGET_USD_PER_WINDOW` is our own breaker and it works — over the
+      cap children get cached art and pre-vetted warm beats, never an error — but
+      it can only stop what it counts, and it counts what `cost.record` sees. The
+      budget alert is the one that catches a runaway our meter under-reads, which
+      is the whole reason it belongs to a different system from ours.
+- [ ] **Decide on a Vertex data-logging exemption** (`Docs/Hosting.md §3`).
+      Separate from §13.8's training exclusion, which is settled: Vertex retains
+      prompts for its own **abuse monitoring**, and for this product that means a
+      child's first name, fears, retrieved memories and the verbatim session
+      digest sitting in a Google-side log for that period (§13.7). Google grants
+      an exemption per project on request and it is the only lever there is. Read
+      the current terms, decide, and write the decision down — either answer is
+      defensible for a closed alpha; not having looked is not.
 
 ## 3. Run the drills against production, once
 

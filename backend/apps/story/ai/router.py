@@ -744,6 +744,17 @@ def _gemini_usage(response: Any) -> dict[str, int] | None:
     tokens at the output rate and does not include them in
     `candidates_token_count`, so leaving them out would under-report the price of
     exactly the generations that cost most (§22.4).
+
+    **And reported again on its own, as `thoughts_tokens`.** Folding is right for
+    the price and wrong for the question the first live sitting has to answer:
+    whether to cap thinking (`thinking_config`). The build measured 1,136 against
+    1,572 output tokens for the *same* prompt — a 38% spread that is entirely
+    thinking — and a decision about capping it cannot be made from a number that
+    has thinking added into it. This key is carried on the span's `units` and
+    priced by nothing: `cost.price` reads `input_tokens` and `output_tokens` only,
+    so the arithmetic is unchanged and the number is simply visible. Absent when
+    the vendor did not report one, rather than stored as a zero we did not measure
+    — a reported zero and an unreported count are different facts.
     """
     usage = getattr(response, "usage_metadata", None)
     if usage is None:
@@ -753,10 +764,13 @@ def _gemini_usage(response: Any) -> dict[str, int] | None:
     thoughts = getattr(usage, "thoughts_token_count", None)
     if incoming is None and outgoing is None and thoughts is None:
         return None
-    return {
+    metered = {
         "input_tokens": int(incoming or 0),
         "output_tokens": int(outgoing or 0) + int(thoughts or 0),
     }
+    if thoughts is not None:
+        metered["thoughts_tokens"] = int(thoughts)
+    return metered
 
 
 def _enum_name(value: Any) -> str:

@@ -138,9 +138,18 @@ def test_the_provider_label_names_the_offline_one_as_offline() -> None:
 class _FakeEmbeddings:
     """Stands in for the Vertex client, recording what it was asked for."""
 
-    def __init__(self, values: list[float] | None = None, boom: Exception | None = None) -> None:
+    def __init__(
+        self,
+        values: list[float] | None = None,
+        boom: Exception | None = None,
+        tokens: int | None = None,
+    ) -> None:
         self._values = values
         self._boom = boom
+        #: `ContentEmbeddingStatistics.token_count` — Vertex's own meter, and what
+        #: the cost span is priced from. `None` stands for a response that did not
+        #: report one, which is the estimated path.
+        self._tokens = tokens
         self.calls: list[dict] = []
         self.models = self
 
@@ -148,7 +157,10 @@ class _FakeEmbeddings:
         self.calls.append(kwargs)
         if self._boom is not None:
             raise self._boom
-        embedding = type("E", (), {"values": self._values})()
+        statistics = (
+            type("S", (), {"token_count": self._tokens})() if self._tokens is not None else None
+        )
+        embedding = type("E", (), {"values": self._values, "statistics": statistics})()
         return type("R", (), {"embeddings": [embedding]})()
 
 
@@ -162,10 +174,14 @@ def vertex_embeddings(monkeypatch, settings):
     settings.GOOGLE_CLOUD_LOCATION = "global"
     settings.GOOGLE_APPLICATION_CREDENTIALS = "/nowhere/service-account.json"
 
-    def install(values: list[float] | None = None, boom: Exception | None = None):
+    def install(
+        values: list[float] | None = None,
+        boom: Exception | None = None,
+        tokens: int | None = None,
+    ):
         from apps.common import vertex
 
-        client = _FakeEmbeddings(values, boom)
+        client = _FakeEmbeddings(values, boom, tokens)
         monkeypatch.setattr(vertex, "client", lambda: client)
         return client
 
@@ -326,6 +342,86 @@ def _env_example_lines() -> list[str]:
 
     example = Path(django_settings.REPO_ROOT) / ".env.example"
     return example.read_text(encoding="utf-8").splitlines()
+
+
+# ---------------------------------------------------------------------------
+# Cost tracing (§19.9, §22.4) — the Vertex review's P2-5
+# ---------------------------------------------------------------------------
+# Embeddings were the one kind of real spend `cost.record` never saw: they go
+# through neither `ModelRouter.generate_structured` nor
+# `media.service._get_or_generate`, so every consolidation run and every
+# branch-point recall was money `cost/session` did not count. The fix puts the
+# span at `embed()`, which is the seam every caller already has to use.
+class TestEmbeddingsAreCostTraced:
+    @pytest.mark.django_db
+    def test_a_vertex_embedding_writes_a_priced_span(self, vertex_embeddings) -> None:
+        """Priced from Vertex's own token count, not from a guess about it."""
+        from apps.analytics.models import CostKind, GenerationCost
+
+        vertex_embeddings([0.1] * EMBEDDING_DIMENSIONS, tokens=11)
+
+        adapter.embed("Aarav named the little dragon Sparkle.")
+
+        span = GenerationCost.objects.get(operation="embedding")
+        assert span.kind == CostKind.LLM
+        assert span.provider == "google"
+        assert span.model == "gemini-embedding-001"
+        assert span.units["input_tokens"] == 11
+        assert "estimated" not in span.units
+        # Priced, and priced at something. A zero here would mean the route had
+        # quietly landed in the "we do not know what this costs" column.
+        assert span.priced is True
+        assert span.cost_usd > 0
+
+    @pytest.mark.django_db
+    def test_a_provider_with_no_meter_is_estimated_and_says_so(self, settings) -> None:
+        """`local-hash` reports no usage, so the span is a character estimate —
+        marked `estimated`, because an unmarked estimate on a paid route would
+        read as a measurement. It is priced at a known zero rather than left
+        unknown: the hashing trick genuinely costs nothing."""
+        from apps.analytics.models import GenerationCost
+
+        settings.EMBEDDING_PROVIDER = "local"
+
+        adapter.embed("the frog chorus by the river")
+
+        span = GenerationCost.objects.get(operation="embedding")
+        assert span.provider == "local-hash"
+        assert span.units["estimated"] is True
+        assert span.priced is True
+        assert span.cost_usd == 0
+
+    @pytest.mark.django_db
+    def test_a_call_that_never_reached_the_model_is_not_priced(self, vertex_embeddings) -> None:
+        """The mirror of the router's rule. A transport failure was never billed,
+        and a character estimate for it would over-report spend that does not
+        exist — the same dishonesty as under-reporting spend that does."""
+        from apps.analytics.models import GenerationCost
+
+        vertex_embeddings(boom=RuntimeError("vertex is down"))
+
+        with pytest.raises(MediaProviderError):
+            adapter.embed("anything")
+
+        assert not GenerationCost.objects.filter(operation="embedding").exists()
+
+    @pytest.mark.django_db
+    def test_a_metered_call_that_is_then_refused_still_writes_its_span(
+        self, vertex_embeddings
+    ) -> None:
+        """The expensive-failure case (§22.4). The model answered and was billed;
+        we refused the answer for its width. That is spend, and it is exactly the
+        spend worth seeing."""
+        from apps.analytics.models import GenerationCost
+
+        vertex_embeddings([0.5] * 3072, tokens=9)
+
+        with pytest.raises(MediaProviderError, match="3072 dimensions for an"):
+            adapter.embed("anything")
+
+        span = GenerationCost.objects.get(operation="embedding")
+        assert span.units["input_tokens"] == 9
+        assert span.priced is True
 
 
 def test_the_documented_configuration_is_the_all_google_one() -> None:

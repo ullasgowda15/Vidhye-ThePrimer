@@ -341,10 +341,15 @@ class GenerationCost(UUIDModel):
 
     §19.9's requirement is one sentence — "every generation is traced with its cost
     so unit economics are always visible" — and this table is it. One row per real
-    provider call, written by `apps.analytics.cost.record` at the two seams where
-    money is actually spent: `ai.router.ModelRouter.generate_structured` and
-    `media.service._get_or_generate`. A caller cannot opt out of it, because a
-    caller never calls it.
+    provider call, written by `apps.analytics.cost.record` at the three seams where
+    money is actually spent: `ai.router.ModelRouter.generate_structured`,
+    `media.service._get_or_generate` and `media.adapters.embedding.embed`. A caller
+    cannot opt out of it, because a caller never calls it.
+
+    **An embedding is a `kind=llm` row with `operation="embedding"`**, not a kind of
+    its own: it is a token-billed model call, `cost._by_operation` keeps it
+    separable, and a fourth `CostKind` would have meant every row written before it
+    disagreeing with every row written after.
 
     **A cache hit writes nothing, and that is the design.** The point of the media
     cache is that the second identical picture is free; a zero-cost span for it

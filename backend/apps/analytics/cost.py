@@ -5,16 +5,22 @@ economics are always visible*. This module is the tracer. Two halves:
 
 **`trace(...)` — the span context.** A `ContextVar` holding "which child, which
 sitting am I generating for". It is a context rather than an argument because the
-two places money is spent — `ai.router.ModelRouter.generate_structured` and
-`media.service._get_or_generate` — sit several layers below any code that knows
-what a session is, and threading a session id down through the prompt assembler
-and the media cache would put an analytics concern into six signatures that have
-nothing to do with analytics. The same reason a tracing SDK (Langfuse, Helicone)
-uses one.
+places money is spent — `ai.router.ModelRouter.generate_structured`,
+`media.service._get_or_generate` and `media.adapters.embedding.embed` — sit
+several layers below any code that knows what a session is, and threading a
+session id down through the prompt assembler and the media cache would put an
+analytics concern into six signatures that have nothing to do with analytics. The
+same reason a tracing SDK (Langfuse, Helicone) uses one.
 
-**`record(...)` — the span.** Called by those two seams and by nobody else, so a
-new generation is instrumented the moment it goes through the router or the media
-service, and a caller cannot forget.
+**`record(...)` — the span.** Called by those three seams and by nobody else, so a
+new generation is instrumented the moment it goes through the router, the media
+service or the embedding adapter, and a caller cannot forget.
+
+*Three, because there were two and something was missing.* Embeddings went
+through neither of the first two, so every consolidation run and every
+branch-point recall was real money `cost_per_session` did not count (the Vertex
+review's P2-5). The rule that matters is not the number of seams — it is that a
+seam is a place a *vendor is called*, never a place a caller chooses to report.
 
 Three properties worth stating, because each of them is a decision:
 

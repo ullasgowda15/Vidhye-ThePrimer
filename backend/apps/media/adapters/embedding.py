@@ -43,6 +43,7 @@ import hashlib
 import logging
 import math
 import re
+import time
 from typing import Protocol, runtime_checkable
 
 from django.conf import settings
@@ -124,6 +125,11 @@ class OpenAIEmbeddingProvider:
     def __init__(self, api_key: str = "", model: str = "") -> None:
         self._api_key = api_key or settings.OPENAI_API_KEY
         self._model = model or settings.EMBEDDING_MODEL
+
+    @property
+    def model(self) -> str:
+        """Which model this provider will call — how its spend is labelled."""
+        return self._model
 
     def is_configured(self) -> bool:
         return bool(self._api_key)
@@ -271,6 +277,17 @@ class GoogleEmbeddingProvider:
         #: providers above: this model's width is a *request parameter*, so the
         #: only honest declared width is the one we are going to ask for.
         self.dimensions: int = dimensions or settings.EMBEDDING_DIMENSIONS
+        #: The token meter, same convention as the LLM providers'
+        #: (`ai.router.StructuredProvider.generate_json`): set after a call, reset
+        #: before one, read through `getattr` by `_trace_embedding_cost`. Vertex
+        #: returns a real count per embedding, so this route is priced from the
+        #: vendor's own number rather than from a character estimate.
+        self.last_usage: dict[str, int] | None = None
+
+    @property
+    def model(self) -> str:
+        """Which model this provider will call — how its spend is labelled."""
+        return self._model
 
     def is_configured(self) -> bool:
         """True when the Vertex credentials are set — the same question the LLM
@@ -285,6 +302,9 @@ class GoogleEmbeddingProvider:
 
         from apps.common import vertex
 
+        # Reset first, so a call that never reaches the model cannot be priced
+        # with the previous one's meter reading — the rule the LLM providers hold.
+        self.last_usage = None
         try:
             response = vertex.client().models.embed_content(
                 model=self._model,
@@ -302,6 +322,16 @@ class GoogleEmbeddingProvider:
             raise MediaProviderError(f"Could not reach the embedding provider: {exc}") from exc
 
         embeddings = getattr(response, "embeddings", None) or []
+        # Read the meter before anything below can raise, for the same reason the
+        # LLM providers do: a call that answered and was then refused for its
+        # width still cost input tokens, and a span written only on the happy path
+        # would under-report exactly the calls worth knowing the price of (§22.4).
+        # Vertex reports the count per embedding (`ContentEmbeddingStatistics`);
+        # when it does not, this stays `None` and `_trace_embedding_cost`
+        # estimates from characters and says that it did.
+        if embeddings and (tokens := _statistic_tokens(embeddings[0])) is not None:
+            self.last_usage = {"input_tokens": tokens, "output_tokens": 0}
+
         values = list(getattr(embeddings[0], "values", None) or []) if embeddings else []
         if not values:
             raise MediaProviderError("Embedding provider returned no vector.")
@@ -318,6 +348,72 @@ class GoogleEmbeddingProvider:
             )
 
         return _l2_normalize([float(value) for value in values])
+
+
+#: Only used when a provider reports no meter. The same constant, for the same
+#: reason, as `ai.router._CHARS_PER_TOKEN` — an estimate that is marked as one.
+_CHARS_PER_TOKEN = 4
+
+
+def _trace_embedding_cost(provider: EmbeddingProvider, *, text: str, started: float) -> None:
+    """Write the cost span for one embedding call (§19.9, §22.4).
+
+    **Why this seam and not the callers.** `cost.record` is documented as being
+    called from the two places money is spent and from nowhere else, precisely so
+    a caller cannot forget. Embeddings were the exception that proved it: they are
+    spent through neither `ModelRouter.generate_structured` nor
+    `media.service._get_or_generate`, so every consolidation run and every
+    branch-point recall was real money that `cost/session` did not count. `embed`
+    is the seam every caller already has to use, which makes it the third and — as
+    long as nothing else calls a vendor directly — the last.
+
+    **Recorded as `kind=llm` with `operation="embedding"`.** An embedding is a
+    token-billed model call, `_by_operation` keeps it separable in the dashboard,
+    and a fourth `CostKind` would have been a migration on a column whose values
+    would then disagree with every row already written. If the split ever needs to
+    be a first-class one, that is the change to make deliberately.
+
+    Never raises: `cost.record` swallows everything, and consolidation must not
+    lose a memory because the meter could not be written.
+    """
+    from apps.analytics import cost
+    from apps.analytics.models import CostKind
+
+    units = getattr(provider, "last_usage", None)
+    if units is None:
+        # No vendor meter. Estimate, and say so in the units — `local-hash` costs
+        # nothing and is priced at zero either way, but an unmarked estimate on a
+        # paid route would read as a measurement.
+        units = {
+            "input_tokens": len(text) // _CHARS_PER_TOKEN,
+            "output_tokens": 0,
+            "estimated": True,
+        }
+
+    cost.record(
+        kind=CostKind.LLM,
+        operation="embedding",
+        provider=provider_label(provider),
+        model=str(getattr(provider, "model", "") or ""),
+        units=units,
+        latency_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+def _statistic_tokens(embedding: object) -> int | None:
+    """`ContentEmbeddingStatistics.token_count`, or `None` if it is not reported.
+
+    A Vertex-only field, and read through `getattr` all the way down for the same
+    reason `_gemini_usage` is: a vendor who stops reporting usage must cost us a
+    priced span, never an `AttributeError` in the middle of a consolidation run.
+    """
+    count = getattr(getattr(embedding, "statistics", None), "token_count", None)
+    if count is None:
+        return None
+    try:
+        return int(count)
+    except (TypeError, ValueError):  # pragma: no cover - a vendor sending a non-number
+        return None
 
 
 def _l2_normalize(vector: list[float]) -> list[float]:
@@ -413,7 +509,19 @@ def embed(
         )
 
     chosen = provider if provider is not None else select_embedding_provider()
-    vector = chosen.embed(text, task=task)
+    started = time.monotonic()
+    try:
+        vector = chosen.embed(text, task=task)
+    except Exception:
+        # Same rule as `router.generate_structured`: a span on failure only when
+        # the provider actually metered something. A call that never reached the
+        # model was never billed, and inventing a character estimate for it would
+        # over-report spend that does not exist — the same dishonesty as
+        # under-reporting spend that does.
+        if getattr(chosen, "last_usage", None) is not None:
+            _trace_embedding_cost(chosen, text=text, started=started)
+        raise
+    _trace_embedding_cost(chosen, text=text, started=started)
 
     if len(vector) != COLUMN_DIMENSIONS:
         # Loud rather than truncated or padded. A silently reshaped vector is a
