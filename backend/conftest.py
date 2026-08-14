@@ -10,6 +10,10 @@ test file:
   pinned to their offline `local` implementations. CI has no keys, but a
   developer's shell does — and a suite that quietly spends money on someone's
   machine and not in CI is the worst kind of test.
+* **No test ever reaches the real Celery broker or the real Redis.** A suite that
+  shares either with a running product does not merely leave mess behind — it
+  changes that product's behaviour while it runs. See `_isolated_broker` and
+  `_isolated_redis`.
 """
 
 import datetime
@@ -22,6 +26,95 @@ import pytest
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_broker() -> Any:
+    """Send every `.delay()` to an in-process queue nobody consumes.
+
+    `orchestrator.schedule_beat_media` calls `generate_beat_media.delay(...)` for
+    real, and the broker it publishes to is `REDIS_URL` — the same Redis a
+    developer's `make worker` is attached to. So a test that persists a beat hands
+    a task to whatever worker happens to be running on that machine, and that
+    worker executes it against the **development** database with the developer's
+    own credentials.
+
+    The failure that traced back to here: twelve stream, media and choice tests
+    failing in a full run and passing when the same files were run on their own,
+    and the same suite taking twelve minutes once and thirty-three the next time.
+    Both symptoms are one cause — whether a worker was up, and how busy it was.
+    A suite whose result depends on a process nobody mentioned in it is not a
+    suite, and the failure mode is the worst kind: it looks like flakiness in the
+    code under test.
+
+    `memory://` rather than `task_always_eager`, deliberately. Eager mode would
+    *run* the task inline, which is a different product than the one being
+    tested — media arrives synchronously, and every assertion about a beat being
+    published before its picture exists (§14.5's whole latency argument) would be
+    testing a code path that never ships. The point here is only that the enqueue
+    goes somewhere private: `.delay()` still succeeds, the task is still built and
+    serialised, and nothing on the machine picks it up.
+
+    Session-scoped because the Celery app is a module global configured at import;
+    resetting it per test would cost an app reconfiguration per test for a value
+    that never varies.
+    """
+    from config.celery import app
+
+    previous = (app.conf.broker_url, app.conf.result_backend)
+    app.conf.broker_url = "memory://"
+    app.conf.result_backend = "cache+memory://"
+    yield
+    app.conf.broker_url, app.conf.result_backend = previous
+
+
+#: The Redis logical database the suite is allowed to write to. Anything but 0,
+#: which is where a developer's own stack lives.
+TEST_REDIS_DB = 15
+
+
+@pytest.fixture(autouse=True)
+def _isolated_redis(settings: Any) -> Any:
+    """Point every Redis-backed counter at a scratch database.
+
+    The suite shares a machine with a running product, and three things reach
+    Redis by URL: `analytics.budget`'s spend counter, `media.quota`'s cooldowns,
+    and `memory.stm`. None of them knew about tests, so a full run wrote thousands
+    of *simulated* generations into the **real** spend window.
+
+    That is not a tidiness problem. `INFERENCE_BUDGET_USD_PER_WINDOW` is a
+    circuit breaker: once the fake spend pushed the counter past the cap, the
+    breaker did exactly what it is for and refused every real generation for the
+    rest of the hour — so running the tests took the product down, and the tests
+    themselves then failed on `MediaBudgetExceeded` in twenty places that have
+    nothing to do with budgets.
+
+    Sibling of `_isolated_broker` below, same shape of mistake: a shared piece of
+    infrastructure that nothing in the suite mentioned, quietly making results
+    depend on the machine rather than on the code.
+
+    **Emptied between tests, not just redirected.** Redis outlives a transaction
+    rollback, so a `media.quota` cooldown written by one test rests a provider in
+    the next one — order-dependent, invisible in the failing test, and exactly the
+    hazard `_clear_flag_cache` below documents for the flag cache.
+    """
+    settings.REDIS_URL = re.sub(r"/\d+$", f"/{TEST_REDIS_DB}", settings.REDIS_URL)
+    _flush_test_redis(settings.REDIS_URL)
+    yield
+    _flush_test_redis(settings.REDIS_URL)
+
+
+def _flush_test_redis(url: str) -> None:
+    """Empty the scratch database. Silent when Redis is not running — most of the
+    suite does not need it, and a missing Redis must not be a hundred errors."""
+    if not url.rstrip("/").endswith(f"/{TEST_REDIS_DB}"):  # pragma: no cover - belt and braces
+        return
+    try:
+        import redis
+
+        redis.Redis.from_url(url, socket_timeout=0.5, socket_connect_timeout=0.5).flushdb()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)
