@@ -212,22 +212,24 @@ class GeminiImageModerator:
 
         from apps.common import vertex
 
-        response = vertex.client().models.generate_content(
-            model=self._model,
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_bytes(data=data, mime_type=content_type),
-                        types.Part(text="Classify this illustration."),
-                    ],
-                )
-            ],
-            config=types.GenerateContentConfig(
-                system_instruction=MODERATION_PROMPT,
-                max_output_tokens=self.MAX_TOKENS,
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
-            ),
+        response = vertex.call(
+            lambda live: live.models.generate_content(
+                model=self._model,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_bytes(data=data, mime_type=content_type),
+                            types.Part(text="Classify this illustration."),
+                        ],
+                    )
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=MODERATION_PROMPT,
+                    max_output_tokens=self.MAX_TOKENS,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
         )
         return self._verdict_from(response)
 

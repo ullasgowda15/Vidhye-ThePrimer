@@ -55,14 +55,19 @@ class TestTellingAnExhaustedAllowanceFromABurstLimit:
     @pytest.mark.parametrize(
         "message",
         [
-            # Cloudflare Workers AI, verbatim from the Day-6 outage.
+            # Cloudflare Workers AI, copied off the wire rather than from a
+            # build note. The paraphrase ("daily allocation") is what the pattern
+            # was first written against, and it does not appear in the real
+            # message — so an exhausted account got the burst-limit cooldown.
+            '{"errors":[{"message":"AiError: AiError: you have used up your daily free '
+            "allocation of 10,000 neurons, please upgrade to Cloudflare's Workers Paid "
+            'plan if you would like to continue usage.","code":3006}]}',
             '{"errors":[{"message":"daily allocation exhausted","code":3006}]}',
             # ElevenLabs.
             '{"detail":{"status":"quota_exceeded"}}',
             "Quota exceeded for this billing period",
-            "RESOURCE_EXHAUSTED",
         ],
-        ids=["cloudflare-daily", "elevenlabs-quota", "quota-exceeded", "vertex-exhausted"],
+        ids=["cloudflare-real", "cloudflare-short", "elevenlabs-quota", "quota-exceeded"],
     )
     def test_a_spent_allowance_is_recognised(self, message: str) -> None:
         assert quota.looks_exhausted(message) is True
@@ -72,10 +77,16 @@ class TestTellingAnExhaustedAllowanceFromABurstLimit:
         [
             "429 Too Many Requests",
             "Rate limit reached, please slow down",
+            # Vertex's generic 429. It reads like the strongest possible signal
+            # and means only "not right now" — the per-minute limit on an image
+            # model returns it. Treating it as a spent allowance benched Gemini
+            # for 24 hours the first time three choice icons went out together.
+            "429 RESOURCE_EXHAUSTED. {'error': {'message': 'Resource has been exhausted "
+            "(e.g. check quota).', 'status': 'RESOURCE_EXHAUSTED'}}",
             "Image provider returned 500: upstream error",
             "Could not reach the image provider: timed out",
         ],
-        ids=["bare-429", "rate-limit", "server-error", "timeout"],
+        ids=["bare-429", "rate-limit", "vertex-429", "server-error", "timeout"],
     )
     def test_an_ordinary_failure_is_not(self, message: str) -> None:
         assert quota.looks_exhausted(message) is False

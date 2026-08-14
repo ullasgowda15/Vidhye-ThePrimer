@@ -306,13 +306,15 @@ class GoogleEmbeddingProvider:
         # with the previous one's meter reading — the rule the LLM providers hold.
         self.last_usage = None
         try:
-            response = vertex.client().models.embed_content(
-                model=self._model,
-                contents=text[:MAX_INPUT_CHARS],
-                config=types.EmbedContentConfig(
-                    output_dimensionality=self.dimensions,
-                    task_type=task,
-                ),
+            response = vertex.call(
+                lambda live: live.models.embed_content(
+                    model=self._model,
+                    contents=text[:MAX_INPUT_CHARS],
+                    config=types.EmbedContentConfig(
+                        output_dimensionality=self.dimensions,
+                        task_type=task,
+                    ),
+                )
             )
         except Exception as exc:
             # Same boundary as the OpenAI provider's: `MediaProviderError` is what

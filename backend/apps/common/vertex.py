@@ -30,12 +30,15 @@ really works is a *boot* question, and `config.settings.prod` asks it there.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import lru_cache
-from typing import Any
+from typing import Any, TypeVar
 
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 #: The settings a Vertex call cannot be made without, in the order a person would
 #: set them. Named once so the boot guard, the preflight and the provider all
@@ -166,3 +169,47 @@ def _client(project: str, location: str, credentials_path: str) -> Any:
     # API (an API key, consumer terms) and Vertex (a service account, the GCP
     # project's billing and terms). §13.8 is a statement about the second one.
     return genai.Client(vertexai=True, project=project, location=location, credentials=credentials)
+
+
+#: What httpx says when the pool underneath a client has been closed. Matched on
+#: the message because it arrives as a bare `RuntimeError` — there is no typed
+#: exception to catch, and the status-code channel is unused because the request
+#: never leaves the process.
+_CLOSED_POOL = "client has been closed"
+
+
+def call(operation: Callable[[Any], T], *, location: str = "") -> T:
+    """Run `operation(client)`, rebuilding the client once if its pool is dead.
+
+    `client()` already refuses to hand out a client whose pool has closed, and
+    that check is a cheap fast path — but it is a check *before* the call, and the
+    pool can close in the window between the two. It does: the first thing this
+    module was asked to fix came back from a worker as
+
+        MediaProviderError: Gemini image request failed for
+        'gemini-2.5-flash-image': Cannot send a request, as the client has been
+        closed.
+
+    *after* the pre-flight check had shipped. A predicate cannot close a race; a
+    retry can, because by the time the exception exists the question is settled.
+
+    Exactly one retry, and only for this one message. A second failure is a real
+    failure and belongs to the caller — and anything that is not a closed pool is
+    re-raised untouched, so a quota refusal or a safety block still reaches the
+    adapter that knows how to read it.
+    """
+    # `client()` rather than `client(location="")` when no region was asked for.
+    # The two are identical in this module, and the bare call is the shape every
+    # existing caller and test double already has — inventing a keyword argument
+    # nobody passed would break seams that are otherwise perfectly correct, which
+    # it did: six embedding tests whose fake client took no arguments.
+    live = (lambda: client(location=location)) if location else client
+
+    try:
+        return operation(live())
+    except RuntimeError as exc:
+        if _CLOSED_POOL not in str(exc).lower():
+            raise
+        logger.warning("vertex.client_rebuilt reason=closed_mid_call detail=%s", str(exc)[:120])
+        _client.cache_clear()
+        return operation(live())

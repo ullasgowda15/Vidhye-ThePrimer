@@ -81,13 +81,25 @@ UNKNOWN_LIMIT_COOLDOWN_S = 300
 _EXHAUSTED_PATTERNS = re.compile(
     "|".join(
         (
-            r"daily allocation",  # Cloudflare Workers AI
+            # Cloudflare Workers AI. `\w+\s+` because the real string is "your
+            # daily **free** allocation of 10,000 neurons" — this was written from
+            # a paraphrase in a build note rather than from the vendor, matched
+            # nothing, and quietly gave an exhausted account the five-minute
+            # cooldown meant for a burst limit. Written from the wire now.
+            r"daily\s+(?:\w+\s+)?allocation",
             r"quota[_ ]exceeded",  # ElevenLabs
             r"quota exceeded",
             r"out of credits",
             r"insufficient[_ ]quota",  # OpenAI-compatible gateways
             r"billing hard limit",
-            r"resource[_ ]exhausted",  # Google / Vertex
+            # `RESOURCE_EXHAUSTED` is deliberately absent. It reads like the
+            # strongest possible signal and is in fact Vertex's *generic* 429: the
+            # per-minute request limit on an image model returns it, and so does a
+            # spent daily allowance. Matching it cost a working provider a
+            # 24-hour cooldown the first time a burst of choice icons went out
+            # together — three images in ten seconds, one rate-limited, Gemini
+            # benched until tomorrow. Ambiguous means the short cooldown; that is
+            # the whole point of having two.
         )
     ),
     re.I,

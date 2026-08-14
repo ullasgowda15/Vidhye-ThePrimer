@@ -881,10 +881,12 @@ class GoogleProvider:
                 response_schema=gemini_schema(schema),
                 safety_settings=_gemini_safety_settings(),
             )
-            response = vertex.client().models.generate_content(
-                model=self._model,
-                contents=_gemini_contents(messages),
-                config=config,
+            response = vertex.call(
+                lambda live: live.models.generate_content(
+                    model=self._model,
+                    contents=_gemini_contents(messages),
+                    config=config,
+                )
             )
 
             # The meter, before anything below can raise. A blocked prompt, a

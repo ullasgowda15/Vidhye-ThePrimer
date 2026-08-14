@@ -339,10 +339,13 @@ class GoogleImageProvider:
             contents = f"{prompt}\n\nDo not include any of the following: {negative_prompt}"
 
         try:
-            response = vertex.client(location=self._location).models.generate_content(
-                model=self._model,
-                contents=contents,
-                config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+            response = vertex.call(
+                lambda live: live.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+                ),
+                location=self._location,
             )
         except Exception as exc:
             raise MediaProviderError(
