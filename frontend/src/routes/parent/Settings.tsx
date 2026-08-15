@@ -208,6 +208,32 @@ function SettingsForm({
         </div>
       </Card>
 
+      {/* Reading is off for every child until a parent says otherwise, and the
+          place they say it has to be here as well as in the profile form — a
+          child learns to read *between* those two moments, and nobody revisits a
+          signup form six months later. */}
+      <Card>
+        <h2 className="text-4 font-semibold">Reading aloud</h2>
+        <p className="mt-1 text-2 text-text-muted">
+          When your child can read, their companion will sometimes ask them to read a short line out
+          loud at the end of a story. It is never marked, and they are never told they got it wrong.
+        </p>
+        <div className="mt-4 grid gap-3">
+          <Toggle
+            label="My child can read"
+            hint="Off means the companion never asks. Turn it on when they are starting to read simple sentences — around five."
+            checked={!(settings.pre_reader ?? true)}
+            onChange={(canRead) => patch({ pre_reader: !canRead })}
+          />
+          <Toggle
+            label="Keep the recordings"
+            hint="We save your child reading so we can check the app heard them correctly. It stays on our own machine and is never sent anywhere. Turning this off deletes what we already have."
+            checked={settings.reading_audio_consent ?? true}
+            onChange={(reading_audio_consent) => patch({ reading_audio_consent })}
+          />
+        </div>
+      </Card>
+
       <Card>
         <h2 className="text-4 font-semibold">Accessibility</h2>
         <p className="mt-1 text-2 text-text-muted">

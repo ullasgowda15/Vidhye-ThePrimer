@@ -24,27 +24,22 @@ export type User = components['schemas']['User'];
 export type Me = components['schemas']['Me'];
 export type Child = components['schemas']['Child'];
 
-/** The reading moment. Hand-written rather than generated: `make client` has not
- *  been re-run against the new endpoint yet, and a stale `schema.ts` would give
- *  these `never`. Replace with the generated aliases once it has. */
-export interface ReadingInvitation {
-  offered: boolean;
-  passageId?: string;
-  text?: string;
-  prompt?: string;
-}
+/** The reading moment, from the generated schema. */
+export type ReadingInvitation = components['schemas']['ReadingInvitation'];
+export type ReadingResult = components['schemas']['ReadingAttempt'];
 
+/** What `submitReading` takes.
+ *
+ *  Hand-written, unlike the two above, because the generated request type
+ *  describes the *multipart body* — `audio` arrives there as a string, which is
+ *  what a file field looks like in OpenAPI and not what a caller has. A caller
+ *  has a `Blob` from the recorder, and the conversion to form fields belongs in
+ *  the method rather than at every call site. */
 export interface ReadingSubmission {
   passageId: string;
   audio?: Blob | null;
   durationMs?: number | null;
   sessionId?: string | null;
-}
-
-export interface ReadingResult {
-  attemptId: string;
-  say: string;
-  kept: boolean;
 }
 export type ChildRequest = components['schemas']['ChildRequest'];
 export type PatchedChildRequest = components['schemas']['PatchedChildRequest'];

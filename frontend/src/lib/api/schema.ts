@@ -440,6 +440,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/children/{child_id}/reading": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Both halves of one moment, scoped to one child. */
+        get: operations["v1_children_reading_retrieve"];
+        put?: never;
+        /** @description Both halves of one moment, scoped to one child. */
+        post: operations["v1_children_reading_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/children/{child_id}/reports/session/{session_id}": {
         parameters: {
             query?: never;
@@ -1008,6 +1026,8 @@ export interface components {
             time_window_end?: string | null;
             voice_on?: boolean;
             text_on?: boolean;
+            pre_reader?: boolean;
+            reading_audio_consent?: boolean;
             accessibility?: components["schemas"]["Accessibility"];
             /** Format: date-time */
             readonly updated_at: string;
@@ -1051,6 +1071,8 @@ export interface components {
             time_window_end?: string | null;
             voice_on?: boolean;
             text_on?: boolean;
+            pre_reader?: boolean;
+            reading_audio_consent?: boolean;
             accessibility?: components["schemas"]["AccessibilityRequest"];
         };
         /** @description The `202` body (§18.6). The consequence arrives on the stream, not here. */
@@ -1363,6 +1385,8 @@ export interface components {
             time_window_end?: string | null;
             voice_on?: boolean;
             text_on?: boolean;
+            pre_reader?: boolean;
+            reading_audio_consent?: boolean;
             accessibility?: components["schemas"]["AccessibilityRequest"];
         };
         /**
@@ -1422,6 +1446,50 @@ export interface components {
              * @description The highest mastery this objective's asks reach.
              */
             reach: number;
+        };
+        /**
+         * @description What comes back after a child has read.
+         *
+         *     **`say` is warm whatever happened, and there is no field for a score.** Phase
+         *     1's whole claim is that nothing judges the reading, and the response shape is
+         *     where that is either true or quietly not. A `correct` boolean here would be
+         *     read by a client, shown to a child, and believed — on a detector that has
+         *     never heard one.
+         */
+        ReadingAttempt: {
+            /** Format: uuid */
+            attemptId: string;
+            say: string;
+            kept: boolean;
+        };
+        /**
+         * @description What the child's device sends back.
+         *
+         *     No transcript field, and no place to put one. Phase 1 does not transcribe —
+         *     the audio either becomes a consented corpus file or nothing at all — and an
+         *     optional field for a verdict is how a verdict starts arriving from a client.
+         */
+        ReadingAttemptRequestRequest: {
+            passageId: string;
+            /** Format: binary */
+            audio?: string | null;
+            durationMs?: number | null;
+            /** Format: uuid */
+            sessionId?: string | null;
+        };
+        /**
+         * @description What the child is being asked to read, or that they are not being asked.
+         *
+         *     `offered` is an explicit boolean rather than a null payload, because "this
+         *     child is not a reader" and "something went wrong fetching a line" have to be
+         *     different answers on the client — one draws nothing and is correct, the other
+         *     is a bug. A null body cannot tell them apart.
+         */
+        ReadingInvitation: {
+            offered: boolean;
+            passageId?: string;
+            text?: string;
+            prompt?: string;
         };
         /**
          * @description * `completed` - completed
@@ -1570,6 +1638,8 @@ export interface components {
             milestone: components["schemas"]["WeeklyMilestone"] | null;
             interests_trend: string[];
             recommendation: string;
+            /** @description Lines the child read aloud to their companion this week. A count only: nothing has listened to the recordings yet, so there is no accuracy figure to report and none is implied. */
+            linesRead: number;
         };
         /** @description One objective's week (§18.7's `skills[]`). */
         WeeklySkill: {
@@ -2067,6 +2137,54 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Progress"][];
+                };
+            };
+        };
+    };
+    v1_children_reading_retrieve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingInvitation"];
+                };
+            };
+        };
+    };
+    v1_children_reading_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                child_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadingAttemptRequestRequest"];
+                "application/x-www-form-urlencoded": components["schemas"]["ReadingAttemptRequestRequest"];
+                "multipart/form-data": components["schemas"]["ReadingAttemptRequestRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingAttempt"];
                 };
             };
         };

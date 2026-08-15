@@ -62,21 +62,34 @@ class Child(UUIDModel):
 
     #: May we keep this child's voice? (Docs/Build/Reading-Integration.md §5.2.)
     #:
-    #: Off, and off is the answer that needs no defending. When a child reads a
-    #: line aloud the recording is normally never written to disk at all — the
-    #: browser sends it, we count that reading happened, and the bytes go
-    #: nowhere. This opt-in is the one exception, and it exists for one reason:
-    #: every threshold in the reading detector was tuned against an adult
-    #: imitating a five-year-old, and there is no way to fix that without
-    #: recordings of the real thing.
+    #: **On by default — a founder's decision, taken deliberately.** When a child
+    #: reads a line aloud the recording is written to `READING_CORPUS_DIR` on our
+    #: own machine, because every threshold in the reading detector was tuned
+    #: against an adult imitating a five-year-old and there is no way to fix that
+    #: without recordings of the real thing. A product that asks children to read
+    #: and cannot tell whether it heard them correctly is the thing this data
+    #: exists to prevent.
     #:
-    #: A parent grants it deliberately, per child, and can withdraw it — at which
-    #: point `apps.reading.service` stops writing and the existing corpus files
-    #: are removed with the rest of the child's media on deletion. It is not
-    #: inherited, not defaulted on by a plan, and not bundled into another
-    #: setting: consent that arrives as a side effect of agreeing to something
-    #: else is not consent.
-    reading_audio_consent = models.BooleanField(default=False)
+    #: Three things make the default defensible, and all three are load-bearing
+    #: rather than reassurance:
+    #:
+    #: * **`apps.accounts.privacy` says so, in the present tense.** A default-on
+    #:   recording behind an opt-in disclosure is a worse exposure than the
+    #:   default; the disclosure states what actually happens, first, in the
+    #:   section about what is collected.
+    #: * **The audio never leaves this machine.** It is not uploaded to object
+    #:   storage, not sent to any provider, and not transcribed — nothing reads
+    #:   it yet. It is not in the nightly database dump either.
+    #: * **Off is one switch and it is retroactive.** Turning this off deletes
+    #:   what was already kept, through the same path as account deletion. A
+    #:   withdrawal that leaves the files behind is a pause wearing a
+    #:   withdrawal's label, and `ChildSettingsSerializer.update` is where that
+    #:   is enforced.
+    #:
+    #: Revisit this before the product is open to families the founder has not
+    #: personally spoken to. What is reasonable for a supervised pilot of a
+    #: handful of children is not automatically reasonable at a thousand.
+    reading_audio_consent = models.BooleanField(default=True)
 
     #: §14.6's accessibility flags: `captions`, `reduced_motion`, `dyslexia_font`,
     #: `high_contrast`, `audio_volume`. JSON rather than five columns because they

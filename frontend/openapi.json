@@ -841,6 +841,104 @@
                 }
             }
         },
+        "/api/v1/children/{child_id}/reading": {
+            "get": {
+                "operationId": "v1_children_reading_retrieve",
+                "description": "Both halves of one moment, scoped to one child.",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReadingInvitation"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            },
+            "post": {
+                "operationId": "v1_children_reading_create",
+                "description": "Both halves of one moment, scoped to one child.",
+                "parameters": [
+                    {
+                        "in": "path",
+                        "name": "child_id",
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        },
+                        "required": true
+                    }
+                ],
+                "tags": [
+                    "v1"
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ReadingAttemptRequestRequest"
+                            }
+                        },
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ReadingAttemptRequestRequest"
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ReadingAttemptRequestRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "security": [
+                    {
+                        "jwtAuth": []
+                    },
+                    {
+                        "cookieAuth": []
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReadingAttempt"
+                                }
+                            }
+                        },
+                        "description": ""
+                    }
+                }
+            }
+        },
         "/api/v1/children/{child_id}/reports/session/{session_id}": {
             "get": {
                 "operationId": "reports_session",
@@ -2042,6 +2140,12 @@
                     "text_on": {
                         "type": "boolean"
                     },
+                    "pre_reader": {
+                        "type": "boolean"
+                    },
+                    "reading_audio_consent": {
+                        "type": "boolean"
+                    },
                     "accessibility": {
                         "$ref": "#/components/schemas/Accessibility"
                     },
@@ -2107,6 +2211,12 @@
                         "type": "boolean"
                     },
                     "text_on": {
+                        "type": "boolean"
+                    },
+                    "pre_reader": {
+                        "type": "boolean"
+                    },
+                    "reading_audio_consent": {
                         "type": "boolean"
                     },
                     "accessibility": {
@@ -2859,6 +2969,12 @@
                     "text_on": {
                         "type": "boolean"
                     },
+                    "pre_reader": {
+                        "type": "boolean"
+                    },
+                    "reading_audio_consent": {
+                        "type": "boolean"
+                    },
                     "accessibility": {
                         "$ref": "#/components/schemas/AccessibilityRequest"
                     }
@@ -2987,6 +3103,77 @@
                     "reach",
                     "status",
                     "summary"
+                ]
+            },
+            "ReadingAttempt": {
+                "type": "object",
+                "description": "What comes back after a child has read.\n\n**`say` is warm whatever happened, and there is no field for a score.** Phase\n1's whole claim is that nothing judges the reading, and the response shape is\nwhere that is either true or quietly not. A `correct` boolean here would be\nread by a client, shown to a child, and believed — on a detector that has\nnever heard one.",
+                "properties": {
+                    "attemptId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "say": {
+                        "type": "string"
+                    },
+                    "kept": {
+                        "type": "boolean"
+                    }
+                },
+                "required": [
+                    "attemptId",
+                    "kept",
+                    "say"
+                ]
+            },
+            "ReadingAttemptRequestRequest": {
+                "type": "object",
+                "description": "What the child's device sends back.\n\nNo transcript field, and no place to put one. Phase 1 does not transcribe —\nthe audio either becomes a consented corpus file or nothing at all — and an\noptional field for a verdict is how a verdict starts arriving from a client.",
+                "properties": {
+                    "passageId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 40
+                    },
+                    "audio": {
+                        "type": "string",
+                        "format": "binary",
+                        "nullable": true
+                    },
+                    "durationMs": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "nullable": true
+                    },
+                    "sessionId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "nullable": true
+                    }
+                },
+                "required": [
+                    "passageId"
+                ]
+            },
+            "ReadingInvitation": {
+                "type": "object",
+                "description": "What the child is being asked to read, or that they are not being asked.\n\n`offered` is an explicit boolean rather than a null payload, because \"this\nchild is not a reader\" and \"something went wrong fetching a line\" have to be\ndifferent answers on the client — one draws nothing and is correct, the other\nis a bug. A null body cannot tell them apart.",
+                "properties": {
+                    "offered": {
+                        "type": "boolean"
+                    },
+                    "passageId": {
+                        "type": "string"
+                    },
+                    "text": {
+                        "type": "string"
+                    },
+                    "prompt": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "offered"
                 ]
             },
             "ReasonEnum": {
@@ -3445,12 +3632,17 @@
                     },
                     "recommendation": {
                         "type": "string"
+                    },
+                    "linesRead": {
+                        "type": "integer",
+                        "description": "Lines the child read aloud to their companion this week. A count only: nothing has listened to the recordings yet, so there is no accuracy figure to report and none is implied."
                     }
                 },
                 "required": [
                     "completionRate",
                     "highlight",
                     "interests_trend",
+                    "linesRead",
                     "milestone",
                     "recommendation",
                     "sessions",

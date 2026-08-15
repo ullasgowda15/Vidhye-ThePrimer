@@ -242,7 +242,15 @@ class ChildSettingsSerializer(serializers.ModelSerializer):
     )
     voice_on = serializers.BooleanField(required=False)
     text_on = serializers.BooleanField(required=False)
-    #: May we keep this child's voice? Off by default; see `Child`.
+    #: Can this child read? The gate on the whole reading feature.
+    #:
+    #: On the settings screen as well as in the profile form, because a child
+    #: learns to read *between* those two moments. A parent who answered
+    #: "pre-reader" at signup — the default — has no reason to revisit the
+    #: profile form six months later, and without this the companion would go on
+    #: never asking a child who has since started reading.
+    pre_reader = serializers.BooleanField(required=False)
+    #: May we keep this child's voice? On by default; see `Child`.
     #: Turning it *off* deletes what was already kept — `update` below.
     reading_audio_consent = serializers.BooleanField(required=False)
     accessibility = AccessibilitySerializer(required=False)
@@ -260,6 +268,7 @@ class ChildSettingsSerializer(serializers.ModelSerializer):
             "time_window_end",
             "voice_on",
             "text_on",
+            "pre_reader",
             "reading_audio_consent",
             "accessibility",
             "updated_at",

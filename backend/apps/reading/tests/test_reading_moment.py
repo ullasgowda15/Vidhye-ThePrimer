@@ -201,6 +201,22 @@ class TestTheResponse:
 # The child's voice
 # ---------------------------------------------------------------------------
 class TestConsent:
+    def test_keeping_the_recording_is_the_default(self, reader: Child) -> None:
+        """A founder's decision, taken deliberately, and pinned here so it cannot
+        drift back by accident in either direction.
+
+        The reason is in `Child.reading_audio_consent`: a detector tuned against
+        an adult imitating a five-year-old cannot be fixed without recordings of
+        the real thing. What makes it defensible rather than merely convenient is
+        that `apps.accounts.privacy` states it in the present tense, the audio
+        never leaves the machine, and switching it off deletes what was kept —
+        all three of which have their own tests.
+
+        Worth revisiting before the product reaches families the founder has not
+        spoken to.
+        """
+        assert reader.reading_audio_consent is True
+
     def test_without_consent_no_file_is_ever_written(
         self, auth_client: Any, reader: Child, audio: Any, settings: Any, tmp_path: Path
     ) -> None:
@@ -211,7 +227,11 @@ class TestConsent:
         available and this is the test that keeps it.
         """
         settings.READING_CORPUS_DIR = str(tmp_path)
-        assert reader.reading_audio_consent is False
+        # Set rather than assumed. This used to lean on the model default, which
+        # made it a test of two things at once — and it broke the day the default
+        # changed, for a reason that had nothing to do with what it checks.
+        reader.reading_audio_consent = False
+        reader.save()
         line = a_line(reader)
 
         auth_client.post(
