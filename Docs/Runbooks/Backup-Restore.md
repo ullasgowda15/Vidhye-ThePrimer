@@ -147,6 +147,8 @@ somebody actually cares about the morning after losing a database:
 
 | 2026-08-15 | `primer-20260815T121805Z.dump` (236,819 bytes, **the production database on `app-server`**) | `primer_restore_drill` on the same compose Postgres | 3 parents, 3 children, 3 companions, 4 adventures, 15 beats, 11 choices, 8 memories, 61 media, 49 events; 3 children with a playable history; **8/8 sampled memories decrypted**; 61/61 media rows with URLs | ✅ **the data came back** |
 
+| 2026-08-15 | same dump | same | re-run with a deliberately wrong `MEMORY_ENCRYPTION_KEY` | ✅ **drill failed, exit 1** — `8 of 8 sampled memories are undecryptable`, and the report says why: *"the restore is fine and MEMORY_ENCRYPTION_KEY is wrong"*. The negative case on production. |
+
 > Both rows are needed. A drill that has only ever passed has not been shown to
 > be capable of failing.
 
@@ -176,11 +178,26 @@ problems: `PYTHON` was quoted where `PG_RUN` was not, so it could not be a
 container prefix at all, and the compose path inside it has to be absolute
 because the verification runs after a `cd backend`.
 
-**Still owed: the negative case against production.** The 2026-08-13 pair proved
-the drill can fail, on a laptop. Re-running it here is cheap — add
-`-e MEMORY_ENCRYPTION_KEY` to the `PYTHON` prefix and set a different valid
-Fernet key for the command — and until somebody does, the production drill has
-only ever passed.
+**The negative case was run on production the same day** (the fourth row above),
+so this drill is not one that has only ever passed. To repeat it, generate a
+valid but different Fernet key and hand it to the verifier alone:
+
+```bash
+export WRONG=$(docker compose -f $PWD/infra/docker-compose.yml exec -T web \
+    python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" | tr -d '\r')
+export PYTHON="docker compose -f $PWD/infra/docker-compose.yml exec -T \
+    -e DATABASE_URL -e MEMORY_ENCRYPTION_KEY=$WRONG web python"
+```
+
+The wrong key reaches the *drill's* verifier and nothing else — it is passed per
+`docker exec`, never written to `.env` — so the live containers keep the real one
+throughout. `unset WRONG PYTHON` afterwards.
+
+The failure to look for is specific: row counts identical to the passing run,
+`3 children with a playable history`, `61/61 media rows with a URL`, and then
+`8 of 8 sampled memories are undecryptable`. A database that is complete,
+correctly linked, and unreadable is §11.10's worst case, and it is the one state
+no amount of SQL would have reported as wrong.
 
 **Why the 2026-08-14 row exists.** `launch_check.durability.restore_drill` asks
 that the last entry here postdate the last schema change, and it did not: the

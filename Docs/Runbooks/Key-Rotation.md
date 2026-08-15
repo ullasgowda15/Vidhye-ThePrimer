@@ -9,17 +9,33 @@ at the right one in a vendor dashboard and not enough to use.
 
 ---
 
-## 1. Outstanding — rotate these
+## 1. The 15 August 2026 exposure — closed
 
-**Exposed 15 August 2026.** Both were pasted into a chat transcript while
-debugging the deployment: the first in `docker compose config` output, which
-expands every `${VAR}`, and the second in a `launch_check --live` log line.
-Assume both are known to a third party.
+Both keys were pasted into a chat transcript while debugging the deployment: the
+first in `docker compose config` output, which expands every `${VAR}`, and the
+second in a `launch_check --live` log line. Both were rotated the same day and
+`launch_check --live` reported `credentials.cloudflare` and
+`credentials.google-tts` OK on the replacements.
 
-| Setting | Fingerprint | How it got out | Still live? |
+| Setting | Fingerprint (dead) | How it got out | Status |
 |---|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | `cfut_ePVc…0c1a` | `docker compose config` expanded it | **Yes** — `launch_check` reported `credentials.cloudflare OK` after exposure |
-| `GOOGLE_TTS_API_KEY` | `AIzaSyDTmM…kxU4` | logged in a request URL by `preflight.probe_google_tts` (see §3) | **Yes** |
+| `CLOUDFLARE_API_TOKEN` | `cfut_ePVc…0c1a` | `docker compose config` expanded it | **Rolled** 15 Aug |
+| `GOOGLE_TTS_API_KEY` | `AIzaSyDTmM…kxU4` | logged in a request URL by `preflight.probe_google_tts` (§3) | **Replaced** 15 Aug — new key created, cut over, old one deleted |
+
+**The Google key was replaced rather than regenerated, on purpose.** Regenerating
+kills the old string the instant you click it, and Google TTS was at that moment
+the *only* working voice provider — ElevenLabs was out of credits, so nothing
+could have covered the gap between the click and the `.env` update. Create new →
+cut over → verify → delete old has no such window. Cloudflare's "Roll" was fine
+by contrast, because images fail over between Gemini and Cloudflare.
+
+The replacement Google key is restricted to the Cloud Text-to-Speech API. An
+unrestricted `AIza…` key works against every enabled API on the project, which is
+how a TTS key turns into a Vertex bill.
+
+> **The step people skip is the last one.** A new key that works while the old
+> one still exists is not a rotation. Confirm the old credential is *deleted* at
+> the vendor, not merely superseded.
 
 ### Not secrets, no action
 
@@ -110,8 +126,15 @@ The synthesis path already gets this right — `tts.py` puts the key in an
 `X-Goog-Api-Key` header, with a comment explaining that a URL ends up in logs.
 The preflight probe was written later and did not inherit the lesson.
 
-**Rotating without fixing this re-exposes the new key the next time anyone runs
-`launch_check --live`.** Fix first, then rotate.
+**Fixed and deployed 15 August 2026**, before the key was rotated — deliberately
+in that order, because rotating first would have re-exposed the replacement on
+the next `launch_check --live`. The probe now sends `X-Goog-Api-Key`, and
+`test_preflight.test_the_google_key_never_reaches_the_url` asserts the key is
+absent from the URL and present in the header.
+
+That ordering — **fix the leak, then rotate** — is the general rule, and it is
+the one worth carrying to the next incident. A rotation into an unfixed leak
+buys nothing but a second dead key.
 
 ---
 
