@@ -56,6 +56,7 @@ from apps.learning.models import LearningProgress
 from apps.memory.models import InterestEdge, Memory, WorldPlace
 from apps.profiles.models import Child
 from apps.profiles.settings import settings_for
+from apps.reading.models import ReadingAttempt
 from apps.safety.models import SafetyIncident
 from apps.story.models import Adventure, Beat, Choice, PlaySession
 
@@ -249,6 +250,31 @@ def _memories(child: Child) -> list[dict[str, Any]]:
     ]
 
 
+def _reading(child: Child) -> list[dict[str, Any]]:
+    """Every line this child was invited to read aloud, and what came of it.
+
+    In the export because §13.7's right to *see* what is held has to cover
+    everything held, and this is a record of a child performing — which is a more
+    personal thing than a tap on a choice card.
+
+    `audio_kept` is the field a parent is actually here for: it says, per
+    attempt, whether a recording of their child's voice exists. `audio_path` is
+    deliberately not exported — a server path is operational detail that tells a
+    parent nothing and tells anyone who obtains the bundle where to look.
+    """
+    rows, _ = _capped(ReadingAttempt.objects.filter(child=child).order_by("created_at"))
+    return [
+        {
+            "read_at": _iso(row.created_at),
+            "line": row.passage_text,
+            "spoke": row.spoke,
+            "duration_ms": row.duration_ms,
+            "recording_kept": row.audio_kept,
+        }
+        for row in rows
+    ]
+
+
 def _learning(child: Child) -> list[dict[str, Any]]:
     return [
         {
@@ -353,6 +379,7 @@ def build_bundle(parent: User) -> tuple[bytes, str]:
         files[f"{folder}/adventures.json"] = adventures
         files[f"{folder}/sessions.json"] = _sessions(child)
         files[f"{folder}/memories.json"] = _memories(child)
+        files[f"{folder}/reading.json"] = _reading(child)
         files[f"{folder}/learning.json"] = _learning(child)
         files[f"{folder}/world.json"] = _world(child)
         files[f"{folder}/reports.json"] = _reports(child)

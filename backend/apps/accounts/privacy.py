@@ -55,7 +55,13 @@ SECTIONS: tuple[dict[str, Any], ...] = (
             "make, how long each sitting lasted, and the things the companion "
             "remembers about them. Nothing else. We do not ask for a surname, an "
             "address, a school, a photograph, or a contact detail of any kind, and "
-            "the companion is instructed never to ask for one either."
+            "the companion is instructed never to ask for one either.\n\n"
+            "If your child is old enough to read, the companion sometimes asks them "
+            "to read a short line aloud at the end of a story. We record that it "
+            "happened - which line, and whether they read it - and by default we do "
+            "not keep the sound of their voice at all: it reaches us, we count the "
+            "reading, and it is gone. We keep a recording only if you switch that on "
+            "for that child, and switching it off deletes the ones we already have."
         ),
     },
     {
@@ -140,8 +146,9 @@ SECTIONS: tuple[dict[str, Any], ...] = (
             "Export everything: one file with all of it, including our own safety "
             "refusals.\n\n"
             "Delete everything: deleting a child removes their profile, their "
-            "companion, every story, every memory, every report, and every picture "
-            "and recording we made for them. Deleting your account does that for "
+            "companion, every story, every memory, every report, every picture and "
+            "recording we made for them, and any recording of their own voice you "
+            "allowed us to keep. Deleting your account does that for "
             "every child and then removes the account. Both happen immediately, and "
             "neither is reversible.\n\n"
             "None of these three needs our permission and none is affected by "
