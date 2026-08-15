@@ -29,12 +29,20 @@
 #
 #   cd ~/app
 #   export DATABASE_URL="$(sed -n 's/^DATABASE_URL=//p' .env | tail -1)"
-#   export PG_RUN="docker compose -f infra/docker-compose.yml exec -T db"
-#   export PYTHON="docker compose -f infra/docker-compose.yml exec -T -e DATABASE_URL web python"
+#   export PG_RUN="docker compose -f $PWD/infra/docker-compose.yml exec -T db"
+#   export PYTHON="docker compose -f $PWD/infra/docker-compose.yml exec -T -e DATABASE_URL web python"
 #   sh infra/backup/restore-drill.sh
 #
-# The `-e DATABASE_URL` in `PYTHON` is load-bearing — see the note by the
-# verification step near the end of this file.
+# Two details in that `PYTHON` line, both of which fail in ways that do not look
+# like their cause:
+#
+# `$PWD` — the compose file path must be **absolute**. The verification step runs
+# after a `cd backend`, so a relative `-f infra/docker-compose.yml` is resolved
+# from there and docker reports `backend/infra/docker-compose.yml: no such file`,
+# which reads like a broken repository rather than a wrong prefix.
+#
+# `-e DATABASE_URL` — load-bearing, see the note by the verification step near
+# the end of this file.
 
 set -eu
 
