@@ -47,8 +47,11 @@ import {
   useResetAdventure,
   useWellbeing,
 } from '@/lib/api/queries';
+import { playOrReportBlocked } from '@/lib/audioUnlock';
 import { waitingLine } from '@/lib/motion';
 import { consumeBeatStream, type BeatEvent, type ChoiceOption } from '@/lib/sse';
+
+import { TapToHear } from '@/components/TapToHear';
 
 import ChoiceCards from './ChoiceCard';
 
@@ -149,6 +152,8 @@ export default function StoryPage() {
   const [choiceImages, setChoiceImages] = useState<Record<string, string>>({});
   /** Has the narration begun playing? Not "finished" — see `handleSceneTap`. */
   const [heard, setHeard] = useState(false);
+  /** The browser refused to start the narration. See `lib/audioUnlock`. */
+  const [blocked, setBlocked] = useState(false);
   const [status, setStatus] = useState<Status>('thinking');
   /** The option just tapped, so the card can respond before the network does. */
   const [chosen, setChosen] = useState<string | null>(null);
@@ -279,17 +284,11 @@ export default function StoryPage() {
     const element = audioRef.current;
     if (!element || !element.src) return;
     if (!force && !element.paused) return;
-    try {
-      const started = element.play();
-      if (started && typeof started.then === 'function') {
-        started.then(
-          () => undefined,
-          () => undefined,
-        );
-      }
-    } catch {
-      // Nothing to do and nothing to say — the tap target stays on screen.
-    }
+    // The rejection is the interesting outcome, and it used to be discarded:
+    // both "speaking" and "the browser said no" arrived here as `undefined`, so
+    // the screen could not tell the child which had happened. `blocked` is what
+    // puts the cue on the glass (`TapToHear`).
+    void playOrReportBlocked(element).then((playing) => setBlocked(!playing));
   }, []);
 
   /**
@@ -564,6 +563,12 @@ export default function StoryPage() {
               <WarmClose companionName={companionName} onFinish={finish} />
             ) : null}
 
+            {/* Only when a `play()` was actually refused, and only while the
+                narration has not been heard. The container's tap handler is the
+                target; this just makes the invitation visible (§14.5 — the
+                child cannot read, so it cannot be a sentence). */}
+            {blocked && !heard ? <TapToHear companionName={companionName} /> : null}
+
             {answerable && options.length > 0 ? (
               <ChoiceCards
                 options={options}
@@ -619,7 +624,13 @@ export default function StoryPage() {
           }}
           // `onPlay` rather than the `play()` promise: the element is the thing
           // that knows, and it covers a play started some other way too.
-          onPlay={() => setHeard(true)}
+          // `onPlay` clears the cue as well as arming `heard`: the element is
+          // the thing that knows it is speaking, and it covers a play started
+          // some other way too.
+          onPlay={() => {
+            setHeard(true);
+            setBlocked(false);
+          }}
           onEnded={() => setHeard(true)}
         />
       ) : null}

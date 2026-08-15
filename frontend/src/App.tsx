@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { RouterProvider } from 'react-router-dom';
 
+import { primeAudioOnFirstGesture } from './lib/audioUnlock';
 import { router } from './router';
 import { useAuthStore } from './store/auth';
 
@@ -41,6 +42,23 @@ export default function App() {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  /**
+   * Let the companion speak on the first screen, not the second.
+   *
+   * Every voice in the child surface is started from an effect when its audio
+   * URL arrives, which browsers treat as programmatic playback and refuse until
+   * the document has been touched. Walking in through the child picker there is
+   * always a tap first and it works; landing straight on `/welcome/:childId` or
+   * `/story/:childId` — a reload, a bookmark, a PWA launch — there is not, and
+   * the greeting was silently declined. The child then tapped something, and
+   * every beat afterwards spoke, which is exactly how it was reported: quiet at
+   * the start, fine once engaged.
+   *
+   * Mounted here rather than per screen because the tap that fixes it usually
+   * happens *before* the screen that needs it exists.
+   */
+  useEffect(() => primeAudioOnFirstGesture(), []);
 
   return (
     <QueryClientProvider client={queryClient}>

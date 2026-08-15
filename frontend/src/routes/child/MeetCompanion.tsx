@@ -35,6 +35,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
+import { TapToHear } from '@/components/TapToHear';
+import { playOrReportBlocked } from '@/lib/audioUnlock';
 import { useCompanion } from '@/lib/api/queries';
 
 export default function MeetCompanion() {
@@ -45,6 +47,8 @@ export default function MeetCompanion() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   /** Has the greeting begun playing? Not "finished" — see `handleSceneTap`. */
   const [heard, setHeard] = useState(false);
+  /** The browser refused to start the greeting. See `lib/audioUnlock`. */
+  const [blocked, setBlocked] = useState(false);
 
   const audioUrl = companion?.greeting.audio_url ?? null;
   const ready = Boolean(companion?.assets_ready);
@@ -66,17 +70,11 @@ export default function MeetCompanion() {
     const element = audioRef.current;
     if (!element || !audioUrl) return;
     if (!force && !element.paused) return;
-    try {
-      const started = element.play();
-      if (started && typeof started.then === 'function') {
-        started.then(
-          () => undefined,
-          () => undefined,
-        );
-      }
-    } catch {
-      // Nothing to do and nothing to say — the tap target stays on screen.
-    }
+    // The rejection is the interesting outcome, and it used to be discarded:
+    // both "speaking" and "the browser said no" arrived here as `undefined`, so
+    // the screen could not tell the child which had happened. `blocked` is what
+    // puts the cue on the glass (`TapToHear`).
+    void playOrReportBlocked(element).then((playing) => setBlocked(!playing));
   }
 
   /**
@@ -115,6 +113,11 @@ export default function MeetCompanion() {
           <SleepingFriend />
         )}
       </div>
+
+      {/* Only when a `play()` was actually refused. The `<main>` tap handler is
+          the target; this makes the invitation visible without a sentence the
+          child cannot read (§14.5). */}
+      {blocked && !heard ? <TapToHear companionName={companion?.name} /> : null}
 
       {ready && companion ? (
         <>
@@ -182,7 +185,10 @@ export default function MeetCompanion() {
           // `onPlay` rather than the `play()` promise: the element is the thing
           // that knows, and it also covers a play the user started some other
           // way (native controls, a media key).
-          onPlay={() => setHeard(true)}
+          onPlay={() => {
+            setHeard(true);
+            setBlocked(false);
+          }}
           onEnded={() => setHeard(true)}
         />
       ) : null}
