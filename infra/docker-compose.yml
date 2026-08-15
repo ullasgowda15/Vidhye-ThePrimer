@@ -1,14 +1,44 @@
 name: primer
 
+# The whole deployment, in one file (§16.10).
+#
+# This used to define `db` and `redis` only, and the pilot box ran a hand-edited
+# copy with `web` and `worker` in it that existed nowhere else. `push-credentials.sh`
+# has always driven those two services by name, so the file the repo held and the
+# file production ran had quietly diverged — and the only copy of the real one was
+# on a VM that a maintenance reboot could take away.
+#
+# ---------------------------------------------------------------------------
+# Local development is unchanged
+# ---------------------------------------------------------------------------
+# `web` and `worker` sit behind the `app` profile, so `make up` still starts
+# Postgres and Redis and nothing else. That matters because local development runs
+# the app *outside* Docker — `make run` and `make worker` against the venv, which
+# is faster to iterate on and is what README.md documents.
+#
+# Compose starts a profiled service anyway when it is named explicitly, so
+# `docker compose up -d web worker` keeps working exactly as `push-credentials.sh`
+# already calls it. Nothing on the box needs to change for that.
+#
+#   make up                          db + redis          (local dev)
+#   docker compose up -d web worker  those two           (what the box runs)
+#   docker compose --profile app up -d   everything      (full stack in Docker)
+
 services:
   db:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: primer
       POSTGRES_PASSWORD: primer
       POSTGRES_DB: primer
+    # Loopback only. The container talks to `db:5432` over the compose network,
+    # so the published port exists for `psql` from the host and for nothing else
+    # — and a database published on every interface is a database the internet
+    # can reach. These credentials are development defaults; they are only not a
+    # problem because of this line.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,13 +49,71 @@ services:
 
   redis:
     image: redis:7
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  web:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.backend
+    # `unless-stopped` rather than `always`: a GCP maintenance reboot brings the
+    # product back on its own, and `docker compose stop` still means stopped.
+    # Without this the box came up after a reboot with nothing running on it.
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    # Loopback, because TLS terminates at the reverse proxy in front of this
+    # (Docs/Hosting.md §7). `prod.py` sets SECURE_PROXY_SSL_HEADER on that
+    # assumption. Publishing 8000 to the world would bypass HTTPS entirely.
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # The Vertex service-account key, mounted read-only from outside the repo
+      # (§13.8). Source and target are the same path on purpose: whatever
+      # GOOGLE_APPLICATION_CREDENTIALS says in `.env` resolves identically on the
+      # host and inside the container, so the two cannot drift — and adopting
+      # this file on an existing box needs one new `.env` line and no change to
+      # GOOGLE_APPLICATION_CREDENTIALS.
+      #
+      # Set `VERTEX_SA_PATH` in `.env` to that same absolute path. The default is
+      # a placeholder that only has to parse: `web` and `worker` are profiled, so
+      # a developer running `make up` never mounts anything, and Compose still
+      # validates every service in the file whether or not it starts them.
+      - ${VERTEX_SA_PATH:-/run/secrets/vertex-sa.json}:${VERTEX_SA_PATH:-/run/secrets/vertex-sa.json}:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # ASGI, not WSGI. SSE streaming (§16.4) does not work under WSGI, and the
+    # failure mode is a child staring at a story that never arrives.
+    command: uvicorn config.asgi:application --host 0.0.0.0 --port 8000
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.backend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ${VERTEX_SA_PATH:-/run/secrets/vertex-sa.json}:${VERTEX_SA_PATH:-/run/secrets/vertex-sa.json}:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Not optional. Every illustration and every spoken line is produced here —
+    # a deployment without it tells stories with no pictures and no voice.
+    command: celery -A config worker -l info
 
 volumes:
   pgdata: {}

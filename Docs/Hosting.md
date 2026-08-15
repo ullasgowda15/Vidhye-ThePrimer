@@ -162,7 +162,16 @@ At 15 users (~90 beats/day) almost everything is comfortably inside free tiers. 
 4. **Docker.** Install Docker + Docker Compose plugin.
 5. **Code + secrets.** Clone the repo; create `.env` from §4 on the box (never commit it).
 6. **TLS + reverse proxy.** Put Caddy (auto-HTTPS) or nginx+certbot in front of uvicorn on 443. (Add the proxy to `infra/docker-compose` or run alongside.)
-7. **Bring it up.** `make up` (Postgres+Redis) → `make migrate` → app container (uvicorn) + `make worker` (Celery). Confirm `make ping` (worker live) and `make hello-beat` (AI keys work).
+7. **Bring it up.** `infra/docker-compose.yml` defines all four services. `db` and `redis` start by default; `web` and `worker` sit behind the `app` profile so a developer's `make up` does not launch the whole stack.
+
+   ```sh
+   docker compose -f infra/docker-compose.yml --profile app up -d --build
+   docker compose -f infra/docker-compose.yml exec -T web python manage.py migrate
+   ```
+
+   Set **`VERTEX_SA_PATH`** in `.env` to the same absolute path as `GOOGLE_APPLICATION_CREDENTIALS` — that is what gets bind-mounted read-only into both containers. Without it the mount falls back to a placeholder and Vertex calls fail at boot.
+
+   All four services carry `restart: unless-stopped`, so a VM reboot brings the product back without anyone logging in. Confirm `make ping` (worker live) and `make hello-beat` (AI keys work).
 8. **Storage.** Point media at R2 (§4); confirm an image/audio round-trips to the bucket and serves via the CDN URL.
 9. **Smoke test.** Run the Day-10/11 manual test against real providers — greeting warmth, invisible learning, two different worlds.
 10. **Backups.** Nightly `pg_dump` to R2 (cron). *Do this before onboarding real families — it's the one irreplaceable thing.*
