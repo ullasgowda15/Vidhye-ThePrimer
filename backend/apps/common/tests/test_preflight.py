@@ -195,6 +195,35 @@ class TestTheVendorProbes:
 
         assert preflight.probe_elevenlabs().ok
 
+    def test_the_google_key_never_reaches_the_url(self, settings: Any, monkeypatch: Any) -> None:
+        """A regression test with a receipt.
+
+        httpx logs every request URL at INFO. When this probe passed the key as
+        `?key=…`, running `launch_check --live` wrote it into the worker log and
+        into the command's own output — and on 15 August 2026 it went into a chat
+        transcript from there and had to be rotated
+        (`Docs/Runbooks/Key-Rotation.md`).
+
+        Google accepts the key either way, its quickstarts show the query-string
+        form, and `adapters/tts.py` had already chosen the header for this exact
+        reason. So the wrong version is the easy one to write twice, which is
+        what makes it worth a test rather than a comment.
+        """
+        settings.GOOGLE_TTS_API_KEY = "super-secret-tts-key"
+        seen: dict[str, Any] = {}
+
+        def capture(method: str, url: str, **kwargs: Any) -> httpx.Response:
+            seen["url"] = url
+            seen["headers"] = kwargs.get("headers") or {}
+            return httpx.Response(200, json={"voices": []})
+
+        monkeypatch.setattr(httpx, "request", capture)
+
+        assert preflight.probe_google_tts().ok
+        assert "super-secret-tts-key" not in seen["url"]
+        assert "key=" not in seen["url"]
+        assert seen["headers"].get("X-Goog-Api-Key") == "super-secret-tts-key"
+
     def test_a_vendor_that_cannot_be_reached_is_a_failure_not_a_crash(
         self, settings: Any, monkeypatch: Any
     ) -> None:

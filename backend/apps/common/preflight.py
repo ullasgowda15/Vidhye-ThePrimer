@@ -241,6 +241,17 @@ def probe_google_tts() -> Probe:
     An empty `GOOGLE_TTS_API_KEY` is documented as meaning "no fallback yet", and
     it logs as `next=-` in the middle of an ElevenLabs outage. That is the right
     runtime behaviour and a thing to know *before* the outage.
+
+    **The key goes in a header, never the query string.** Google accepts either,
+    and `?key=` is what its own quickstarts show — but httpx logs every request
+    URL at INFO, so that form writes the key into the worker log, into
+    `launch_check --live` output, and into anything anyone pastes from either. It
+    did exactly that on 15 August 2026 and cost a rotation
+    (`Docs/Runbooks/Key-Rotation.md`).
+
+    `adapters/tts.py` already knew this and says so where it builds the
+    synthesis call. This probe was written later and did not inherit it; the two
+    now agree, which is the only state in which the lesson is actually learned.
     """
     key = str(settings.GOOGLE_TTS_API_KEY or "")
     if not key:
@@ -249,8 +260,8 @@ def probe_google_tts() -> Probe:
     return _http_probe(
         "google-tts",
         "GET",
-        f"https://texttospeech.googleapis.com/v1/voices?key={key}",
-        headers={},
+        "https://texttospeech.googleapis.com/v1/voices",
+        headers={"X-Goog-Api-Key": key},
     )
 
 

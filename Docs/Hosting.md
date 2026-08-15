@@ -169,7 +169,28 @@ At 15 users (~90 beats/day) almost everything is comfortably inside free tiers. 
    docker compose -f infra/docker-compose.yml exec -T web python manage.py migrate
    ```
 
-   Set **`VERTEX_SA_PATH`** in `.env` to the same absolute path as `GOOGLE_APPLICATION_CREDENTIALS` — that is what gets bind-mounted read-only into both containers. Without it the mount falls back to a placeholder and Vertex calls fail at boot.
+   Two one-off steps the first time, both easy to miss because each fails *quietly*:
+
+   ```sh
+   # 1. Compose reads `.env` from the compose file's own directory, not the repo
+   #    root. `env_file:` passes variables to the container; it does not affect
+   #    ${...} interpolation. Without this symlink every ${VAR} silently takes
+   #    its default.
+   ln -sf ../.env infra/.env
+
+   # 2. The Vertex key path, which is what gets bind-mounted into both containers.
+   #    Derived from GOOGLE_APPLICATION_CREDENTIALS so the two cannot disagree.
+   grep -q '^VERTEX_SA_PATH=' .env || printf '\nVERTEX_SA_PATH=%s\n' \
+     "$(sed -n 's/^GOOGLE_APPLICATION_CREDENTIALS=//p' .env | tail -1)" >> .env
+   ```
+
+   Verify before starting anything — this is the check that catches both:
+
+   ```sh
+   docker compose -f infra/docker-compose.yml --profile app config | grep -A2 "source:.*vertex"
+   ```
+
+   `source:` and `target:` must both be your real key path. If either reads `/run/secrets/…`, the symlink is missing and Vertex will fail at boot.
 
    All four services carry `restart: unless-stopped`, so a VM reboot brings the product back without anyone logging in. Confirm `make ping` (worker live) and `make hello-beat` (AI keys work).
 8. **Storage.** Point media at R2 (§4); confirm an image/audio round-trips to the bucket and serves via the CDN URL.

@@ -86,6 +86,17 @@ services:
       # a placeholder that only has to parse: `web` and `worker` are profiled, so
       # a developer running `make up` never mounts anything, and Compose still
       # validates every service in the file whether or not it starts them.
+      #
+      # ⚠️  Compose resolves `${...}` against a `.env` in the **compose file's own
+      # directory** — here `infra/`, not the repo root. `env_file:` above is a
+      # different mechanism entirely: it passes variables to the *container* and
+      # has no effect on interpolation. So a deployment needs:
+      #
+      #     ln -sf ../.env infra/.env
+      #
+      # Without it this silently falls back to the placeholder and both
+      # containers mount a path that does not exist. `infra/.env` is already
+      # covered by `.gitignore`. See Docs/Hosting.md §7.
       - ${VERTEX_SA_PATH:-/run/secrets/vertex-sa.json}:${VERTEX_SA_PATH:-/run/secrets/vertex-sa.json}:ro
     depends_on:
       db:

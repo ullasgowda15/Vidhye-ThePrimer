@@ -150,6 +150,17 @@ tmp/
 *.bak
 export.zip
 
+# ===== Operational output pasted from a deployment =====
+# Terminal output saved to a scratch file while debugging the box. It is not
+# source, and it is one `git add -A` away from being permanent — which matters
+# because this output routinely contains live credentials: `docker compose
+# config` expands every ${VAR}, and a vendor probe can log a key in a URL. Both
+# happened on 15 August 2026 (Docs/Runbooks/Key-Rotation.md).
+/prod/
+/build-output
+/*-output
+/*.log.txt
+
 # ===== Safety net: never ignore documentation =====
 # docs/ (PRODUCT.md + Build/ + Review/) must always be tracked, even if a
 # generic rule above happens to match a folder name like Build/ or dist/.
