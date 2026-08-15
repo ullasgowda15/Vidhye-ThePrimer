@@ -206,11 +206,18 @@ role ownership, `vector` needing to be enabled by the provider rather than by
 whenever the database moves off the box (the Day-90 Hetzner migration in
 `Docs/Hosting.md §8` is the obvious moment). Re-drill on the first run there.
 
-**And the dumps are still on the same disk as the database.** The two-layer
-table at the top of this runbook calls the off-provider copy the second line of
-defence; the nightly cron writes to `<app>/backups` on the VM, which survives a
-dropped table and not a lost disk. R2 is already configured for media and is the
-obvious destination.
+**The off-provider copy is live as of 2026-08-15.** Every nightly dump is
+uploaded to the private `primer-backups` R2 bucket under `db/`, with the same
+seven-day retention swept at both ends, and `launch_check.durability.backup_offsite`
+reports the configuration. Verified on the day: `404` from the media CDN
+hostname for the dump's key, which is what proves the backup bucket is not
+sitting behind a public URL.
+
+It has **its own R2 token**, scoped to `Object Read & Write` on that bucket
+alone. The media token turned out to be bucket-scoped rather than account-wide —
+the first upload failed `AccessDenied` — and a second token was the right answer
+anyway: the media credentials live in a container that serves public traffic and
+have no business being able to write to the backups.
 
 ---
 
