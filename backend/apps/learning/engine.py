@@ -91,6 +91,23 @@ OVERDUE_SATURATION_DAYS = 7.0
 #: adventure deterministic rather than a coin toss between two zeroes.
 DOMAIN_ORDER: tuple[str, ...] = (Domain.NUMERACY, Domain.VOCABULARY)
 
+#: Which domains the selector may actually choose from.
+#:
+#: Deliberately narrower than the seeded catalog, and the gap is the point.
+#: `Domain.LITERACY` and its ten phonics objectives are seeded by
+#: `0004_seed_literacy` — so a curriculum person can read them, so
+#: `LearningProgress` rows can be written against them from an offline analysis,
+#: and so the standards mapping is not retro-fitted onto a live catalog later.
+#: But nothing can yet *render* a reading ask: there is no story rule for a
+#: `READ` demand and no way for a child to answer one, so an objective selected
+#: here would become a beat that quietly practised nothing.
+#:
+#: `apps.learning.tests.test_catalog` states the same rule from the other side.
+#: Phase 4 of Docs/Build/Reading-Integration.md is what removes literacy from
+#: this exclusion, and it is the last step rather than the first for exactly the
+#: reason this constant exists.
+SELECTABLE_DOMAINS: frozenset[str] = frozenset({Domain.NUMERACY, Domain.VOCABULARY})
+
 #: How far past their own estimate a child is asked to reach. Small: the point of
 #: the ZPD is that the next step is a step, and a difficulty far above mastery is
 #: a beat the companion ends up doing for them.
@@ -418,6 +435,8 @@ def select_objective(child: Child) -> Selection | None:
     one domain. The arithmetic is in `score_objective`; what happens here is the
     gating, which is the part with consequences:
 
+    * **Domain.** An objective in a domain no beat can render yet is not a
+      candidate, however well it scores (`SELECTABLE_DOMAINS`).
     * **Age.** Outside the band the objective is not offered at all.
     * **Prerequisites.** `count_to_10` is not a candidate for a child who is still
       finding five hard, whatever the other terms say. This is the one gate that
@@ -431,7 +450,9 @@ def select_objective(child: Child) -> Selection | None:
     now = timezone.now()
     age = child.age
 
-    catalog = list(Objective.objects.filter(min_age__lte=age, max_age__gte=age))
+    catalog = list(
+        Objective.objects.filter(min_age__lte=age, max_age__gte=age, domain__in=SELECTABLE_DOMAINS)
+    )
     if not catalog:
         logger.warning("learning.no_objectives_for_age child=%s age=%d", child.pk, age)
         return None

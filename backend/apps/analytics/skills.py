@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from apps.learning.demands import demand_for
-from apps.learning.engine import EVIDENCE_MARGIN, MAX_DIFFICULTY
+from apps.learning.engine import EVIDENCE_MARGIN, MAX_DIFFICULTY, SELECTABLE_DOMAINS
 from apps.learning.models import LearningProgress, Objective
 from apps.profiles.models import Child
 
@@ -189,8 +189,22 @@ def skill_views(child: Child) -> list[SkillView]:
 
     Objectives with no progress row are included at `NOT_STARTED` rather than
     omitted; see `NOT_STARTED`.
+
+    **"Could be offered" is the operative phrase, and it is narrower than the
+    catalog.** `learning.0004_seed_literacy` seeds ten phonics objectives that
+    `engine.SELECTABLE_DOMAINS` excludes from selection until reading ships
+    (Docs/Build/Reading-Integration.md). Left in, a parent would open Insights and
+    find four literacy milestones reading "Not covered yet" — describing, quite
+    accurately, a feature that does not exist. That is not a progress report, it
+    is a roadmap leak, and it would sit on the page for as long as the phasing
+    takes. Filtering on the same constant the selector uses keeps the dashboard
+    describing what the product actually does.
     """
-    catalog = list(Objective.objects.filter(min_age__lte=child.age).select_related("milestone"))
+    catalog = list(
+        Objective.objects.filter(
+            min_age__lte=child.age, domain__in=SELECTABLE_DOMAINS
+        ).select_related("milestone")
+    )
     # Depth is read off the *whole* catalog, not the age-filtered slice: an
     # objective's position in its chain is a property of the curriculum, and
     # slicing the prerequisite map by age would flatten a chain whose first link
@@ -274,9 +288,11 @@ def milestone_rollup(child: Child) -> list[MilestoneView]:
 
     milestones = {
         objective.milestone.name: objective.milestone
-        for objective in Objective.objects.filter(min_age__lte=child.age).select_related(
-            "milestone"
-        )
+        # Same filter as `skill_views`, for the same reason — and it has to be the
+        # same or this dict misses a key the grouping above still holds.
+        for objective in Objective.objects.filter(
+            min_age__lte=child.age, domain__in=SELECTABLE_DOMAINS
+        ).select_related("milestone")
     }
 
     rollup: list[MilestoneView] = []

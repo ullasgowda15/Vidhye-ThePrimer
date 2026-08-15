@@ -11,6 +11,7 @@ with no picture is playable; a beat with no voice is a screen a pre-reader canno
 read (§4.9).
 """
 
+from apps.media.adapters.asr import ASRProvider, ReadingAnalysis
 from apps.media.adapters.image import ImageProvider, select_image_provider
 from apps.media.adapters.tts import (
     TTSProvider,
@@ -20,7 +21,9 @@ from apps.media.adapters.tts import (
 )
 
 __all__ = [
+    "ASRProvider",
     "ImageProvider",
+    "ReadingAnalysis",
     "TTSProvider",
     "select_image_provider",
     "select_tts_provider",

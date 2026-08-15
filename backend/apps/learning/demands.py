@@ -48,6 +48,15 @@ COUNT = "count"
 COMPARE = "compare"
 #: Which one is the <word>. Answered by tapping a card; `expected` is an option key.
 WORD = "word"
+#: Read this line out loud. Answered *by voice*, and `expected` is the line itself
+#: (Docs/Build/Reading-Integration.md §4).
+#:
+#: The odd one out, and deliberately so: every other kind is answered by a tap and
+#: is checkable against a single value, while this one is checked by aligning what
+#: was heard against text we already hold. That is the whole reason the reading
+#: engine is a separate thing from this module — `apps.reading.engine` owns what
+#: counts as having read a word, and nothing here has an opinion about it.
+READ = "read"
 
 #: Which shape each seeded objective takes.
 #:
@@ -65,11 +74,30 @@ KIND_BY_CODE: dict[str, str] = {
     "name_colours": WORD,
     "size_words": WORD,
     "feeling_words": WORD,
+    # The ten phonics objectives (`learning.0004_seed_literacy`). Every one of
+    # them is the same shape, which is an argument for leaving them to
+    # `KIND_BY_DOMAIN` below and not one this table accepts: `test_catalog`
+    # requires every seeded code to appear here so that adding a row to the
+    # curriculum stays a deliberate two-file change. A domain fallback that
+    # happens to be right today is exactly the silent default that test exists
+    # to prevent, and phonics is the domain most likely to grow a code whose ask
+    # is not "read the line" — a rhyme objective, a syllable-clap.
+    "cvc_short_a": READ,
+    "cvc_short_i": READ,
+    "cvc_short_o": READ,
+    "digraph_sh": READ,
+    "digraph_ch": READ,
+    "digraph_th": READ,
+    "blends_l": READ,
+    "blends_s": READ,
+    "vce_long_a": READ,
+    "vowel_team_ai": READ,
 }
 
 KIND_BY_DOMAIN: dict[str, str] = {
     Domain.NUMERACY: COUNT,
     Domain.VOCABULARY: WORD,
+    Domain.LITERACY: READ,
 }
 
 # ---------------------------------------------------------------------------
@@ -95,6 +123,24 @@ COMPARE_LADDER: tuple[tuple[float, tuple[int, int]], ...] = (
     (0.60, (5, 2)),
     (0.85, (7, 2)),
     (1.01, (9, 1)),
+)
+
+#: `(difficulty below this, how many words the line runs to)`. The reading
+#: equivalent of `COUNT_LADDER`, and the numbers come from the same place Vidhye's
+#: curated passages did: a K-1 decodable sentence is four to eight words, and
+#: below three there is no sentence left to read.
+#:
+#: Length is the only axis this ladder moves, and that is a deliberate limit
+#: rather than an oversight. *Which sounds* the line may contain is set by the
+#: objective, not by the difficulty — a child practising `digraph_sh` at 0.8 gets
+#: a longer sh line, never a line with sounds they have not met. Vidhye's
+#: ARCHITECTURE.md flags the missing axis (syllables per word, clause structure)
+#: as an open question; it stays open here rather than being guessed at.
+READ_LADDER: tuple[tuple[float, int], ...] = (
+    (0.30, 3),
+    (0.55, 5),
+    (0.80, 6),
+    (1.01, 8),
 )
 
 #: Above this, the word being practised should be one the child has not met in a
@@ -150,7 +196,7 @@ class Demand:
     difficulty: float
     kind: str
     #: COUNT: how many things to put in the scene. COMPARE: the bigger group.
-    #: WORD: unused (0).
+    #: READ: how many words the line the child reads runs to. WORD: unused (0).
     quantity: int
     #: COMPARE only: how much bigger the bigger group is.
     gap: int
@@ -187,6 +233,19 @@ class Demand:
                 f"Somewhere in this adventure two groups of things sit side by side — "
                 f"{self.quantity} of one and {self.smaller} of the other — and the child "
                 "is invited to say which has more."
+            )
+        elif self.kind == READ:
+            # Says nothing about *which* sounds, on purpose. The writer cannot be
+            # trusted with decodability — a free model asked for "a sentence using
+            # only short-a and sh" slips in words the child cannot decode — so the
+            # constraint is stated loosely here and *checked* afterwards against
+            # the child's own mastered skills. Vidhye's ARCHITECTURE.md calls that
+            # split "the model writes, we own correctness", and it is the same
+            # posture this product already takes on every generated beat.
+            demand = (
+                f"Somewhere in this adventure there is one short line — about "
+                f"{self.quantity} words — written on something the child can see, and "
+                "the companion invites them to read it out loud."
             )
         else:
             familiarity = (
@@ -294,6 +353,13 @@ def demand_for(
             # opening the next link of the chain (`PREREQUISITE_MASTERY`) on
             # evidence that never changed. Only ever downwards.
             difficulty = min(difficulty, _ceiling_difficulty(quantity))
+    elif kind == READ:
+        quantity = _rung(READ_LADDER, difficulty)
+        if scaffold:
+            # A shorter line, not an easier sound. The sounds in it are the
+            # objective and cannot be traded away; how much the child has to hold
+            # in their head at once can. This mirrors COMPARE widening its gap.
+            quantity = max(READ_LADDER[0][1], quantity - 1)
     elif kind == COMPARE:
         quantity, gap = _rung(COMPARE_LADDER, difficulty)
         if scaffold:

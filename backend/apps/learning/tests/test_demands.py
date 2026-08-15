@@ -216,3 +216,67 @@ def test_difficulty_is_clamped_rather_than_trusted() -> None:
     """
     assert demands.demand_for("count_to_10", "numeracy", 4.0).difficulty == 1.0
     assert demands.demand_for("count_to_10", "numeracy", -2.0).difficulty == 0.0
+
+
+# ---------------------------------------------------------------------------
+# The reading ask (Docs/Build/Reading-Integration.md §7)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("difficulty", "words"),
+    [(0.05, 3), (0.4, 5), (0.7, 6), (0.95, 8)],
+)
+def test_the_line_lengthens_with_difficulty(difficulty: float, words: int) -> None:
+    demand = demands.demand_for("digraph_sh", "literacy", difficulty)
+
+    assert demand.kind == demands.READ
+    assert demand.quantity == words
+
+
+def test_every_literacy_objective_takes_the_reading_shape() -> None:
+    """Unlike numeracy, the domain decides rather than the code.
+
+    The ten phonics objectives differ in *which* sounds the line may contain —
+    a fact the reading engine owns — not in how the child answers it.
+    """
+    for code in ("cvc_short_a", "digraph_th", "blends_s", "vowel_team_ai"):
+        assert demands.demand_for(code, "literacy", 0.5).kind == demands.READ
+
+
+def test_scaffolding_shortens_the_line_rather_than_changing_the_sounds() -> None:
+    """The sounds *are* the objective and cannot be traded away.
+
+    What can come down is how much the child holds at once — the same move
+    COMPARE makes when it widens its gap instead of shrinking the groups.
+    """
+    plain = demands.demand_for("digraph_sh", "literacy", 0.7)
+    helped = demands.demand_for("digraph_sh", "literacy", 0.7, scaffold=True)
+
+    assert helped.quantity < plain.quantity
+    assert helped.kind == plain.kind
+
+
+def test_a_scaffolded_line_never_falls_below_a_readable_length() -> None:
+    """Below three words there is no sentence left to read."""
+    demand = demands.demand_for("cvc_short_a", "literacy", 0.05, scaffold=True)
+
+    assert demand.quantity == demands.READ_LADDER[0][1]
+
+
+def test_the_reading_summary_asks_for_a_line_and_names_no_machinery() -> None:
+    summary = demands.demand_for("digraph_sh", "literacy", 0.5).summary()
+
+    assert "read" in summary.lower()
+    for forbidden in ("digraph_sh", "0.5", "phonics", "objective", "difficulty"):
+        assert forbidden not in summary.lower(), forbidden
+
+
+def test_the_summary_does_not_dictate_which_sounds_to_use() -> None:
+    """Decodability is checked afterwards, never asked for in the prompt.
+
+    A free model asked for "a sentence using only short-a and sh" slips in words
+    the child cannot decode. The engine owns correctness; the writer writes.
+    """
+    summary = demands.demand_for("digraph_sh", "literacy", 0.5).summary()
+
+    assert "sh" not in summary.split()
+    assert "sound" not in summary.lower()

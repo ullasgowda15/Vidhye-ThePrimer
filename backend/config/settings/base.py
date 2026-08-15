@@ -74,6 +74,11 @@ LOCAL_APPS = [
     "apps.analytics",
     "apps.billing",
     "apps.notifications",
+    # Oral reading (Docs/Build/Reading-Integration.md). Holds the vendored
+    # detection/teaching engine and, from Phase 1, the audio ingress. Registered
+    # now with no models of its own so the engine has a stable home and its tests
+    # run in CI from the day it lands.
+    "apps.reading",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS

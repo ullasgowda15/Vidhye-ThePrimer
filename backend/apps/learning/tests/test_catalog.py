@@ -8,8 +8,11 @@ silently in production and nowhere else.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+from apps.learning import engine
 from apps.learning.demands import KIND_BY_CODE
 from apps.learning.models import Domain, Milestone, Objective
 
@@ -24,18 +27,43 @@ def test_the_catalog_is_seeded_by_migration() -> None:
     assert len(codes & {"name_colours", "size_words", "feeling_words"}) >= 3
 
 
-def test_no_domain_beyond_numeracy_and_vocabulary_has_been_seeded() -> None:
+def test_no_domain_beyond_numeracy_and_vocabulary_can_be_selected() -> None:
     """§10.1 ships *one* domain done well plus opportunistic vocabulary.
 
-    The other eight in §10.1's table are roadmap. Seeding one early would mean
-    stories quietly practising phonics with no demand translator behind it and no
-    way for the beat to ask anything — an objective that can be selected and
-    cannot be taught.
+    This used to assert on what was *seeded*, and the distinction now matters.
+    `0004_seed_literacy` seeds a third domain — the ten phonics objectives, so a
+    curriculum person can read them and so an offline analysis can write progress
+    against them — while nothing can yet render a reading ask.
+
+    The concern the original test protected is unchanged and is what is asserted
+    here instead: **an objective that can be selected and cannot be taught.**
+    `engine.SELECTABLE_DOMAINS` is the gate, and Phase 4 of
+    Docs/Build/Reading-Integration.md is what opens it.
     """
-    assert set(Objective.objects.values_list("domain", flat=True)) == {
-        Domain.NUMERACY,
-        Domain.VOCABULARY,
-    }
+    assert engine.SELECTABLE_DOMAINS == {Domain.NUMERACY, Domain.VOCABULARY}
+
+    selectable = set(
+        Objective.objects.filter(domain__in=engine.SELECTABLE_DOMAINS).values_list(
+            "domain", flat=True
+        )
+    )
+    assert selectable == {Domain.NUMERACY, Domain.VOCABULARY}
+
+
+def test_a_reading_objective_is_never_handed_to_a_child(child: Any) -> None:
+    """The gate, exercised rather than asserted about.
+
+    A five-year-old is inside every literacy objective's age band, so age alone
+    does not keep them out. Only `SELECTABLE_DOMAINS` does.
+    """
+    literacy = set(Objective.objects.filter(domain=Domain.LITERACY).values_list("code", flat=True))
+    assert literacy, "the phonics catalog should be seeded"
+
+    for _ in range(20):
+        selection = engine.select_objective(child)
+        assert selection is not None
+        assert selection.objective.code not in literacy
+        assert selection.objective.domain != Domain.LITERACY
 
 
 def test_every_objective_rolls_up_to_a_milestone_with_a_standard_reference() -> None:

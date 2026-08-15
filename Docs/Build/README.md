@@ -2,6 +2,14 @@
 
 This folder contains **15 build-day briefs** (`Day1.md` … `Day15.md`). Each brief is a **self-contained prompt for a fresh Claude Code session** that builds that day's slice of The Primer. It assumes no memory of prior sessions — everything a session needs to start is written into the file.
 
+## Briefs that are not build-days
+
+**`Reading-Integration.md`** — a *programme* brief rather than a day: five phases
+that fold the Vidhye oral-reading engine into The Primer, written after the
+15-day sprint. It works the same way (scope, acceptance criteria, "Do NOT do",
+end state) but each phase is its own session, and a session should be handed the
+programme brief *plus* the phase number. Phase 0 is complete.
+
 ## The daily loop (founder = Appu, builder + reviewer = Claude Code)
 
 1. Open Claude Code in the project root. Paste/hand it **`docs/Build/DayN.md`**.

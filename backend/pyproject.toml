@@ -7,7 +7,13 @@ requires-python = ">=3.12"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["**/migrations/*"]
+# `apps/reading/engine` is vendored, not authored here (Docs/Build/Reading-Integration.md
+# §7). Restyling it — `List` to `list`, import order, line lengths — would touch
+# every file and destroy the property that makes vendoring worth doing: a readable
+# diff against upstream, so a fix made in either place can be carried to the other.
+# The engine earns its keep through its tests (`apps/reading/tests`), not through
+# matching this repo's house style. Code we write *around* it is not excluded.
+extend-exclude = ["**/migrations/*", "apps/reading/engine/*"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "DJ", "RUF"]
@@ -39,13 +45,26 @@ ignore_missing_imports = true
 # Loose on Day 1 — tightened as the codebase grows.
 check_untyped_defs = true
 warn_unused_ignores = false
-exclude = ["migrations/"]
+# See the ruff note above: the vendored reading engine is excluded for the same
+# reason, plus one of its own — it imports torch and faster-whisper, which are
+# deliberately not installed on this box (§2.1), so mypy could only ever report
+# them as missing.
+exclude = ["migrations/", "apps/reading/engine/"]
 
 [tool.django-stubs]
 django_settings_module = "config.settings.dev"
 
 [[tool.mypy.overrides]]
 module = ["*.migrations.*"]
+ignore_errors = true
+
+# `exclude` above stops mypy *crawling* the vendored engine; this stops it
+# reporting on the modules our own code imports from it. Both are needed, exactly
+# as they are for migrations. The engine is checked by its tests, not its
+# annotations — it predates this repo's typing conventions and rewriting it to
+# satisfy them would throw away the diff against upstream.
+[[tool.mypy.overrides]]
+module = ["apps.reading.engine.*"]
 ignore_errors = true
 
 [tool.pytest.ini_options]

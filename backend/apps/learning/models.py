@@ -44,6 +44,17 @@ class Domain(models.TextChoices):
 
     NUMERACY = "numeracy", "Numeracy"
     VOCABULARY = "vocabulary", "Vocabulary"
+    #: Decoding print — the phonics sequence behind "read this line to me"
+    #: (Docs/Build/Reading-Integration.md). The third domain, added the way this
+    #: docstring says the others would be: one migration, one `KIND_BY_DOMAIN`
+    #: entry, one story rule that renders it.
+    #:
+    #: It differs from the first two in one way worth knowing before selecting it:
+    #: its objectives are only reachable by a child in the older age band, because
+    #: the ask is "read this", and a four-year-old cannot. `min_age` on each
+    #: objective carries that, so the selector's existing age filter is the gate
+    #: and no separate rule is needed.
+    LITERACY = "literacy", "Literacy"
 
 
 #: Mastery at or above this counts as "they can do this" for the purpose of
