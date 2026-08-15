@@ -22,7 +22,19 @@
 # counts alone would pass on a database full of ciphertext nobody can read, which
 # is the failure mode a memory-encryption key makes possible (§11.10).
 #
-# Environment: DATABASE_URL, PG_RUN — as in `backup.sh`.
+# Environment: DATABASE_URL, PG_RUN — as in `backup.sh` — and PYTHON.
+#
+# On a deployment where everything runs in containers, all three are container
+# prefixes and the whole drill is:
+#
+#   cd ~/app
+#   export DATABASE_URL="$(sed -n 's/^DATABASE_URL=//p' .env | tail -1)"
+#   export PG_RUN="docker compose -f infra/docker-compose.yml exec -T db"
+#   export PYTHON="docker compose -f infra/docker-compose.yml exec -T -e DATABASE_URL web python"
+#   sh infra/backup/restore-drill.sh
+#
+# The `-e DATABASE_URL` in `PYTHON` is load-bearing — see the note by the
+# verification step near the end of this file.
 
 set -eu
 
@@ -89,7 +101,20 @@ echo "-- verifying (through Django, against the restored copy)"
 # both paths, and `exit $STATUS` at the end still fails the drill.
 STATUS=0
 cd backend
-DATABASE_URL="$SCRATCH_URL" "$PYTHON" manage.py restore_drill || STATUS=$?
+# Unquoted, exactly like `PG_RUN` above and for the same reason: on a deployment
+# the only interpreter with Django is inside a container, so `PYTHON` has to be
+# able to be a multi-word prefix. Quoted, it was one command name with spaces in
+# it, and the drill died with "command not found" *after* a successful restore —
+# failing the half that makes it a drill.
+#
+# When `PYTHON` is a `docker exec`, pass `-e DATABASE_URL` in it: the prefix
+# below sets the variable in *this* shell, and `-e VAR` with no value is what
+# forwards it into the container. Without that the container falls back to its
+# own `.env` and verifies the **live** database instead of the restored copy —
+# read-only, so nothing breaks, but it is a drill that reports a pass without
+# ever having looked at the dump.
+# shellcheck disable=SC2086
+DATABASE_URL="$SCRATCH_URL" $PYTHON manage.py restore_drill || STATUS=$?
 cd ..
 
 echo "-- dropping the scratch database"
