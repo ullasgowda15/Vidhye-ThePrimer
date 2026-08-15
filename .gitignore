@@ -150,6 +150,13 @@ tmp/
 *.bak
 export.zip
 
+# ===== Children's voices =====
+# Consented reading recordings (Docs/Build/Reading-Integration.md §8). The
+# mount point for the container, and never anything git should see: this is the
+# most sensitive data the product holds, and the one thing worse than keeping a
+# child's voice is committing it. `READING_CORPUS_DIR` points here.
+/corpus/
+
 # ===== Operational output pasted from a deployment =====
 # Terminal output saved to a scratch file while debugging the box. It is not
 # source, and it is one `git add -A` away from being permanent — which matters

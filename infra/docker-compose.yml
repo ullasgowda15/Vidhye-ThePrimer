@@ -86,6 +86,20 @@ services:
       # Read-only: the host's cron writes these, the container only reports on
       # their age. Nothing in the app should ever be able to delete a dump.
       - ../backups:/backups:ro
+
+      # Consented reading recordings (Docs/Build/Reading-Integration.md §8).
+      #
+      # Writable, and mounted for the same reason `/backups` is: without it
+      # `READING_CORPUS_DIR` names a path *inside* the container, and every
+      # recording a parent agreed to let us keep would be destroyed by the next
+      # `up --build`. The corpus exists to be re-run against for as long as the
+      # project lasts, so losing it to a deploy would be losing the only thing
+      # phase 1 is for.
+      #
+      # It holds children's voices, so it lives outside the media bucket, is
+      # never served, and is emptied per child by `apps.reading.service`
+      # whenever consent is withdrawn or an account is deleted.
+      - ../corpus:/corpus
       # The Vertex service-account key, mounted read-only from outside the repo
       # (§13.8). Source and target are the same path on purpose: whatever
       # GOOGLE_APPLICATION_CREDENTIALS says in `.env` resolves identically on the
