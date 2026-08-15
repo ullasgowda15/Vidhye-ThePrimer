@@ -75,6 +75,17 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
+      # Where `launch_check.durability.backup_freshness` looks for dumps.
+      #
+      # Inside the container `BACKUP_DIR` resolves to `/backups`: settings derive
+      # it from `REPO_ROOT`, and the image COPYs the code to `/app`, so
+      # `REPO_ROOT` is `/`. The nightly cron writes to `<app>/backups` on the
+      # host, and without this mount the two never meet — a working backup job
+      # reads as a dead one, which is worse than either being obviously broken.
+      #
+      # Read-only: the host's cron writes these, the container only reports on
+      # their age. Nothing in the app should ever be able to delete a dump.
+      - ../backups:/backups:ro
       # The Vertex service-account key, mounted read-only from outside the repo
       # (§13.8). Source and target are the same path on purpose: whatever
       # GOOGLE_APPLICATION_CREDENTIALS says in `.env` resolves identically on the
