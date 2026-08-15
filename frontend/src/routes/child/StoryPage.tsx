@@ -54,6 +54,7 @@ import { consumeBeatStream, type BeatEvent, type ChoiceOption } from '@/lib/sse'
 import { TapToHear } from '@/components/TapToHear';
 
 import ChoiceCards from './ChoiceCard';
+import { ReadingMoment } from './ReadingMoment';
 
 const collapse = (text: string) => text.split(/\s+/).join(' ').toLowerCase();
 
@@ -560,7 +561,16 @@ export default function StoryPage() {
             ) : null}
 
             {status === 'complete' ? (
-              <WarmClose companionName={companionName} onFinish={finish} />
+              <>
+                {/* After the story has resolved, and above the buttons rather
+                    than instead of them: declining is done by ignoring this and
+                    tapping "Again!" or "All done", which is the only kind of
+                    refusal a five-year-old should have to perform. Renders
+                    nothing at all unless the server offers a line — most
+                    children are pre-readers and get no invitation. */}
+                {childId ? <ReadingMoment companionName={companionName} childId={childId} /> : null}
+                <WarmClose companionName={companionName} onFinish={finish} />
+              </>
             ) : null}
 
             {/* Only when a `play()` was actually refused, and only while the

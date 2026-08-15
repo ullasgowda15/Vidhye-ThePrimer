@@ -385,6 +385,61 @@ glow-up for the pilot.
 - Do not touch `orchestrator.py` beyond what the interaction type requires.
 - No mastery updates from reading.
 
+### As built — 15 August 2026
+
+| What | Where |
+|---|---|
+| The moment | `frontend/src/routes/child/ReadingMoment.tsx`, on the warm close |
+| Recorder | `frontend/src/lib/recorder.ts` |
+| API | `GET`/`POST /api/v1/children/{id}/reading` — `apps/reading/views.py` |
+| Rules | `apps/reading/service.py` — gates, line choice, consent |
+| Corpus row | `apps/reading/models.py` `ReadingAttempt` |
+| Consent | `Child.reading_audio_consent`, off by default |
+| Parent view | `linesRead` on the weekly report |
+
+**Where it sits, and why not in a beat.** On the warm close, after the story has
+resolved and above the "Again!" / "All done" buttons rather than instead of them.
+That position does three things a beat-level insert could not: it interrupts
+nothing, it lets a child decline by simply tapping past it — the only kind of
+refusal a five-year-old should have to perform — and it needs no change to
+`orchestrator.py`, which §14 puts out of bounds until Phase 4.
+
+**The line comes from the curated bank, not the story.** Thirteen hand-written
+decodable sentences, already vendored with the engine. A generated line has no
+decodability guarantee until Phase 4 builds the validator, and the bank has the
+property the corpus needs anyway: we know exactly what the child was looking at,
+which is the field Phase 2 will tune a detector against. The endpoint therefore
+stores *our* text for the id, never the client's.
+
+**Four gates, and the interesting one was already there.** `Child.pre_reader` has
+been on the model since Day 1 — in the serializer, in the data export — and
+nothing has ever read it to change behaviour. A parent had already told us
+whether their child can read and the product had never asked. It defaults to
+`True`, so silence means no. The others: `READING_ENABLED`, age ≥ 5, and
+`words_on_screen`, because a line that is not displayed cannot be read.
+
+**The silence threshold is the number to re-tune first.** Vidhye's `listen()` cut
+a turn after 1.5 s of quiet, and its own plan file predicts what that does to a
+child sounding out `sh-i-p`. `recorder.ts` uses four seconds plus a visible "All
+done" control, and both are guesses about a child nobody has watched yet.
+
+**Consent is by not writing.** With `reading_audio_consent` off — the default —
+the upload is counted and dropped and no file is created. Vidhye wrote the file
+and deleted it after analysis, which was right when something had to analyse it;
+nothing does yet, so the stronger shape was available. Withdrawing consent
+deletes what was kept, and so do child deletion and account deletion — the
+recordings live on the box's disk, outside the media bucket, so
+`delete_child_media` could never have found them.
+
+**Deviation from the brief:** the brief listed a "say it again" control. It is not
+here, because there is nothing to replay — the companion's invitation is text on
+screen, not speech, and the line stays visible for as long as the child wants it.
+It returns in Phase 3, where the companion speaks a correction worth hearing
+twice.
+
+Verified: `ruff`, `ruff format`, `mypy` (287 files), full backend suite, 215
+frontend tests, all green.
+
 ### End state to hand to Phase 2
 
 Real children have read lines aloud to their companion, and we have the audio.

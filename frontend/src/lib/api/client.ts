@@ -23,6 +23,29 @@ export type Health = paths['/api/health/']['get']['responses'][200]['content']['
 export type User = components['schemas']['User'];
 export type Me = components['schemas']['Me'];
 export type Child = components['schemas']['Child'];
+
+/** The reading moment. Hand-written rather than generated: `make client` has not
+ *  been re-run against the new endpoint yet, and a stale `schema.ts` would give
+ *  these `never`. Replace with the generated aliases once it has. */
+export interface ReadingInvitation {
+  offered: boolean;
+  passageId?: string;
+  text?: string;
+  prompt?: string;
+}
+
+export interface ReadingSubmission {
+  passageId: string;
+  audio?: Blob | null;
+  durationMs?: number | null;
+  sessionId?: string | null;
+}
+
+export interface ReadingResult {
+  attemptId: string;
+  say: string;
+  kept: boolean;
+}
 export type ChildRequest = components['schemas']['ChildRequest'];
 export type PatchedChildRequest = components['schemas']['PatchedChildRequest'];
 /** The parent's controls for one child (§7.13, §12.7). */
@@ -171,6 +194,16 @@ export function connectAuth(next: AuthBridge): void {
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
+  /**
+   * A multipart body, for the one call that carries a file.
+   *
+   * Mutually exclusive with `body`. The `Content-Type` header is deliberately
+   * *not* set when this is used: multipart needs a boundary parameter, the
+   * browser generates one when it sees a `FormData`, and a hand-set
+   * `multipart/form-data` overrides it with a header that has no boundary in it
+   * — which parses server-side as an empty request rather than as an error.
+   */
+  form?: FormData;
   signal?: AbortSignal;
   /** What we will take back. Only the beat stream wants anything but JSON. */
   accept?: string;
@@ -212,6 +245,7 @@ async function parseBody(response: Response): Promise<unknown> {
 
 async function send(path: string, options: RequestOptions, token: string | null) {
   const headers: Record<string, string> = { Accept: options.accept ?? 'application/json' };
+  // See `form` on RequestOptions: the browser sets this one, boundary and all.
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -219,7 +253,7 @@ async function send(path: string, options: RequestOptions, token: string | null)
     return await fetch(`${BASE_URL}${path}`, {
       method: options.method ?? 'GET',
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body: options.form ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
       signal: options.signal,
       credentials: options.withCookie ? 'include' : 'same-origin',
     });
@@ -516,6 +550,39 @@ export const api = {
       method: 'POST',
       body: { reason },
     }),
+
+  // --- reading aloud (Docs/Build/Reading-Integration.md) ---------------------
+
+  /**
+   * A line for this child to read, or that they are not being asked.
+   *
+   * `offered: false` is the ordinary answer, not a failure: most children are
+   * pre-readers, and the server decides — age, the parent's `pre_reader` switch,
+   * whether words are on screen at all. The client never infers eligibility.
+   */
+  readingInvitation: (childId: string, signal?: AbortSignal) =>
+    request<ReadingInvitation>(`${V1}/children/${childId}/reading`, { signal }),
+
+  /**
+   * What came back when the child read — audio, or the fact that there wasn't any.
+   *
+   * Sent even when the child said nothing. A quiet turn is a real answer and the
+   * server records it: it is the difference between "they won't do this" and "we
+   * never asked", and only one of those is worth changing the product over.
+   *
+   * Nothing in the response grades the reading, because nothing graded it.
+   */
+  submitReading: (childId: string, payload: ReadingSubmission) => {
+    const form = new FormData();
+    form.append('passageId', payload.passageId);
+    if (payload.audio) form.append('audio', payload.audio, 'reading.webm');
+    if (payload.durationMs != null) form.append('durationMs', String(payload.durationMs));
+    if (payload.sessionId) form.append('sessionId', payload.sessionId);
+    return request<ReadingResult>(`${V1}/children/${childId}/reading`, {
+      method: 'POST',
+      form,
+    });
+  },
 
   // --- parent dashboard (§12) ----------------------------------------------
   // All eight are plain authenticated reads and all eight are owner-scoped

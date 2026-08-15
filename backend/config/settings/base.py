@@ -910,3 +910,31 @@ FEATURE_FLAGS = env.json("FEATURE_FLAGS", default={})
 # unpriced rather than as free, so the dashboard tells you to come here instead
 # of quietly reading 0.00 (§22.4).
 AI_PRICE_TABLE = env.json("AI_PRICE_TABLE", default={})
+
+# ---------------------------------------------------------------------------
+# Reading aloud (Docs/Build/Reading-Integration.md)
+# ---------------------------------------------------------------------------
+# The whole feature behind one switch, off by default.
+#
+# Phase 1 puts a short decodable line in front of a child who can read and
+# invites them to read it to their companion. Nothing scores it: the companion
+# answers warmly whatever comes back, and the point of the phase is the
+# invitation and the corpus, not a verdict. The switch exists so a deployment
+# turns it on deliberately, and so it can be turned off from `.env` faster than
+# a rollback if the first real child hates it.
+READING_ENABLED = env.bool("READING_ENABLED", default=False)
+
+# Where consented recordings go. **Outside the repository**, like the Vertex key,
+# because the one thing worse than keeping a child's voice is committing it.
+#
+# Only written when the child's own `reading_audio_consent` is set. With consent
+# absent — the default — the upload is read, counted and dropped, and no file is
+# ever created; see `apps.reading.service`. Vidhye wrote the file and deleted it
+# after analysis, which was the right shape when something had to analyse it.
+# Nothing does yet, so the safer shape is available: never write it.
+READING_CORPUS_DIR = env("READING_CORPUS_DIR", default=str(REPO_ROOT.parent / "primer-corpus"))
+
+# The ceiling on one upload. A K-1 sentence read aloud is a few seconds; anything
+# past this is a stuck recorder or somebody exploring the endpoint, and neither
+# should be able to fill the disk.
+READING_MAX_UPLOAD_BYTES = env.int("READING_MAX_UPLOAD_BYTES", default=5 * 1024 * 1024)

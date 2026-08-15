@@ -123,6 +123,14 @@ class WeeklyReportSerializer(serializers.Serializer):
     milestone = WeeklyMilestoneSerializer(allow_null=True)
     interests_trend = serializers.ListField(child=serializers.CharField())
     recommendation = serializers.CharField()
+    linesRead = serializers.IntegerField(
+        source="lines_read",
+        help_text=(
+            "Lines the child read aloud to their companion this week. A count "
+            "only: nothing has listened to the recordings yet, so there is no "
+            "accuracy figure to report and none is implied."
+        ),
+    )
 
 
 class ProgressSerializer(serializers.Serializer):

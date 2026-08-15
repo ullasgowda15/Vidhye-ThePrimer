@@ -53,6 +53,7 @@ from apps.learning.models import LearningProgress, Objective
 from apps.memory import interest
 from apps.memory import prompts as memory_prompts
 from apps.profiles.models import Child
+from apps.reading.models import ReadingAttempt
 from apps.story.models import Adventure, Beat, Choice, PlaySession
 
 logger = logging.getLogger(__name__)
@@ -532,6 +533,15 @@ class WeeklyReport:
     milestone: dict[str, Any] | None = None
     interests_trend: list[str] = field(default_factory=list)
     recommendation: str = ""
+    #: Lines the child read aloud to their companion this week
+    #: (Docs/Build/Reading-Integration.md §8).
+    #:
+    #: A count and nothing else, deliberately. Phase 1 does not listen to the
+    #: audio — every threshold in the detector was tuned against an adult
+    #: imitating a child — so "read six lines" is the whole of what is known, and
+    #: any adjective next to it would be invented. Accuracy arrives in Phase 2
+    #: with a detector that has heard real children.
+    lines_read: int = 0
 
 
 def week_bounds(day: datetime.date) -> tuple[datetime.date, datetime.date]:
@@ -580,6 +590,12 @@ def generate_weekly_report(child: Child, week: datetime.date | None = None) -> W
             topic.name for topic in interest.top_interests(child, limit=TOP_INTERESTS)
         ],
         recommendation=_recommendation(child, live),
+        lines_read=ReadingAttempt.objects.filter(
+            child=child,
+            created_at__date__gte=start,
+            created_at__date__lte=end,
+            spoke=True,
+        ).count(),
     )
 
 

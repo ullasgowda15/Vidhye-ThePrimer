@@ -60,6 +60,24 @@ class Child(UUIDModel):
     voice_on = models.BooleanField(default=True)
     text_on = models.BooleanField(default=True)
 
+    #: May we keep this child's voice? (Docs/Build/Reading-Integration.md §5.2.)
+    #:
+    #: Off, and off is the answer that needs no defending. When a child reads a
+    #: line aloud the recording is normally never written to disk at all — the
+    #: browser sends it, we count that reading happened, and the bytes go
+    #: nowhere. This opt-in is the one exception, and it exists for one reason:
+    #: every threshold in the reading detector was tuned against an adult
+    #: imitating a five-year-old, and there is no way to fix that without
+    #: recordings of the real thing.
+    #:
+    #: A parent grants it deliberately, per child, and can withdraw it — at which
+    #: point `apps.reading.service` stops writing and the existing corpus files
+    #: are removed with the rest of the child's media on deletion. It is not
+    #: inherited, not defaulted on by a plan, and not bundled into another
+    #: setting: consent that arrives as a side effect of agreeing to something
+    #: else is not consent.
+    reading_audio_consent = models.BooleanField(default=False)
+
     #: §14.6's accessibility flags: `captions`, `reduced_motion`, `dyslexia_font`,
     #: `high_contrast`, `audio_volume`. JSON rather than five columns because they
     #: are only ever read as one set, by one surface, and the list will grow —

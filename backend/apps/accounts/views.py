@@ -45,6 +45,7 @@ from apps.analytics import events
 from apps.analytics.models import Event
 from apps.common.throttling import AuthAnonThrottle, AuthUserThrottle, SessionRefreshThrottle
 from apps.media import service as media_service
+from apps.reading import service as reading_service
 
 logger = logging.getLogger(__name__)
 
@@ -426,10 +427,15 @@ class AccountDeleteView(APIView):
         # .perform_destroy` argues this at length; it is the same deletion.
         children = list(parent.children.all())
         media_rows = media_objects = 0
+        voice_clips = 0
         for child in children:
             rows, objects = media_service.delete_child_media(child)
             media_rows += rows
             media_objects += objects
+            # Consented reading recordings sit on the box's disk, not in the
+            # media bucket, so nothing above would have found them and the
+            # cascade would have left a deleted family's voices on the machine.
+            voice_clips += reading_service.delete_corpus_for(child)
 
         parent_id, email = parent.pk, parent.email
         parent.delete()
@@ -453,12 +459,13 @@ class AccountDeleteView(APIView):
         )
         logger.warning(
             "privacy.account_deleted parent=%s receipt=%s children=%d media_rows=%d "
-            "media_objects=%d",
+            "media_objects=%d voice_clips=%d",
             parent_id,
             receipt.pk,
             len(children),
             media_rows,
             media_objects,
+            voice_clips,
         )
 
         # The refresh cookie would otherwise sit on the device pointing at an

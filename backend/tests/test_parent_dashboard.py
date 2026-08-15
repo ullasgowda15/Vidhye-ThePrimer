@@ -221,8 +221,17 @@ def test_the_weekly_report_is_shaped_as_18_7_writes_it(auth, aarav, played) -> N
         "milestone",
         "interests_trend",
         "recommendation",
+        # Additive, per §18.8, and asserted rather than allowed by loosening the
+        # comparison to a subset: an exact set is what makes a field disappearing
+        # a failure, and a report that quietly lost `skills` would still pass a
+        # subset check. Adding a key here should cost a line in a test.
+        "linesRead",
     }
     assert response.data["sessions"] == 1
+    # Zero, and present. A child who read nothing this week has a number, not a
+    # missing key — the parent screen renders it either way and must not have to
+    # tell "none" from "not tracked".
+    assert response.data["linesRead"] == 0
 
 
 def test_a_week_can_be_asked_for_by_date_and_a_bad_one_is_refused(auth, aarav) -> None:

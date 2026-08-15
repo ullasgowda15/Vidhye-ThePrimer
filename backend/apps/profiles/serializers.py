@@ -8,6 +8,7 @@ safety layer.
 """
 
 import datetime
+import logging
 from typing import Any, cast
 
 from django.utils import timezone
@@ -16,6 +17,9 @@ from rest_framework import serializers
 
 from apps.profiles import settings as child_settings
 from apps.profiles.models import Child
+from apps.reading import service as reading_service
+
+logger = logging.getLogger(__name__)
 
 # A love or a fear is a noun phrase ("dinosaurs", "the dark"), not a paragraph.
 # Bounding both length and count bounds the safety layer's token cost too.
@@ -238,6 +242,9 @@ class ChildSettingsSerializer(serializers.ModelSerializer):
     )
     voice_on = serializers.BooleanField(required=False)
     text_on = serializers.BooleanField(required=False)
+    #: May we keep this child's voice? Off by default; see `Child`.
+    #: Turning it *off* deletes what was already kept — `update` below.
+    reading_audio_consent = serializers.BooleanField(required=False)
     accessibility = AccessibilitySerializer(required=False)
 
     class Meta:
@@ -253,6 +260,7 @@ class ChildSettingsSerializer(serializers.ModelSerializer):
             "time_window_end",
             "voice_on",
             "text_on",
+            "reading_audio_consent",
             "accessibility",
             "updated_at",
         ]
@@ -316,4 +324,23 @@ class ChildSettingsSerializer(serializers.ModelSerializer):
             merged = child_settings.Accessibility.from_json(instance.accessibility).as_json()
             instance.accessibility = {**merged, **patch}
             instance.save(update_fields=["accessibility", "updated_at"])
+
+        # Withdrawing consent deletes what consent allowed us to keep.
+        #
+        # A switch that stops *future* recordings while leaving the existing ones
+        # on disk is not a withdrawal, it is a pause — and it is the reading of
+        # this control a parent is least likely to have. The files go now, at the
+        # moment of the request, rather than on a sweep somebody has to remember
+        # to write.
+        withdrawing = (
+            validated_data.get("reading_audio_consent") is False and instance.reading_audio_consent
+        )
+        if withdrawing:
+            removed = reading_service.delete_corpus_for(instance)
+            logger.info(
+                "privacy.reading_consent_withdrawn child=%s clips_deleted=%d",
+                instance.pk,
+                removed,
+            )
+
         return super().update(instance, validated_data)

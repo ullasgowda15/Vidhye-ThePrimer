@@ -38,6 +38,7 @@ from apps.common.permissions import IsParentOwner, ParentScopedQuerysetMixin
 from apps.media import service as media_service
 from apps.profiles.models import Child
 from apps.profiles.serializers import ChildSerializer, ChildSettingsSerializer
+from apps.reading import service as reading_service
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +115,17 @@ class ChildViewSet(ParentScopedQuerysetMixin, viewsets.ModelViewSet):
         as long as one row still points at it.
         """
         rows, objects = media_service.delete_child_media(instance)
+        # Consented reading recordings live on the box's own disk rather than in
+        # the media bucket, so `delete_child_media` cannot see them and the row
+        # cascade would leave the `.webm` files behind. A directory of a deleted
+        # child's voice is exactly where a deletion promise stops being true.
+        voice = reading_service.delete_corpus_for(instance)
         logger.info(
-            "privacy.child_deleted child=%s media_rows=%d media_objects=%d",
+            "privacy.child_deleted child=%s media_rows=%d media_objects=%d voice_clips=%d",
             instance.pk,
             rows,
             objects,
+            voice,
         )
         instance.delete()
 
