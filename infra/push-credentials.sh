@@ -1,5 +1,7 @@
 #!/bin/sh
-# Copy this machine's working provider credentials to a deployment (§16.10).
+# Copy this machine's production provider credentials to a deployment (§16.10).
+#
+# Reads .env.prod — see the note by ENV_FILE below for why it is not .env.
 #
 #     sh infra/push-credentials.sh ullasgowda3523@34.180.8.71 [remote-app-dir]
 #
@@ -20,7 +22,7 @@
 # So this moves them, and nothing else. It does not touch the compose file, the
 # database, or any setting that is legitimately different between a laptop and a
 # deployment (DEBUG, ALLOWED_HOSTS, MEDIA_STORAGE, the URLs). Only the list in
-# CREDENTIALS below, only from this machine's .env, only after checking each one
+# CREDENTIALS below, only from this machine's .env.prod, only after checking each
 # is real.
 #
 # Safe to re-run. The remote .env is backed up first, every time.
@@ -56,9 +58,33 @@ if [ -z "$REMOTE" ]; then
 fi
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-ENV_FILE="$HERE/.env"
+# **`.env.prod`, not `.env`.** This script exists to move *production*
+# credentials, so it reads the file that holds them.
+#
+# It used to read `.env`, which is the local development config — and on 15
+# August 2026 that became a live footgun. The Cloudflare token and the Google TTS
+# key were rotated after a leak; the new values went into `.env.prod`, where a
+# reasonable person puts production credentials, while `.env` kept the dead ones.
+# Running this script would then have pushed a revoked token to the deployment
+# and taken out every illustration — a credential sync whose failure mode is
+# breaking the credentials.
+#
+# The two files legitimately differ in more than secrets (`MEDIA_STORAGE`,
+# `DEBUG`, the URLs), which is exactly why they are separate and why merging them
+# is not the fix.
+#
+# `ENV_FILE=` overrides. There is deliberately **no fallback** to `.env`: a silent
+# fallback is how development credentials reach production, and an error naming
+# the missing file costs one command to resolve.
+ENV_FILE="${ENV_FILE:-$HERE/.env.prod}"
 
-[ -f "$ENV_FILE" ] || { echo "no .env at $ENV_FILE" >&2; exit 1; }
+if [ ! -f "$ENV_FILE" ]; then
+    echo "no production env file at $ENV_FILE" >&2
+    echo "  This pushes production credentials, so it reads .env.prod rather than" >&2
+    echo "  .env (which is your local development config). Create it, or point at" >&2
+    echo "  another file with ENV_FILE=/path/to/file." >&2
+    exit 1
+fi
 
 # The provider credentials, and only those. Everything else in .env is either
 # environment-specific (so copying it would break the deployment) or not a
@@ -141,7 +167,14 @@ echo "    sending:$SENT"
 # `infra/docker-compose.yml` mounts; `GOOGLE_APPLICATION_CREDENTIALS` is what
 # Django opens, and the two are the same path by construction. Falling back to
 # the old location keeps a box that has neither working.
-SA_LOCAL=$(value_of GOOGLE_APPLICATION_CREDENTIALS)
+# Where the key sits *on this machine* — a local fact, so it is read from the
+# local `.env` first and only then from the production file. `.env.prod`
+# describes the deployment, where that path is the box's
+# (`/home/…/.config/primer/vertex-sa.json`) and means nothing here; reading it
+# would make `[ -f ]` false and skip the copy with a message about a missing
+# credential that is sitting on the disk.
+SA_LOCAL=$(sed -n 's/^GOOGLE_APPLICATION_CREDENTIALS=//p' "$HERE/.env" 2>/dev/null | tail -n 1)
+[ -n "$SA_LOCAL" ] || SA_LOCAL=$(value_of GOOGLE_APPLICATION_CREDENTIALS)
 # Deliberately `ssh` and not `run_remote`: this is a *read*, and DRY_RUN exists to
 # stop the script changing anything, not to stop it looking. Routed through
 # run_remote it would capture that function's own dry-run banner as the path.
