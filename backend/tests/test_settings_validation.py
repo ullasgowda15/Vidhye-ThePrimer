@@ -460,3 +460,104 @@ def test_google_further_down_the_order_is_absence_rather_than_misconfiguration(
     fallback provider a liability."""
     code, stderr = _boot_prod(AI_PROVIDER_ORDER="anthropic,google")
     assert code == 0, stderr
+
+
+# ---------------------------------------------------------------------------
+# The dev-only image override must not reach production
+# ---------------------------------------------------------------------------
+# `config/settings/dev.py` pins illustrations to the offline placeholder provider
+# so a laptop cannot spend Cloudflare or Vertex quota by accident. That is a
+# development convenience, and the failure it must never cause is the expensive
+# one in the other direction: placeholder art in front of a real child, or an
+# image safety gate that quietly degraded to structural-only in production.
+#
+# Two things make that impossible and both are asserted below rather than
+# assumed. `prod.py` imports `base.py` and never `dev.py`, so the override is not
+# on production's import path at all; and `prod.py` already refuses to boot with
+# `IMAGE_MODERATION=off`, so even a deployment that somehow inherited it stops
+# instead of shipping.
+def _prod_image_settings(**overrides: str) -> dict[str, str]:
+    """Boot prod in a fresh interpreter and read its image configuration back."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    probe = (
+        "import json, django; django.setup();"
+        "from django.conf import settings;"
+        "print(json.dumps({"
+        "'provider': settings.IMAGE_PROVIDER,"
+        "'fallbacks': list(settings.IMAGE_FALLBACK_PROVIDERS),"
+        "'moderation': settings.IMAGE_MODERATION,"
+        "'module': settings.SETTINGS_MODULE}))"
+    )
+    environment = {
+        **{key: value for key, value in os.environ.items() if key.startswith(("SYSTEM", "PATH"))},
+        "PATH": os.environ.get("PATH", ""),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+        "PYTHONPATH": str(backend),
+        **PROD_ENV,
+        **overrides,
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(backend),
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def test_production_still_draws_with_a_real_image_vendor() -> None:
+    """The dev override is invisible from prod, with `ALLOW_CLOUD_IMAGES` unset.
+
+    Unset is the *default* state and therefore the one that matters: if the
+    override leaked, this is the environment it would leak in.
+    """
+    resolved = _prod_image_settings(ALLOW_CLOUD_IMAGES="")
+
+    assert resolved["module"] == "config.settings.prod"
+    assert resolved["provider"] != "local"
+    assert resolved["provider"] == "cloudflare"
+    assert resolved["fallbacks"] == ["google"]
+
+
+def test_production_keeps_its_vision_safety_gate() -> None:
+    """`IMAGE_MODERATION=off` is a development mode and must never be production's."""
+    resolved = _prod_image_settings(ALLOW_CLOUD_IMAGES="")
+
+    assert resolved["moderation"] != "off"
+
+
+def test_production_refuses_to_boot_if_the_image_gate_is_ever_turned_off() -> None:
+    """The backstop, in case the two above are someday made to pass wrongly."""
+    code, stderr = _boot_prod(IMAGE_MODERATION="off")
+
+    assert code != 0, "prod booted with the image safety gate disabled"
+    assert "IMAGE_MODERATION" in stderr
+
+
+def test_development_draws_placeholders_and_can_reach_no_paid_vendor() -> None:
+    """The other half of the pair, asserted from the dev side.
+
+    Read off the live settings this suite already runs under
+    (`DJANGO_SETTINGS_MODULE=config.settings.dev`), so it breaks if the pin is
+    removed, weakened, or made `.env`-overridable.
+    """
+    from django.conf import settings
+
+    from apps.media.adapters.image import select_image_providers
+
+    assert settings.IMAGE_PROVIDER == "local"
+    assert list(settings.IMAGE_FALLBACK_PROVIDERS) == []
+    assert settings.IMAGE_MODERATION == "off"
+
+    # The settings are the intent; the resolved chain is the fact. A fallback
+    # left in the list, or a provider that quietly resolved to something else,
+    # would show up here and nowhere above.
+    assert [provider.name for provider in select_image_providers()] == ["local"]

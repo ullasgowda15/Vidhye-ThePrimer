@@ -82,17 +82,22 @@ hello-beat: ## Generate one validated story Beat (needs live credentials for the
 smoke: ## Live AI smoke test — real provider calls (needs live provider credentials). Never in CI.
 	cd backend && $(ABS_PY) manage.py smoke_ai $(SMOKE_ARGS)
 
-render-companion: ## Render a companion's reference set + 3 scenes: make render-companion CHILD=<uuid>
-	cd backend && $(ABS_PY) manage.py render_companion $(CHILD) --scenes 3
+# The four targets below exist to call the *real* image vendor and look at what
+# comes back, so they opt out of the local-placeholder pin in `settings/dev.py`.
+# Without `ALLOW_CLOUD_IMAGES=1` they would draw placeholders and report success,
+# which is worse than not having them. Everything else in dev stays offline and
+# spends nothing.
+render-companion: ## Real art: a companion's reference set + 3 scenes. make render-companion CHILD=<uuid>
+	cd backend && ALLOW_CLOUD_IMAGES=1 $(ABS_PY) manage.py render_companion $(CHILD) --scenes 3
 
-render-consistency: ## Render a 6-beat illustrated sequence to eyeball: make render-consistency CHILD=<uuid>
-	cd backend && $(ABS_PY) manage.py render_consistency $(CHILD) --beats 6
+render-consistency: ## Real art: a 6-beat illustrated sequence to eyeball. make render-consistency CHILD=<uuid>
+	cd backend && ALLOW_CLOUD_IMAGES=1 $(ABS_PY) manage.py render_consistency $(CHILD) --beats 6
 
 smoke-media: ## Live media smoke test (needs Cloudflare + ElevenLabs keys). Never in CI.
-	cd backend && $(ABS_PY) manage.py smoke_media $(SMOKE_ARGS)
+	cd backend && ALLOW_CLOUD_IMAGES=1 $(ABS_PY) manage.py smoke_media $(SMOKE_ARGS)
 
 smoke-story: ## Live story smoke test: plan + beat + art + voice. make smoke-story CHILD=<uuid>
-	cd backend && $(ABS_PY) manage.py smoke_story --child $(CHILD) $(SMOKE_ARGS)
+	cd backend && ALLOW_CLOUD_IMAGES=1 $(ABS_PY) manage.py smoke_story --child $(CHILD) $(SMOKE_ARGS)
 
 memories: ## What the companion remembers: make memories CHILD=<uuid> [MEM_ARGS="--like dragon"]
 	cd backend && $(ABS_PY) manage.py memories --child $(CHILD) $(MEM_ARGS)

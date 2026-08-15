@@ -33,6 +33,52 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 CELERY_TASK_EAGER_PROPAGATES = True
 
 # ---------------------------------------------------------------------------
+# Illustrations: local placeholders, and no cloud vendor by accident
+# ---------------------------------------------------------------------------
+# `base.py` defaults `IMAGE_PROVIDER` to `cloudflare` with a `google` fallback,
+# which is right for a deployment and wrong for a laptop: every `make run`, every
+# manual click through a story, every half-finished experiment drew real FLUX
+# images and spent real quota. The quota that then ran out was the one a child
+# was going to need.
+#
+# So development draws the deterministic offline placeholder instead. The
+# pipeline it exercises is the same one — hashing, the structural safety scan,
+# storage, CDN URLs, the cache — because that is what `local` exists for, and
+# every `Media` row still records which provider drew it, so placeholder art is
+# never mistaken for the real thing.
+#
+# **Set here rather than in `.env`, and deliberately not `env(...)`-readable.**
+# A default is a thing you forget you are relying on; a `.env` copied from
+# `.env.example` ships `IMAGE_PROVIDER=cloudflare`, and the whole point of this
+# block is that local development cannot reach a paid image vendor by accident.
+# `prod.py` is a separate module and is untouched.
+#
+# Three settings rather than one, because one would not be enough:
+#
+#   IMAGE_PROVIDER            the primary
+#   IMAGE_FALLBACK_PROVIDERS  emptied, or a local failure would fail *over* to
+#                             Gemini and quietly spend on Vertex instead
+#   IMAGE_MODERATION          `off`, which base.py already names as the mode
+#                             "CI and offline development use" — it is
+#                             structural-only, never unscanned, and it stops a
+#                             vision call to Gemini on a placeholder we drew
+#
+# The escape hatch is `ALLOW_CLOUD_IMAGES=1`, and it exists for exactly four
+# commands: `make smoke-media`, `make smoke-story`, `make render-companion` and
+# `make render-consistency`. Those run through `manage.py`, so they load *these*
+# settings, and their entire purpose is to call the real vendors and look at what
+# comes back. Without an opt-in they would silently render placeholders and
+# report success, which is worse than not having them.
+if env.bool("ALLOW_CLOUD_IMAGES", default=False):
+    IMAGE_PROVIDER = env("IMAGE_PROVIDER", default="cloudflare")
+    IMAGE_FALLBACK_PROVIDERS = env.list("IMAGE_FALLBACK_PROVIDERS", default=["google"])
+    IMAGE_MODERATION = env("IMAGE_MODERATION", default="auto")
+else:
+    IMAGE_PROVIDER = "local"
+    IMAGE_FALLBACK_PROVIDERS = []
+    IMAGE_MODERATION = "off"
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 # Django's default configuration routes the `django` logger to the console and

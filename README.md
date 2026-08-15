@@ -193,6 +193,18 @@ A named provider with missing credentials is an **error**, not a quiet downgrade
 to placeholder art — that is the kind of failure nobody notices until a child is
 looking at it. `local` is always an explicit choice.
 
+**Illustrations are pinned to `local` in development**, in `settings/dev.py` and
+not through `.env`. A laptop cannot spend Cloudflare or Vertex image quota by
+accident: the fallback chain is emptied too, and `IMAGE_MODERATION` drops to the
+structural-only `off` that CI already uses, so nothing calls a vision model on a
+placeholder we drew ourselves. Production is untouched — `prod.py` imports
+`base.py` and never `dev.py`, and it already refuses to boot with the image gate
+off.
+
+The four commands whose job *is* to call the real vendor set `ALLOW_CLOUD_IMAGES=1`
+themselves: `make smoke-media`, `make smoke-story`, `make render-companion`,
+`make render-consistency`. Prefix any other command with it to draw real art once.
+
 **The voice fails over; the picture does not.** A beat is answerable when it can
 be *heard*, so a missing illustration is a picture-less but playable scene — but a
 missing voice is a screen a pre-reader cannot read with nothing to tap (§4.9).
