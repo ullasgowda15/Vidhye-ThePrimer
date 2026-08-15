@@ -111,8 +111,42 @@ somebody actually cares about the morning after losing a database:
 | 2026-08-13 | same dump | same | re-run with a deliberately wrong `MEMORY_ENCRYPTION_KEY` | ✅ **drill failed, exit 1** — `15 of 15 sampled memories are undecryptable`. The negative case, which is what makes the positive one mean something. |
 | 2026-08-14 | `primer-20260814T072420Z.dump` (369,422 bytes, local dev DB) | `primer_restore_drill` on the compose Postgres | 7 parents, 4 children, 4 companions, 17 adventures, 60 beats, 44 choices, 20 memories, 151 media, 25 events; 2 children with a playable history; **20/20 sampled memories decrypted**; 151/151 media rows with URLs | ✅ **the data came back** |
 
+| 2026-08-15 | `primer-20260815T121805Z.dump` (236,819 bytes, **the production database on `app-server`**) | `primer_restore_drill` on the same compose Postgres | 3 parents, 3 children, 3 companions, 4 adventures, 15 beats, 11 choices, 8 memories, 61 media, 49 events; 3 children with a playable history; **8/8 sampled memories decrypted**; 61/61 media rows with URLs | ✅ **the data came back** |
+
 > Both rows are needed. A drill that has only ever passed has not been shown to
 > be capable of failing.
+
+**Why the 2026-08-15 row is the one that counts.** Every row above it was taken
+against a development database on a laptop. This is the first restore of the
+*production* database, which is what the "Not yet drilled" note below used to
+say was outstanding, and it postdates the last schema change (`learning.0003`
+and `learning.0004`, applied to production earlier the same day) — so
+`launch_check.durability.restore_drill` is satisfied rather than argued with.
+
+Two things it settled that were open questions rather than expectations:
+
+- **The `vector` extension was not the problem it was predicted to be.** The
+  runbook warned that a managed provider would need it enabled out of band. This
+  deployment runs `pgvector/pgvector:pg16` in compose, so `CREATE EXTENSION IF
+  NOT EXISTS vector` in the drill was sufficient and the restore was clean under
+  `--exit-on-error`. That prediction still stands for a future move to a managed
+  Postgres.
+- **Role ownership was not an issue either**, because `backup.sh` dumps with
+  `--no-owner --no-privileges` and the restore uses the same flags.
+
+The drill on this box needs all three of `DATABASE_URL`, `PG_RUN` and `PYTHON`
+as container prefixes; the invocation is at the top of
+`infra/backup/restore-drill.sh`. Two bugs were found running it for the first
+time, both of which failed *after* a successful restore and so looked like data
+problems: `PYTHON` was quoted where `PG_RUN` was not, so it could not be a
+container prefix at all, and the compose path inside it has to be absolute
+because the verification runs after a `cd backend`.
+
+**Still owed: the negative case against production.** The 2026-08-13 pair proved
+the drill can fail, on a laptop. Re-running it here is cheap — add
+`-e MEMORY_ENCRYPTION_KEY` to the `PYTHON` prefix and set a different valid
+Fernet key for the command — and until somebody does, the production drill has
+only ever passed.
 
 **Why the 2026-08-14 row exists.** `launch_check.durability.restore_drill` asks
 that the last entry here postdate the last schema change, and it did not: the
@@ -127,13 +161,22 @@ half that makes it a drill — died on `ModuleNotFoundError`. It now takes a
 `PYTHON` override the way it already took `PG_RUN`, and `make restore-drill`
 passes the venv interpreter, so the documented command works as written.
 
-**Not yet drilled:** a restore against a *production* managed Postgres, because
-production is not provisioned yet (see `Docs/Runbooks/Launch.md`). The scripts
-are provider-agnostic — `DATABASE_URL` and standard client tools — but the first
-run against a real provider will find provider-specific friction (role
-ownership, the `vector` extension needing to be enabled by the provider rather
-than by `CREATE EXTENSION`), and it must happen **before** the first family is
-onboarded, not after.
+**Drilled on production as of 2026-08-15** — see the row above. That closes what
+this paragraph used to say was outstanding.
+
+**Still not drilled:** a restore against a *managed* Postgres. Production today
+is `pgvector/pgvector:pg16` in compose on the same VM as the app, so the drill
+above exercised the scripts but not a provider. The friction predicted here —
+role ownership, `vector` needing to be enabled by the provider rather than by
+`CREATE EXTENSION` — is still unproven and still likely, and it will land
+whenever the database moves off the box (the Day-90 Hetzner migration in
+`Docs/Hosting.md §8` is the obvious moment). Re-drill on the first run there.
+
+**And the dumps are still on the same disk as the database.** The two-layer
+table at the top of this runbook calls the off-provider copy the second line of
+defence; the nightly cron writes to `<app>/backups` on the VM, which survives a
+dropped table and not a lost disk. R2 is already configured for media and is the
+obvious destination.
 
 ---
 
