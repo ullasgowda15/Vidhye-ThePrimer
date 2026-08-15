@@ -14,7 +14,7 @@ not a passing answer.
 | | What it protects against | Where it lives |
 |---|---|---|
 | **Provider PITR** | *"we dropped a table at 14:32"* | A checkbox on the managed Postgres. Continuous WAL archiving with a retention window. |
-| **Off-provider dumps** | *"the account is gone / compromised / the project was deleted"* | `infra/backup/backup.sh`, run on a schedule, written somewhere that is not the database provider. |
+| **Off-provider dumps** | *"the account is gone / compromised / the project was deleted"* | `infra/backup/backup.sh`, run on a schedule, written somewhere that is not the database provider. Copied off the box by `manage.py backup_upload` — see below. |
 
 PITR beats anything a shell script can do for the recent past — turn it on, and
 DEPLOY.md says where. The dumps are the second line, and they are the ones this
@@ -58,6 +58,40 @@ point the script at the ones in the compose stack:
 ```bash
 export PG_RUN="docker compose -f infra/docker-compose.yml exec -T db"
 ```
+
+### Getting it off the box
+
+`infra/backup/cron-backup.sh` calls `manage.py backup_upload` straight after a
+successful dump, so the nightly job produces both copies. To run it by hand:
+
+```bash
+docker compose -f infra/docker-compose.yml exec -T web \
+    python manage.py backup_upload /backups/primer-<stamp>.dump --prune
+```
+
+**It needs a separate, private bucket.** `BACKUP_S3_BUCKET` must never be
+`AWS_STORAGE_BUCKET_NAME`: the media bucket is served publicly through
+`MEDIA_CDN_BASE_URL` so a child's illustrations load without a credential, and a
+dump is every family in the product. S3 accepts the upload, the CDN serves it,
+and nothing downstream notices — so both `backup_upload` and
+`launch_check.durability.backup_offsite` refuse when the two names match.
+
+The upload is **deliberately not fatal** to the cron. A bucket having a bad night
+must not turn a successful local dump into a failed backup run: the copy that
+exists is worth more than the complaint about the copy that does not. Watch
+`durability.backup_offsite` for the configuration and the log for the uploads.
+
+`--prune` sweeps the same `BACKUP_RETENTION_DAYS` window over the remote prefix,
+scoped three ways — to `BACKUP_S3_PREFIX`, to the `primer-*.dump` naming, and to
+age. Without it a permanent remote copy would outlive what the disclosure
+promises parents, which is the copy nobody remembers exists.
+
+To create the bucket: Cloudflare dashboard → R2 → **Create bucket**, name it
+something that is obviously not the media one (`primer-backups`), and **do not
+enable public access or a custom domain on it**. The existing R2 token is
+account-scoped, so no second credential is needed — though giving the backup
+bucket its own is the better posture, since the media credentials sit in a
+container serving public traffic.
 
 ---
 

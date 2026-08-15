@@ -57,5 +57,24 @@ PG_RUN="docker compose -f infra/docker-compose.yml exec -T db"
 export PG_RUN
 
 echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) backup starting ==="
-sh infra/backup/backup.sh "$APP_DIR/backups"
+
+# `backup.sh` prints the path it wrote as its last line, which is the handle the
+# off-site copy needs. `tee` so the human-readable output still reaches the log.
+DUMP=$(sh infra/backup/backup.sh "$APP_DIR/backups" | tee /dev/stderr | tail -n 1)
+
+# The second layer (§16.10). The dump above is on the same disk as the database,
+# so on its own it does not survive losing the box.
+#
+# Deliberately not fatal. `backup_upload` no-ops when BACKUP_S3_BUCKET is unset,
+# and a bucket having a bad night must not turn a successful local dump into a
+# failed backup run — the copy that exists is worth more than the complaint about
+# the copy that does not. `|| true` keeps the exit status honest about the thing
+# that actually matters, which is whether a dump was taken.
+if [ -f "$DUMP" ]; then
+    docker compose -f "$APP_DIR/infra/docker-compose.yml" exec -T web \
+        python manage.py backup_upload "/backups/$(basename "$DUMP")" --prune || true
+else
+    echo "no dump path from backup.sh; skipping the off-site copy" >&2
+fi
+
 echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) backup finished ==="

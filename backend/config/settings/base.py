@@ -865,6 +865,36 @@ BACKUP_RETENTION_DAYS = env.int("BACKUP_RETENTION_DAYS", default=7)
 # Daily dumps plus a margin for a missed run and a timezone.
 BACKUP_MAX_AGE_HOURS = env.int("BACKUP_MAX_AGE_HOURS", default=36)
 
+# The off-provider copy (§16.10, and the second row of the table in
+# Docs/Runbooks/Backup-Restore.md).
+#
+# The nightly dump lands next to the database it is a copy of. That survives a
+# dropped table, a bad migration and a corrupted index — and none of the failures
+# where the disk, the VM or the account goes away, which are the ones the word
+# "backup" is usually taken to cover. Empty disables the upload and leaves the
+# local dump as the only copy.
+#
+# **This must not be the media bucket.** `AWS_STORAGE_BUCKET_NAME` is served
+# publicly through `MEDIA_CDN_BASE_URL` so a child's illustrations can load, and
+# a database dump is every family in the product: their names, their children's
+# names, their memories. Putting one behind a public CDN would be the single
+# worst mistake available in this file, and it is one autocomplete away, so
+# `manage.py backup_upload` refuses to run when the two names match rather than
+# trusting this comment to be read.
+BACKUP_S3_BUCKET = env("BACKUP_S3_BUCKET", default="")
+# Where dumps sit inside that bucket. A prefix rather than the root so the bucket
+# can hold other operational copies later without them being mistaken for dumps
+# by the retention sweep, which only ever deletes under this.
+BACKUP_S3_PREFIX = env("BACKUP_S3_PREFIX", default="db/")
+# Credentials for it. They default to the media bucket's because on R2 one token
+# covers the account, and a second set of blanks nobody filled in is a backup
+# that silently never uploaded. Override when the backup bucket has its own —
+# which is the better posture, since the media credentials live in a container
+# that serves public traffic.
+BACKUP_S3_ENDPOINT_URL = env("BACKUP_S3_ENDPOINT_URL", default=AWS_S3_ENDPOINT_URL)
+BACKUP_S3_ACCESS_KEY_ID = env("BACKUP_S3_ACCESS_KEY_ID", default=AWS_ACCESS_KEY_ID)
+BACKUP_S3_SECRET_ACCESS_KEY = env("BACKUP_S3_SECRET_ACCESS_KEY", default=AWS_SECRET_ACCESS_KEY)
+
 # Deployment-level defaults for `apps.common.flags` (§16.10). A `FeatureFlag` row
 # still wins over anything here — the point of the row is that it outruns a
 # deploy — so this is the baseline a box starts from, not an override.

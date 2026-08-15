@@ -434,6 +434,39 @@ class Command(BaseCommand):
             )
         checks.append(Check("durability.backup_freshness", verdict, detail))
 
+        # The second copy, and the one misconfiguration of it that would be a
+        # disaster rather than a gap.
+        #
+        # Deliberately a settings check and not a bucket listing: it runs without
+        # `--live`, costs nothing, and the thing most worth catching is knowable
+        # offline. A dump is every family in the product; the media bucket is
+        # served publicly through the CDN so a four-year-old's illustrations can
+        # load. Pointing one at the other is one autocomplete away in a `.env`,
+        # and it would be discovered by somebody other than us.
+        backup_bucket = str(settings.BACKUP_S3_BUCKET or "").strip()
+        media_bucket = str(settings.AWS_STORAGE_BUCKET_NAME or "").strip()
+        if backup_bucket and backup_bucket == media_bucket:
+            verdict, detail = (
+                FAIL,
+                f"BACKUP_S3_BUCKET is the media bucket ({backup_bucket}), which is served "
+                "publicly over the CDN. A dump there puts every family's data behind a "
+                "public URL. Use a separate, private bucket.",
+            )
+        elif not backup_bucket:
+            verdict, detail = (
+                WARN,
+                "BACKUP_S3_BUCKET is unset, so the only dump is on the same disk as the "
+                "database. That survives a dropped table and not a lost box "
+                "(Docs/Runbooks/Backup-Restore.md).",
+            )
+        else:
+            verdict, detail = (
+                OK,
+                f"dumps are copied off the box to {backup_bucket}, "
+                f"kept {settings.BACKUP_RETENTION_DAYS} days",
+            )
+        checks.append(Check("durability.backup_offsite", verdict, detail))
+
         # The one thing this command genuinely cannot determine: whether a restore
         # has ever been *done*. It reports the honest answer rather than a
         # comfortable one — see the runbook's drill log, which is where the

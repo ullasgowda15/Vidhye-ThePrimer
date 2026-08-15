@@ -241,6 +241,42 @@ class TestEachCheckCatchesItsOwnFailure:
         assert "FAIL  durability.backup_freshness" in output
         assert code == 1
 
+    def test_pointing_the_backup_bucket_at_the_public_media_bucket_blocks_a_launch(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """The worst single line available in a `.env`, caught before the cron runs.
+
+        `AWS_STORAGE_BUCKET_NAME` is served through the CDN so a four-year-old's
+        illustrations load without a credential. A database dump is every family
+        in the product. S3 accepts the upload, the CDN serves it, and nothing
+        downstream is capable of noticing — so this has to be a refusal here and
+        in `backup_upload`, not a comment in `settings/base.py`.
+        """
+        settings.AWS_STORAGE_BUCKET_NAME = "primer-media"
+        settings.BACKUP_S3_BUCKET = "primer-media"
+
+        output, code = run()
+        assert "FAIL  durability.backup_offsite" in output
+        assert code == 1
+
+    def test_no_offsite_bucket_is_a_warning_rather_than_a_refusal(
+        self, launchable: None, settings: Any
+    ) -> None:
+        """One copy is a real backup; it just is not two. Same posture as a
+        missing dump — a preflight that refused would stop being run."""
+        settings.BACKUP_S3_BUCKET = ""
+
+        output, code = run()
+        assert "WARN  durability.backup_offsite" in output
+        assert code == 0
+
+    def test_a_separate_private_bucket_passes(self, launchable: None, settings: Any) -> None:
+        settings.AWS_STORAGE_BUCKET_NAME = "primer-media"
+        settings.BACKUP_S3_BUCKET = "primer-backups"
+
+        output, _ = run()
+        assert "OK    durability.backup_offsite" in output
+
     def test_no_dump_at_all_is_a_warning_rather_than_a_refusal(
         self, launchable: None, settings: Any, tmp_path: Any
     ) -> None:
