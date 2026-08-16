@@ -149,8 +149,15 @@ Two related settings, for completeness:
       calls each vendor; the Gemini image probe draws one picture and costs cents.
 - [ ] `curl https://<api-host>/api/health/` returns `{"status":"ok",...}`
 - [ ] `/api/docs/` renders
-- [ ] `python manage.py createsuperuser` (one-off shell), then log into `/admin/`
-- [ ] Create a Child + Companion in admin — no errors
+- [ ] `python manage.py createsuperuser` (one-off shell)
+- [ ] `python manage.py admax_enroll <that-email>` (same shell), then add the printed
+      seed to an authenticator app. **The seed is shown once and is not
+      recoverable** — if it is lost, re-run with `--reset`.
+- [ ] Sign in at **`/admax`** — email + password, then the six-digit code — and
+      confirm the metrics render. This is the ops dashboard in production; the
+      Django admin at `/admin/` is *not* the way in, and is expected to look
+      broken there because this image collects no static files (which is why
+      `/admax` carries all of its own CSS inline).
 - [ ] Worker logs show it connected to the broker
 - [ ] The PWA loads and its health dot reads `ok`
 

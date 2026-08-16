@@ -36,7 +36,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.shortcuts import render
 from django.utils import timezone
 
-from apps.analytics import cost, metrics
+from apps.analytics import budget, cost, metrics
 from apps.analytics.models import Event, GenerationCost
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ WINDOWS = (7, 14, 30, 90)
 DEFAULT_DAYS = 7
 
 
-def _days_from(request: HttpRequest) -> int:
+def days_from(request: HttpRequest) -> int:
     """`?days=` if it is one of the offered windows, else the default.
 
     Clamped to the list rather than to a range: an arbitrary `?days=100000` is a
@@ -71,32 +71,36 @@ def metrics_dashboard(request: HttpRequest) -> HttpResponse:
     403 with no way forward, and so this page's idea of "staff" is the same one
     `/admin/` uses.
     """
-    days = _days_from(request)
+    return render(request, "analytics/metrics.html", dashboard_context(days_from(request)))
+
+
+def dashboard_context(days: int) -> dict[str, Any]:
+    """Every number both dashboards render, computed once.
+
+    `/admin/metrics` and `/admax` (`apps.analytics.admax`) are two renderings of
+    one page, and this is the seam that keeps them one page. The same rule
+    `as_text` already follows, for the same reason: a second dashboard with its
+    own arithmetic is a second set of numbers, and the first time they disagree
+    nobody will know which is the metric.
+    """
     window = metrics.Window.last(days)
-
-    snapshot = metrics.snapshot(window)
-    spend = cost.cost_per_session(since=window.since, until=window.until)
-
-    return render(
-        request,
-        "analytics/metrics.html",
-        {
-            "days": days,
-            "windows": WINDOWS,
-            "window": window,
-            "snapshot": snapshot,
-            "targets": TARGETS,
-            # The cohort table's column headings. Built here rather than in the
-            # template because Django's template language cannot count, and a
-            # hard-coded `W1 W2 W3 W4` would silently stop matching the cells the
-            # day `COHORT_WEEKS` changes.
-            "cohort_offsets": range(1, metrics.COHORT_WEEKS + 1),
-            "spend": spend,
-            "cost_rows": _recent_spans(),
-            "silent": sorted(Event.NAMES - set(metrics.names_emitted())),
-            "generated_at": timezone.now(),
-        },
-    )
+    return {
+        "days": days,
+        "windows": WINDOWS,
+        "window": window,
+        "snapshot": metrics.snapshot(window),
+        "targets": TARGETS,
+        # The cohort table's column headings. Built here rather than in the
+        # template because Django's template language cannot count, and a
+        # hard-coded `W1 W2 W3 W4` would silently stop matching the cells the
+        # day `COHORT_WEEKS` changes.
+        "cohort_offsets": range(1, metrics.COHORT_WEEKS + 1),
+        "spend": cost.cost_per_session(since=window.since, until=window.until),
+        "cost_rows": _recent_spans(),
+        "breaker": budget.state(),
+        "silent": sorted(Event.NAMES - set(metrics.names_emitted())),
+        "generated_at": timezone.now(),
+    }
 
 
 #: §22.3's early targets, so a number is read against the thing it is supposed to
@@ -269,8 +273,6 @@ def _breaker_line() -> str:
     `$0.00 of $50.00` would be reporting the safest-looking number precisely when
     nothing is being protected.
     """
-    from apps.analytics import budget
-
     state = budget.state()
     if not state.available:
         return "  NOT ENFORCING - the spend counter is unreadable (Redis). No cap is in force."

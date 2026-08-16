@@ -13,6 +13,7 @@ from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from apps.analytics import admax
 from apps.analytics.internal import metrics_dashboard
 from apps.common.views import HealthView
 
@@ -26,6 +27,22 @@ urlpatterns = [
     # generated TS client, so the parent app cannot call it even by accident.
     path("admin/metrics", metrics_dashboard, name="internal-metrics"),
     path("admin/", admin.site.urls),
+    # §22's dashboard again, behind its own two-factor sign-in (`apps.analytics.admax`).
+    #
+    # `/admin/metrics` above is the same numbers, and in production it is
+    # effectively unreachable: `staff_member_required` bounces to the Django admin
+    # login, whose stylesheets are never collected into the image. These four
+    # routes depend on nothing from `django.contrib.admin` — their own login, their
+    # own session keys, all CSS inline — so they work in an environment that serves
+    # no static files at all.
+    #
+    # Outside `api/v1/` for the same reason `/admin/metrics` is: §5.6 keeps ops
+    # telemetry strictly apart from the parent API, and living outside the versioned
+    # prefix keeps it out of the OpenAPI schema and the generated TS client.
+    path("admax", admax.dashboard, name="admax"),
+    path("admax/login", admax.login, name="admax-login"),
+    path("admax/verify", admax.verify, name="admax-verify"),
+    path("admax/logout", admax.logout, name="admax-logout"),
     path("api/health/", HealthView.as_view(), name="health"),
     path(API_V1, include("apps.accounts.urls")),
     path(API_V1, include("apps.profiles.urls")),

@@ -1,0 +1,32 @@
+{% extends "analytics/admax_base.html" %}
+{% comment %}
+Step 2 of 2: something held.
+
+`inputmode="numeric"` and `autocomplete="one-time-code"` are what let a phone
+offer the code from its own notification rather than making somebody retype six
+digits inside a thirty-second window.
+{% endcomment %}
+{% block title %}Verification code — The Primer ops{% endblock %}
+
+{% block body %}
+<form class="card" method="post" action="">
+  {% csrf_token %}
+  <h1>Verification code</h1>
+  <p class="sub">Step 2 of 2 · from your authenticator app</p>
+
+  {% if not locked %}
+    <label for="code">Six-digit code</label>
+    <input id="code" class="code" name="code" type="text" inputmode="numeric"
+           pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required autofocus>
+    <button type="submit">Sign in</button>
+  {% endif %}
+
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+  <p class="sub muted" style="margin-top:1.5rem">
+    Each code works once. If your phone's clock has drifted more than about
+    30 seconds the code will not match — correct the clock rather than retrying.
+    <a href="{% url 'admax-login' %}">Start again</a>.
+  </p>
+</form>
+{% endblock %}

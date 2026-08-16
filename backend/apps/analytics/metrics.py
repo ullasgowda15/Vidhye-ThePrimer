@@ -679,7 +679,7 @@ def world_popularity(window: Window, *, limit: int = 12) -> list[dict[str, Any]]
         key = str(world or "")
         completed[key] = completed.get(key, 0) + 1
 
-    rows = [
+    rows: list[dict[str, Any]] = [
         {
             "world": world,
             "started": count,
@@ -690,8 +690,9 @@ def world_popularity(window: Window, *, limit: int = 12) -> list[dict[str, Any]]
         for world, count in started.items()
     ]
     # Most-played first, then by name so two equally-played worlds do not swap
-    # places between refreshes.
-    rows.sort(key=lambda row: (-row["started"], row["world"]))
+    # places between refreshes. Sorted on `started` rather than on the dict, whose
+    # values are deliberately heterogeneous.
+    rows.sort(key=lambda row: (-int(row["started"]), str(row["world"])))
     return rows[:limit]
 
 

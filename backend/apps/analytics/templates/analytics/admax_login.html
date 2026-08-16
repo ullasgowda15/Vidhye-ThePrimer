@@ -1,0 +1,33 @@
+{% extends "analytics/admax_base.html" %}
+{% comment %}
+Step 1 of 2: something known.
+
+The error message is the same sentence for every way this can fail — wrong
+password, no such account, not staff, not enrolled. Distinguishing them here
+would turn this form into a tool for discovering who has production access. The
+server log tells them apart (`apps.analytics.admax.login`).
+{% endcomment %}
+{% block title %}Sign in — The Primer ops{% endblock %}
+
+{% block body %}
+<form class="card" method="post" action="">
+  {% csrf_token %}
+  <h1>The Primer — ops</h1>
+  <p class="sub">Step 1 of 2 · staff accounts only</p>
+
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+  <button type="submit">Continue</button>
+
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+
+  <p class="sub muted" style="margin-top:1.5rem">
+    You will be asked for a code from your authenticator app next. This sign-in is
+    separate from the Django admin and grants no access to it.
+  </p>
+</form>
+{% endblock %}

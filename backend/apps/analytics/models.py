@@ -328,6 +328,69 @@ class Event(UUIDModel):
         return f"{self.name} @ {self.ts:%Y-%m-%d %H:%M:%S}"
 
 
+class AdmaxCredential(UUIDModel):
+    """One staff account's second factor for `/admax` (§13.10, §18.6).
+
+    `/admax` is the ops dashboard that is actually reachable in production, and it
+    shows every number in §22 for every family at once. That makes it the single
+    highest-value page in the product to an attacker, and a password is one
+    phished credential away from all of it — so it gets a second factor, and the
+    factor lives here.
+
+    **Why a table of our own rather than Django's admin login.** The Django admin
+    is mounted but unusable in production (its CSS is never collected), and
+    "unlock it" would have meant serving static assets for the one surface we
+    least want people wandering around in. `/admax` therefore authenticates
+    *without* `django.contrib.auth.login`: an `/admax` session is a set of keys
+    this app wrote and nothing else, so it grants no access to `/admin/` even for
+    the same staff user. Two doors, two keys, and the one we built is the one
+    that has two locks.
+
+    **The secret is a TOTP seed (RFC 6238), base32, provisioned offline.** There
+    is no enrolment page on purpose: an enrolment endpoint is a way to *become*
+    an admin, and the whole point of this row is that becoming one requires a
+    shell. `manage.py admax_enroll` is the only writer.
+
+    **`last_step` is the replay guard.** A TOTP code is valid for a whole 30-second
+    step and often longer once drift is allowed, which is ample time for anyone
+    reading the wire to send it a second time. Recording the step a code was
+    accepted at, and refusing anything at or below it, means each code works
+    exactly once.
+
+    **`failed_attempts` / `locked_until` are on the row, not in the cache**, and
+    that is deliberate rather than lazy. Six digits is a million guesses, which is
+    hours of unattended scripting — so the lockout is the control that makes the
+    second factor worth having. `CACHES` is unconfigured in this project, so the
+    default cache is per-process memory: a counter there would reset on a deploy
+    and would count each instance separately, which is precisely the wrong
+    behaviour for a lockout. A row is shared by every instance and survives a
+    restart.
+    """
+
+    user = models.OneToOneField(
+        "accounts.User",
+        on_delete=models.CASCADE,
+        related_name="admax_credential",
+    )
+
+    #: Base32, no padding — the format every authenticator app pastes.
+    secret = models.CharField(max_length=64)
+
+    #: The TOTP step a code was last accepted at. See the class docstring.
+    last_step = models.BigIntegerField(null=True, blank=True)
+
+    failed_attempts = models.IntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        # No secret, for the reason `Event` keeps `props` out of `__str__`: this
+        # reaches log lines and admin change messages (§13.8). Here the stake is
+        # higher — the secret *is* the second factor, and a seed in a log is a
+        # second factor that has already been defeated.
+        return f"admax credential for {self.user_id}"
+
+
 class CostKind(models.TextChoices):
     """The three things a generation can spend money on (§19.9, §22.4)."""
 
