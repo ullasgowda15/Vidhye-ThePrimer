@@ -100,6 +100,9 @@ app.theprimer.xyz {
     handle /api/* {
         reverse_proxy 127.0.0.1:8000     # Django uvicorn
     }
+    handle /admax* {
+        reverse_proxy 127.0.0.1:8000     # the ops dashboard (two-factor)
+    }
     handle {
         root * /srv/primer/frontend/dist  # built PWA
         try_files {path} /index.html
@@ -107,6 +110,19 @@ app.theprimer.xyz {
     }
 }
 ```
+
+> **`/admax` needs its own `handle` block, and `/admin` deliberately does not get
+> one.** The catch-all below sends anything unmatched to `try_files {path}
+> /index.html`, so without the second block `/admax` reaches the built PWA and
+> renders the parent app's shell — Django never sees the request. This is also the
+> larger half of why the Django admin "isn't visible in production": it is not just
+> that its CSS is never collected, it is that nothing forwards `/admin` here at all.
+>
+> Leaving it that way is the right call and is worth doing on purpose. With only
+> these two blocks proxied, `/admin` is unreachable from the internet at the edge,
+> which enforces "the Django admin is not the way in" as a network fact rather than
+> as a `staff_member_required` decorator. `/admax` carries its own two-factor login
+> and all of its CSS inline, so it needs nothing else forwarded to work.
 
 > Caddy sets `X-Forwarded-Proto`, which `prod.py`'s `SECURE_PROXY_SSL_HEADER` expects — so `SECURE_SSL_REDIRECT=1` works and cookies are marked secure. Add Caddy to your `docker-compose` or run it on the host; ask me and I'll wire whichever fits `infra/`.
 

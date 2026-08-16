@@ -138,6 +138,11 @@ Two related settings, for completeness:
 - [ ] Set `VITE_API_BASE_URL` to the API origin **if** the PWA is on a different
       hostname. Same-hostname deploys need nothing — the client uses relative paths.
 - [ ] Add a SPA rewrite (`/* -> /index.html`) so `/parent` doesn't 404 on refresh
+- [ ] Route **`/admax*`** to Django alongside `/api/*`. The SPA rewrite above is a
+      catch-all, so without this the ops dashboard resolves to the parent app's
+      shell and Django never sees it. Do **not** add a route for `/admin` — leaving
+      it unforwarded is what keeps the Django admin off the internet entirely
+      (`Docs/Runbooks/Deploy-GCP.md` Step 6).
 
 ### 5. Verify
 
