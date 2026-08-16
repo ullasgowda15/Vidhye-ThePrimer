@@ -11,6 +11,17 @@ they are the five §22.3 names:
 | Completion rate | adventures finished ÷ started | ≥80% |
 | Adventures/child/week | volume of completed adventures — the North Star input | ≥3 |
 
+Those five say how well the product is doing. Four more say *why*, and they carry
+no §22.3 target because §22.3 does not name them — they are diagnostics, and a
+target invented for a diagnostic is a target nobody earned:
+
+| Metric | Question it answers |
+|---|---|
+| `funnel` | Which onboarding step lost them |
+| `active_children` | DAU / WAU / MAU and stickiness — how many are still here |
+| `retention_cohorts` | Whether retention is getting better, week-cohort by week-cohort |
+| `world_popularity` | What children actually pick, and what they finish |
+
 **Everything here reads `Event` and nothing else.** Not because the source tables
 would give a wrong answer today, but because §5.6 is a pipeline: the moment these
 are computed from `Adventure` and those from `Event`, the dashboard has two
@@ -372,6 +383,319 @@ def weekly_adventures(window: Window) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Where a family falls out, how many are still here, and what they picked
+# ---------------------------------------------------------------------------
+#
+# The four below are not in §22.3's list. They are here because §22.3's five
+# numbers say *how well* the product is doing and none of them says *why*, and
+# the four questions immediately downstream of a bad number all have the same
+# shape: which step lost them, how many children are still playing at all, does
+# the second week happen, and what did they choose. Each is computed from `Event`
+# under exactly the rules the rest of this module follows.
+
+
+#: The onboarding sequence, in the order the product actually makes a family walk
+#: it. `parent.consent_recorded` is deliberately **not** a step: it is a
+#: compliance fact that can legitimately be recorded on more than one path, and a
+#: step that some families satisfy off-funnel shows up as a drop-off that is not
+#: one. It is counted, like everything else, in `event_counts`.
+FUNNEL_STEPS: tuple[tuple[str, str], ...] = (
+    (Event.PARENT_SIGNED_UP, "Signed up"),
+    (Event.CHILD_CREATED, "Added a child"),
+    (Event.COMPANION_CREATED, "Made a companion"),
+    (Event.ONBOARDING_COMPLETED, "Finished onboarding"),
+    (Event.ADVENTURE_STARTED, "Started a first story"),
+    (Event.ADVENTURE_COMPLETED, "Finished a first story"),
+)
+
+
+def funnel(window: Window) -> list[dict[str, Any]]:
+    """The signup cohort's walk to a finished first story, step by step.
+
+    `activation` answers "how many made it all the way"; this answers "and where
+    did the rest stop", which is the only version of the question you can act on.
+    One row per `FUNNEL_STEPS` entry, carrying the count, the share of the top of
+    the funnel, **the share of the step immediately before**, and how many were
+    lost at this step. The step-to-step column is the one to read: a funnel judged
+    only against its top makes every step after a bad one look bad too.
+
+    *Cohort:* accounts that signed up inside the window — the same denominator
+    `activation` uses, and for the same reason. Reaching a later step is **not**
+    required to happen inside the window, so a parent who signed up on Sunday and
+    whose child finished on Tuesday is counted at every step they reached.
+
+    *Steps are counted independently, not nested.* A row is "parents in the cohort
+    who ever emitted this event", not "…and every event above it". The nested
+    reading guarantees a monotonic chart, which is exactly why it is the wrong one
+    here: it silently reassigns a family who skipped a step to the step they
+    skipped, and the product already enforces the order (there is no companion
+    without a child, no adventure without a companion), so the counts come out
+    monotonic on their own. **A step that reads higher than the one above it is
+    therefore not a drawing artefact — it means the step above stopped emitting**,
+    and that is worth seeing rather than smoothing away.
+    """
+    signups = set(
+        Event.objects.filter(
+            name=Event.PARENT_SIGNED_UP,
+            ts__gte=window.since,
+            ts__lt=window.until,
+            parent_id__isnull=False,
+        ).values_list("parent_id", flat=True)
+    )
+
+    rows: list[dict[str, Any]] = []
+    top = len(signups)
+    previous: int | None = None
+
+    for name, label in FUNNEL_STEPS:
+        if name == Event.PARENT_SIGNED_UP:
+            reached = top
+        else:
+            reached = (
+                Event.objects.filter(name=name, parent_id__in=signups)
+                .values("parent_id")
+                .distinct()
+                .count()
+            )
+
+        rows.append(
+            {
+                "name": name,
+                "label": label,
+                "reached": reached,
+                # `None` rather than 0.0 wherever the denominator is empty, for the
+                # reason `Rate.value` is: no-one has reached this step yet is not
+                # everyone who reached it failed.
+                "pct_of_top": round(100 * reached / top, 1) if top else None,
+                "pct_of_previous": (round(100 * reached / previous, 1) if previous else None),
+                # Floored at zero: a negative loss is the non-monotonic case above,
+                # and it is reported as the step count itself rather than as a
+                # nonsense number here.
+                "lost_here": max(previous - reached, 0) if previous is not None else 0,
+            }
+        )
+        previous = reached
+
+    return rows
+
+
+#: The two windows "active" is read over, in days. Twenty-eight rather than
+#: thirty for the monthly one, so it is exactly four of the ISO weeks every other
+#: number on the page is bucketed by — a "month" that is 30 days contains a
+#: different number of weekends depending on when you ask, and weekends are when
+#: this product is used.
+WAU_DAYS = 7
+MAU_DAYS = 28
+
+
+def _distinct_active(since: datetime.datetime, until: datetime.datetime) -> int:
+    """Children who started an adventure in `[since, until)`.
+
+    *Started*, matching `_play_dates`: being active is showing up, and requiring a
+    completion would make an engagement number partly a completion number.
+    """
+    return (
+        Event.objects.filter(
+            name=Event.ADVENTURE_STARTED,
+            ts__gte=since,
+            ts__lt=until,
+            child_id__isnull=False,
+        )
+        .values("child_id")
+        .distinct()
+        .count()
+    )
+
+
+def active_children(window: Window) -> dict[str, Any]:
+    """How many children are still playing: daily, weekly, monthly, and how sticky.
+
+    Anchored on `window.until` rather than on `now`, so the whole page describes
+    one moment and a 30-day view does not quietly mix a 30-day funnel with a
+    today-shaped DAU.
+
+    **`avg_dau` is the number to read, not `dau`.** A single day's DAU on an alpha
+    with tens of children is mostly noise about which evening you looked, so the
+    average over the window is reported beside it and is what `stickiness` uses.
+    The average divides by **every day in the window**, including the days nobody
+    played — dividing by the days that had activity would report a product used
+    once a week as though its quiet days did not exist.
+
+    **`stickiness` is `avg_dau / wau`** — of the children who played this week, the
+    share who play on any given day. For a bedtime product a low number is not
+    automatically bad news, which is exactly why it is reported as a ratio to be
+    read rather than against a target this product has not earned yet.
+    """
+    until = window.until
+    day = datetime.timedelta(days=1)
+
+    rows = (
+        Event.objects.filter(
+            name=Event.ADVENTURE_STARTED,
+            ts__gte=window.since,
+            ts__lt=window.until,
+            child_id__isnull=False,
+        )
+        .annotate(day=TruncDate("ts"))
+        .values_list("day", "child_id")
+        .distinct()
+    )
+    per_day: dict[datetime.date, set[Any]] = {}
+    for played_on, child_key in rows:
+        per_day.setdefault(played_on, set()).add(child_key)
+
+    # At least one, so a sub-day window cannot divide by zero.
+    days_in_window = max((window.until - window.since).days, 1)
+    avg_dau = sum(len(children) for children in per_day.values()) / days_in_window
+
+    wau = _distinct_active(until - WAU_DAYS * day, until)
+    return {
+        "dau": _distinct_active(until - day, until),
+        "avg_dau": round(avg_dau, 2),
+        "wau": wau,
+        "mau": _distinct_active(until - MAU_DAYS * day, until),
+        "days_in_window": days_in_window,
+        "days_with_play": len(per_day),
+        "stickiness": round(avg_dau / wau, 3) if wau else None,
+        "wau_days": WAU_DAYS,
+        "mau_days": MAU_DAYS,
+    }
+
+
+#: How many weeks a cohort is followed for after its first story. Four, because
+#: the question this table exists to answer is "does the habit survive the first
+#: month", and a fifth column would be four weeks of waiting for one more cell.
+COHORT_WEEKS = 4
+
+
+def retention_cohorts(
+    window: Window, *, today: datetime.date | None = None
+) -> list[dict[str, Any]]:
+    """W1-W4 return rates by weekly cohort — the curve behind `w1_retention`.
+
+    `w1_retention` is one number for a whole window, which cannot answer the
+    question everyone actually asks of a young product: *is it getting better?* A
+    cohort table can, because each row is a group of children who started in the
+    same week and is never mixed with any other.
+
+    *A cohort* is the children whose **first completed story** fell in a given ISO
+    week — the same anchor `w1_retention` and `day2_return` use, so the three
+    cannot disagree about who is in what.
+
+    *A cell* is the share of that cohort who **started** an adventure during the
+    week `offset` weeks later. Started, not completed, for `_play_dates`' reason.
+
+    **An unfinished week reads `None`, never 0%.** A cohort three weeks old has no
+    W4 cell yet, and printing that as zero would draw a retention cliff that is
+    only a calendar. This is `_matured`'s rule applied per cell rather than per
+    row, which is what makes the triangle shape of the table honest.
+    """
+    today = today or _localdate(timezone.now())
+    first = _first_stories()
+    played = _play_dates()
+
+    cohorts: dict[datetime.date, list[Any]] = {}
+    for child_key, (moment, day) in first.items():
+        if not window.contains(moment):
+            continue
+        monday = day - datetime.timedelta(days=day.weekday())
+        cohorts.setdefault(monday, []).append(child_key)
+
+    table: list[dict[str, Any]] = []
+    for monday in sorted(cohorts):
+        members = cohorts[monday]
+        cells: list[dict[str, Any]] = []
+
+        for offset in range(1, COHORT_WEEKS + 1):
+            start = monday + datetime.timedelta(days=7 * offset)
+            # The week is judgeable only once all seven of its days are behind us.
+            if start + datetime.timedelta(days=7) > today:
+                cells.append({"offset": offset, "returned": None, "pct": None})
+                continue
+
+            returned = sum(
+                1
+                for child_key in members
+                if any(
+                    start + datetime.timedelta(days=within) in played.get(child_key, set())
+                    for within in range(7)
+                )
+            )
+            cells.append(
+                {
+                    "offset": offset,
+                    "returned": returned,
+                    "pct": round(100 * returned / len(members), 1) if members else None,
+                }
+            )
+
+        table.append({"week_start": monday, "size": len(members), "cells": cells})
+
+    return table
+
+
+def world_popularity(window: Window, *, limit: int = 12) -> list[dict[str, Any]]:
+    """Which worlds children choose, and which ones they finish (§4, §22.3).
+
+    The one "what are our users like" number that is free: `adventure.started`
+    already carries `world`, so this is a group-by and no new instrumentation.
+
+    Two columns, and the second is the interesting one. *Started* is what the
+    catalog and the personalizer are steering children towards; *completion rate*
+    is whether the world held them once they got there. A world that is picked
+    often and finished rarely is a content problem wearing a popularity number.
+
+    `children` is distinct children rather than adventures, because one child
+    playing the same world nine times is a fact about that child and not about the
+    world.
+
+    **Adventures with no world recorded get their own row rather than being
+    dropped**, so the column sums to the same total `completion_rate` divides. A
+    completion carries the world off its stored plan and a start carries it off
+    the personalizer, so a plan that lost the key lands in that row and reads as a
+    start with no completion — visible, rather than quietly deflating one world.
+    """
+    started_rows = Event.objects.filter(
+        name=Event.ADVENTURE_STARTED,
+        ts__gte=window.since,
+        ts__lt=window.until,
+    ).values_list("props__world", "child_id")
+
+    started: dict[str, int] = {}
+    children: dict[str, set[Any]] = {}
+    for world, child_key in started_rows:
+        key = str(world or "")
+        started[key] = started.get(key, 0) + 1
+        if child_key is not None:
+            children.setdefault(key, set()).add(child_key)
+
+    completed: dict[str, int] = {}
+    completed_rows = Event.objects.filter(
+        name=Event.ADVENTURE_COMPLETED,
+        ts__gte=window.since,
+        ts__lt=window.until,
+    ).values_list("props__world", flat=True)
+    for world in completed_rows:
+        key = str(world or "")
+        completed[key] = completed.get(key, 0) + 1
+
+    rows = [
+        {
+            "world": world,
+            "started": count,
+            "completed": completed.get(world, 0),
+            "children": len(children.get(world, set())),
+            "completion": Rate(completed.get(world, 0), count),
+        }
+        for world, count in started.items()
+    ]
+    # Most-played first, then by name so two equally-played worlds do not swap
+    # places between refreshes.
+    rows.sort(key=lambda row: (-row["started"], row["world"]))
+    return rows[:limit]
+
+
+# ---------------------------------------------------------------------------
 # Wellbeing guardrails (§22.5) — watched, never maximised
 # ---------------------------------------------------------------------------
 
@@ -494,6 +818,10 @@ def snapshot(window: Window, *, today: datetime.date | None = None) -> dict[str,
         "w1_retention": w1_retention(window, today=today),
         "completion_rate": completion_rate(window),
         "weeks": weekly_adventures(window),
+        "funnel": funnel(window),
+        "active": active_children(window),
+        "cohorts": retention_cohorts(window, today=today),
+        "worlds": world_popularity(window),
         "guardrails": guardrails(window),
         "events": event_counts(window),
     }

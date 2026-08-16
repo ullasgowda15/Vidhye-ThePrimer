@@ -121,6 +121,120 @@ There is no per-child anything on this page, on purpose (§13.8).
   a child who played for the first time this morning cannot yet have returned tomorrow.
 </p>
 
+<h2>Onboarding funnel <span class="muted">— where the signup cohort stopped</span></h2>
+<div class="wrap">
+<table>
+  <caption>The same cohort activation uses: accounts that signed up in this window, counted
+    at every step they later reached. Read the <strong>“of previous”</strong> column — a funnel
+    judged only against its top makes every step after a bad one look bad too.</caption>
+  <thead>
+    <tr>
+      <th>Step</th><th class="n">Families</th><th class="n">Of top</th>
+      <th class="n">Of previous</th><th class="n">Lost here</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for step in snapshot.funnel %}
+      <tr>
+        <td>{{ step.label }} <span class="muted"><code>{{ step.name }}</code></span></td>
+        <td class="n">{{ step.reached }}</td>
+        <td class="n muted">{% if step.pct_of_top is None %}—{% else %}{{ step.pct_of_top }}%{% endif %}</td>
+        <td class="n">{% if step.pct_of_previous is None %}—{% else %}{{ step.pct_of_previous }}%{% endif %}</td>
+        <td class="n {% if step.lost_here %}flag{% else %}muted{% endif %}">{{ step.lost_here|default:"—" }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5" class="muted">No signups in this window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="sub muted">
+  Steps are counted independently, not nested — each row is “families who ever reached this
+  step”, not “…and every step above it”. The product enforces the order, so these come out
+  monotonic on their own; a step reading <em>higher</em> than the one above it means the step
+  above has stopped emitting, which is worth seeing rather than smoothing away.
+  <code>parent.consent_recorded</code> is not a step here on purpose: it can legitimately be
+  recorded off-funnel, and would show as a drop-off that is not one.
+</p>
+
+<h2>Children still playing <span class="muted">— started an adventure</span></h2>
+<dl class="grid">
+  <div>
+    <dt>DAU <span class="muted">(last day)</span></dt>
+    <dd class="big">{{ snapshot.active.dau }}</dd>
+  </div>
+  <div>
+    <dt>Average DAU <span class="muted">(over {{ snapshot.active.days_in_window }} days)</span></dt>
+    <dd class="big">{{ snapshot.active.avg_dau|floatformat:2 }}</dd>
+  </div>
+  <div>
+    <dt>WAU <span class="muted">(last {{ snapshot.active.wau_days }} days)</span></dt>
+    <dd class="big">{{ snapshot.active.wau }}</dd>
+  </div>
+  <div>
+    <dt>MAU <span class="muted">(last {{ snapshot.active.mau_days }} days)</span></dt>
+    <dd class="big">{{ snapshot.active.mau }}</dd>
+  </div>
+  <div>
+    <dt>Stickiness <span class="muted">(avg DAU ÷ WAU)</span></dt>
+    <dd class="big">
+      {% if snapshot.active.stickiness is None %}<span class="muted">—</span>
+      {% else %}{{ snapshot.active.stickiness|floatformat:3 }}{% endif %}
+    </dd>
+  </div>
+  <div>
+    <dt>Days with any play</dt>
+    <dd class="big">{{ snapshot.active.days_with_play }} <span class="muted">/ {{ snapshot.active.days_in_window }}</span></dd>
+  </div>
+</dl>
+<p class="sub muted">
+  Read <strong>average DAU</strong>, not DAU: one evening's number on an alpha of tens of
+  children is mostly noise about which evening you looked. The average divides by
+  <em>every</em> day in the window, including the days nobody played — dividing by the days
+  that had activity would report a once-a-week product as though its quiet days did not exist.
+  There is no target on stickiness: this is a bedtime product, a low number is not
+  automatically bad news, and §22 has not earned a threshold here yet.
+</p>
+
+<h2>Retention by weekly cohort <span class="muted">— is it getting better?</span></h2>
+<div class="wrap">
+<table>
+  <caption>Children grouped by the ISO week of their <strong>first finished story</strong>, then
+    followed for four weeks. A cell counts them if they <em>started</em> an adventure that week.
+    Each row is one group of children and is never mixed with another, which is what lets you
+    compare a recent cohort against an older one.</caption>
+  <thead>
+    <tr>
+      <th>Cohort week</th><th class="n">Children</th>
+      {% for offset in cohort_offsets %}<th class="n">W{{ offset }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in snapshot.cohorts %}
+      <tr>
+        <td>{{ row.week_start|date:"j M Y" }}</td>
+        <td class="n">{{ row.size }}</td>
+        {% for cell in row.cells %}
+          <td class="n">
+            {% if cell.pct is None %}<span class="muted" title="This week has not finished yet">·</span>
+            {% else %}{{ cell.pct }}%<span class="muted"> ({{ cell.returned }})</span>{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+    {% empty %}
+      <tr><td colspan="{{ cohort_offsets|length|add:2 }}" class="muted">
+        No child has finished a first story in this window.
+      </td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="sub muted">
+  A <code>·</code> is a week that has not finished yet, not a zero. Printing an unfinished week
+  as 0% would draw a retention cliff that is only a calendar. Widen the window above to see
+  more cohorts — a 7-day window can only contain one.
+</p>
+
 <h2>Adventures per child per week <span class="muted">(§22.1 — DWA is the North Star)</span></h2>
 <div class="wrap">
 <table>
@@ -148,6 +262,42 @@ There is no per-child anything on this page, on purpose (§13.8).
 </table>
 </div>
 <p class="sub muted">Target: ≥{{ targets.per_child }} adventures per child per week.</p>
+
+<h2>Worlds children picked <span class="muted">— and whether they finished</span></h2>
+<div class="wrap">
+<table>
+  <caption>Read the completion column, not the popularity one: a world that is picked often
+    and finished rarely is a content problem wearing a popularity number. “Children” is
+    distinct children — one child playing the same world nine times is a fact about that
+    child, not about the world.</caption>
+  <thead>
+    <tr>
+      <th>World</th><th class="n">Started</th><th class="n">Children</th>
+      <th class="n">Finished</th><th class="n">Of started</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in snapshot.worlds %}
+      <tr>
+        <td>{% if row.world %}<code>{{ row.world }}</code>{% else %}<span class="muted">(no world recorded)</span>{% endif %}</td>
+        <td class="n">{{ row.started }}</td>
+        <td class="n">{{ row.children }}</td>
+        <td class="n">{{ row.completed }}</td>
+        <td class="n">{% if row.completion.pct is None %}—{% else %}{{ row.completion.pct }}%{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5" class="muted">No adventures started in this window.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="sub muted">
+  Adventures with no world recorded get their own row rather than being dropped, so this
+  column sums to the same total the completion rate above divides. A start carries its world
+  from the personalizer and a completion from the stored plan, so a plan that lost the key
+  lands in that row and reads as a start with no completion — visible, rather than quietly
+  deflating one world.
+</p>
 
 <h2>Unit economics <span class="muted">(§22.4 — a headline metric from day one)</span></h2>
 <dl class="grid">

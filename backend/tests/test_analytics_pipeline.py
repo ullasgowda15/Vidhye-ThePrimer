@@ -266,6 +266,15 @@ class TestTheInternalDashboardIsStaffOnly:
             "Cost per session",
             "Unattributed spend",
             "Unpriced generations",
+            # The four diagnostics: which step lost them, how many are still
+            # here, whether retention is improving, and what they picked. Listed
+            # here because these sections are the only place in the product where
+            # a template typo would render as a silently missing metric rather
+            # than as an error.
+            "Onboarding funnel",
+            "Children still playing",
+            "Retention by weekly cohort",
+            "Worlds children picked",
         ):
             assert heading in body, heading
 
@@ -292,6 +301,13 @@ class TestTheInternalDashboardIsStaffOnly:
         assert "Activation" in report
         assert "cost/session" in report
         assert "DWA" in report
+        # The four diagnostics render in the terminal too. `as_text` does its own
+        # string formatting over the same snapshot, so a shape it cannot format
+        # (a `None` cell, an empty funnel) raises here and nowhere else.
+        assert "Onboarding funnel" in report
+        assert "stickiness" in report
+        assert "Retention by weekly cohort" in report
+        assert "Worlds children picked" in report
 
 
 class TestTheOnboardingFunnel:

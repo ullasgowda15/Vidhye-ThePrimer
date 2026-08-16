@@ -360,6 +360,249 @@ class TestWeeklyAdventuresAndTheNorthStar:
         assert all(week["week_start"].weekday() == 0 for week in weeks)
 
 
+class TestFunnel:
+    """Where the signup cohort stopped.
+
+    The assertions that matter are about the *step-to-step* column, because that
+    is the one that names which step lost them — the share-of-top column says
+    every step after a bad one is bad too.
+    """
+
+    def _walk(self, child: Child, *, upto: str, days_ago: float = 3) -> None:
+        """Emit the funnel events a family produced, stopping after `upto`."""
+        for name, _label in metrics.FUNNEL_STEPS:
+            Event.objects.create(
+                name=name,
+                parent=child.parent,
+                child=None if name == Event.PARENT_SIGNED_UP else child,
+                ts=_at(days_ago),
+                props={},
+            )
+            if name == upto:
+                return
+
+    def test_it_names_the_step_that_lost_them(self, aarav: Child, nia: Child) -> None:
+        """Two families sign up; one stalls after making a companion.
+
+        The drop must be attributed to *finishing onboarding* — the step neither
+        reached — and not smeared across the three steps after it.
+        """
+        self._walk(aarav, upto=Event.ADVENTURE_COMPLETED)
+        self._walk(nia, upto=Event.COMPANION_CREATED)
+
+        rows = {row["name"]: row for row in metrics.funnel(metrics.Window.last(7, now=NOW))}
+
+        assert rows[Event.PARENT_SIGNED_UP]["reached"] == 2
+        assert rows[Event.COMPANION_CREATED]["reached"] == 2
+        assert rows[Event.COMPANION_CREATED]["lost_here"] == 0
+
+        stalled = rows[Event.ONBOARDING_COMPLETED]
+        assert stalled["reached"] == 1
+        assert stalled["lost_here"] == 1
+        assert stalled["pct_of_previous"] == 50.0
+        assert stalled["pct_of_top"] == 50.0
+
+        # And the steps *after* the leak convert perfectly, which is the whole
+        # point of reporting against the previous step as well as against the top.
+        assert rows[Event.ADVENTURE_STARTED]["pct_of_previous"] == 100.0
+        assert rows[Event.ADVENTURE_STARTED]["pct_of_top"] == 50.0
+
+    def test_the_cohort_is_the_window_but_reaching_a_step_is_not(self, aarav: Child) -> None:
+        """Same rule as `activation`: a parent who signed up on Sunday and whose
+        child finished on Tuesday is counted at every step they reached."""
+        Event.objects.create(name=Event.PARENT_SIGNED_UP, parent=aarav.parent, ts=_at(6), props={})
+        Event.objects.create(
+            name=Event.ADVENTURE_COMPLETED,
+            parent=aarav.parent,
+            child=aarav,
+            # After a window that closed three days ago.
+            ts=_at(1),
+            props={},
+        )
+
+        rows = {
+            row["name"]: row for row in metrics.funnel(metrics.Window(since=_at(7), until=_at(4)))
+        }
+        assert rows[Event.ADVENTURE_COMPLETED]["reached"] == 1
+
+    def test_a_family_from_another_cohort_is_not_counted(self, aarav: Child, nia: Child) -> None:
+        """The denominator is the point, here as in `activation`. Nia's family
+        signed up long before this window and must not appear in it at all."""
+        self._walk(aarav, upto=Event.ADVENTURE_COMPLETED, days_ago=2)
+        self._walk(nia, upto=Event.ADVENTURE_COMPLETED, days_ago=40)
+
+        rows = metrics.funnel(metrics.Window.last(7, now=NOW))
+        assert rows[0]["reached"] == 1
+        assert rows[-1]["reached"] == 1
+
+    def test_no_signups_reads_as_no_answer(self) -> None:
+        rows = metrics.funnel(metrics.Window.last(7, now=NOW))
+        assert [row["reached"] for row in rows] == [0] * len(metrics.FUNNEL_STEPS)
+        # Not 0% — nobody has reached the top of this funnel yet.
+        assert all(row["pct_of_top"] is None for row in rows)
+
+
+class TestActiveChildren:
+    """DAU / WAU / MAU and stickiness — how many children are still here."""
+
+    def test_the_three_windows_count_distinct_children(self, aarav: Child, nia: Child) -> None:
+        # Aarav played today and three weeks ago; Nia only three weeks ago.
+        _seed(aarav, started_on=[0.2, 20])
+        _seed(nia, started_on=[20])
+
+        active = metrics.active_children(metrics.Window.last(30, now=NOW))
+        assert active["dau"] == 1
+        assert active["wau"] == 1
+        # Both children, each counted once, despite three starts between them.
+        assert active["mau"] == 2
+
+    def test_the_average_divides_by_every_day_not_only_the_busy_ones(self, aarav: Child) -> None:
+        """The decision this metric turns on.
+
+        One child played on two of seven days. Dividing by the days that had
+        activity would report an average DAU of 1.0 — a daily-habit number for a
+        twice-a-week product.
+        """
+        _seed(aarav, started_on=[1, 3])
+
+        active = metrics.active_children(metrics.Window.last(7, now=NOW))
+        assert active["days_with_play"] == 2
+        assert active["days_in_window"] == 7
+        assert active["avg_dau"] == round(2 / 7, 2)
+
+    def test_stickiness_is_the_average_over_the_week(self, aarav: Child) -> None:
+        _seed(aarav, started_on=[1, 3])
+
+        active = metrics.active_children(metrics.Window.last(7, now=NOW))
+        # avg_dau / wau, with wau == 1: the one child playing 2 days in 7.
+        assert active["stickiness"] == round((2 / 7) / 1, 3)
+
+    def test_nobody_playing_reads_as_no_answer(self, aarav: Child) -> None:
+        active = metrics.active_children(metrics.Window.last(7, now=NOW))
+        assert (active["dau"], active["wau"], active["mau"]) == (0, 0, 0)
+        # Not 0.0 — a stickiness ratio with no weekly actives has no denominator.
+        assert active["stickiness"] is None
+
+
+class TestRetentionCohorts:
+    """The curve behind W1 retention: is it getting better, cohort by cohort?"""
+
+    def _first_story_on(self, child: Child, monday: datetime.date, *, weekday: int = 0) -> None:
+        moment = timezone.make_aware(
+            datetime.datetime.combine(
+                monday + datetime.timedelta(days=weekday), datetime.time(hour=12)
+            )
+        )
+        Event.objects.create(name=Event.ADVENTURE_STARTED, child=child, ts=moment, props={})
+        Event.objects.create(name=Event.ADVENTURE_COMPLETED, child=child, ts=moment, props={})
+
+    def _played_on(self, child: Child, day: datetime.date) -> None:
+        moment = timezone.make_aware(datetime.datetime.combine(day, datetime.time(hour=12)))
+        Event.objects.create(name=Event.ADVENTURE_STARTED, child=child, ts=moment, props={})
+
+    def _monday(self, weeks_ago: int) -> datetime.date:
+        local_today = timezone.localtime(NOW).date()
+        return local_today - datetime.timedelta(days=local_today.weekday() + 7 * weeks_ago)
+
+    def test_a_cohort_that_came_back_the_next_week_reads_w1(self, aarav: Child) -> None:
+        cohort_week = self._monday(6)
+        self._first_story_on(aarav, cohort_week)
+        self._played_on(aarav, cohort_week + datetime.timedelta(days=8))
+
+        table = metrics.retention_cohorts(metrics.Window.last(90, now=NOW))
+        assert len(table) == 1
+        row = table[0]
+        assert (row["week_start"], row["size"]) == (cohort_week, 1)
+        assert row["cells"][0] == {"offset": 1, "returned": 1, "pct": 100.0}
+        # Weeks 2-4 elapsed with no play, which is a real zero and not a gap.
+        assert [cell["pct"] for cell in row["cells"][1:]] == [0.0, 0.0, 0.0]
+
+    def test_a_week_that_has_not_finished_yet_is_not_a_zero(self, aarav: Child) -> None:
+        """`_matured`'s rule, applied per cell. A cohort two weeks old has no W3 or
+        W4 cell, and drawing those as 0% would be a retention cliff made entirely
+        of calendar."""
+        cohort_week = self._monday(2)
+        self._first_story_on(aarav, cohort_week)
+
+        table = metrics.retention_cohorts(metrics.Window.last(90, now=NOW))
+        cells = table[0]["cells"]
+        # W1 has fully elapsed and is a true zero; W3 and W4 have not happened.
+        assert cells[0]["pct"] == 0.0
+        assert cells[2]["returned"] is None
+        assert cells[3]["returned"] is None
+
+    def test_cohorts_are_separate_groups_and_never_mixed(self, aarav: Child, nia: Child) -> None:
+        """The property that makes the table worth having: two children who started
+        in different weeks are two rows, so an improving product is visible."""
+        older, newer = self._monday(6), self._monday(5)
+        self._first_story_on(aarav, older)
+        self._first_story_on(nia, newer)
+        # Only the newer cohort came back.
+        self._played_on(nia, newer + datetime.timedelta(days=8))
+
+        table = metrics.retention_cohorts(metrics.Window.last(90, now=NOW))
+        assert [row["week_start"] for row in table] == [older, newer]
+        assert [row["size"] for row in table] == [1, 1]
+        assert table[0]["cells"][0]["pct"] == 0.0
+        assert table[1]["cells"][0]["pct"] == 100.0
+
+    def test_a_child_with_no_finished_story_is_in_no_cohort(self, aarav: Child) -> None:
+        """Cohorts are anchored on the *first completed* story, the same anchor
+        `w1_retention` and `day2_return` use, so the three cannot disagree."""
+        _seed(aarav, started_on=[30, 29])
+
+        assert metrics.retention_cohorts(metrics.Window.last(90, now=NOW)) == []
+
+
+class TestWorldPopularity:
+    """What children pick, and what they finish."""
+
+    def _adventure(self, child: Child, world: str, *, completed: bool, days_ago: float = 1) -> None:
+        Event.objects.create(
+            name=Event.ADVENTURE_STARTED, child=child, ts=_at(days_ago), props={"world": world}
+        )
+        if completed:
+            Event.objects.create(
+                name=Event.ADVENTURE_COMPLETED,
+                child=child,
+                ts=_at(days_ago),
+                props={"world": world},
+            )
+
+    def test_a_popular_world_nobody_finishes_is_visible_as_one(
+        self, aarav: Child, nia: Child
+    ) -> None:
+        """The whole reason the completion column is there. `tide_pools` is picked
+        most and finished least, which a popularity ranking alone would hide."""
+        for _ in range(3):
+            self._adventure(aarav, "tide_pools", completed=False)
+        self._adventure(nia, "whispering_woods", completed=True)
+
+        rows = metrics.world_popularity(metrics.Window.last(7, now=NOW))
+        assert [row["world"] for row in rows] == ["tide_pools", "whispering_woods"]
+        assert rows[0]["completion"].pct == 0.0
+        assert rows[1]["completion"].pct == 100.0
+
+    def test_children_are_counted_once_however_often_they_replay(self, aarav: Child) -> None:
+        """One child playing the same world nine times is a fact about that child,
+        not about the world."""
+        for _ in range(9):
+            self._adventure(aarav, "tide_pools", completed=True)
+
+        rows = metrics.world_popularity(metrics.Window.last(7, now=NOW))
+        assert (rows[0]["started"], rows[0]["children"]) == (9, 1)
+
+    def test_an_adventure_with_no_world_gets_its_own_row(self, aarav: Child) -> None:
+        """Dropped rows would stop this column summing to the same total the
+        headline completion rate divides."""
+        self._adventure(aarav, "", completed=False)
+        self._adventure(aarav, "tide_pools", completed=True)
+
+        rows = metrics.world_popularity(metrics.Window.last(7, now=NOW))
+        assert sum(row["started"] for row in rows) == 2
+        assert "" in [row["world"] for row in rows]
+
+
 class TestGuardrails:
     """§22.5 — watched and capped, never maximised."""
 
@@ -453,7 +696,32 @@ class TestAgainstRealPlay:
             "w1_retention",
             "completion_rate",
             "weeks",
+            "funnel",
+            "active",
+            "cohorts",
+            "worlds",
             "guardrails",
             "events",
         }
         assert dict(snapshot["events"])[Event.ADVENTURE_COMPLETED] == 1
+
+    def test_a_played_adventure_lands_in_the_active_count_and_a_world(
+        self, aarav: Child, fake_ai: Any
+    ) -> None:
+        """The two diagnostics that read `props` rather than just event names.
+
+        `world_popularity` is the only metric in the module that depends on a prop
+        the orchestrator chose to send, so it is the one that can rot silently when
+        that call site is edited. Playing for real is the only way to catch that.
+        """
+        finish(play(aarav))
+
+        window = metrics.Window.last(7, now=timezone.now())
+        assert metrics.active_children(window)["wau"] == 1
+
+        worlds = metrics.world_popularity(window)
+        assert len(worlds) == 1
+        # A real world key, not the "(no world recorded)" bucket — which is what
+        # this test exists to tell apart.
+        assert worlds[0]["world"]
+        assert (worlds[0]["started"], worlds[0]["completed"]) == (1, 1)

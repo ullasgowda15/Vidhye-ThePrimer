@@ -86,6 +86,11 @@ def metrics_dashboard(request: HttpRequest) -> HttpResponse:
             "window": window,
             "snapshot": snapshot,
             "targets": TARGETS,
+            # The cohort table's column headings. Built here rather than in the
+            # template because Django's template language cannot count, and a
+            # hard-coded `W1 W2 W3 W4` would silently stop matching the cells the
+            # day `COHORT_WEEKS` changes.
+            "cohort_offsets": range(1, metrics.COHORT_WEEKS + 1),
             "spend": spend,
             "cost_rows": _recent_spans(),
             "silent": sorted(Event.NAMES - set(metrics.names_emitted())),
@@ -156,8 +161,27 @@ def as_text(window_days: int = DEFAULT_DAYS, *, now: datetime.datetime | None = 
         _rate_line("W1 retention", snapshot["w1_retention"], TARGETS["w1_retention"]),
         _rate_line("Completion rate", snapshot["completion_rate"], TARGETS["completion_rate"]),
         "",
-        "Adventures per child per week (22.1: DWA = children with 3+)",
+        "Onboarding funnel - where the signup cohort stopped",
     ]
+    lines += _funnel_lines(snapshot["funnel"])
+
+    active = snapshot["active"]
+    stickiness = f"{active['stickiness'] * 100:.0f}%" if active["stickiness"] is not None else "-"
+    lines += [
+        "",
+        "Children still playing (started an adventure)",
+        f"  DAU (last day)          {active['dau']}",
+        f"  avg DAU over {active['days_in_window']:>3} days   {active['avg_dau']:.2f}"
+        f"   ({active['days_with_play']} of those days had any play)",
+        f"  WAU (last {active['wau_days']} days)       {active['wau']}",
+        f"  MAU (last {active['mau_days']} days)      {active['mau']}",
+        f"  stickiness              {stickiness}   (avg DAU / WAU)",
+        "",
+        "Retention by weekly cohort (W1-W4 after their first story)",
+    ]
+    lines += _cohort_lines(snapshot["cohorts"])
+
+    lines += ["", "Adventures per child per week (22.1: DWA = children with 3+)"]
 
     if not snapshot["weeks"]:
         lines.append("  no completed adventures in this window")
@@ -172,6 +196,17 @@ def as_text(window_days: int = DEFAULT_DAYS, *, now: datetime.datetime | None = 
             f"{week['adventures']} adventures / {children} "
             f"{'child' if children == 1 else 'children'}"
             f" = {per_child} per child   DWA {week['dwa']}"
+        )
+
+    lines += ["", "Worlds children picked (started, and whether they finished)"]
+    if not snapshot["worlds"]:
+        lines.append("  no adventures started in this window")
+    for row in snapshot["worlds"]:
+        finished = f"{row['completion'].pct:.0f}%" if row["completion"].pct is not None else "-"
+        lines.append(
+            f"  {(row['world'] or '(unrecorded)'):<22} "
+            f"{row['started']:>4} started  {row['children']:>3} children  "
+            f"finished {finished:>5} ({row['completed']}/{row['started']})"
         )
 
     lines += ["", "Unit economics (22.4)"]
@@ -248,6 +283,50 @@ def _breaker_line() -> str:
         f"({state.fraction * 100:.0f}%) this {state.window_s}s window, "
         f"resets in {state.resets_in_s}s"
     )
+
+
+def _funnel_lines(rows: list[dict[str, Any]]) -> list[str]:
+    """The funnel, one line per step, with the step-to-step conversion.
+
+    Both percentages, always. The share of the top is what says how big the
+    problem is; the share of the *previous* step is what says whose problem it is,
+    and a funnel printed only against its top makes every step after a bad one
+    look bad too. `lost_here` is printed as a count of families rather than as a
+    percentage, because that is the number you go and talk to.
+    """
+    if not rows or not rows[0]["reached"]:
+        return ["  no signups in this window"]
+
+    lines = []
+    for row in rows:
+        of_top = f"{row['pct_of_top']:.0f}%" if row["pct_of_top"] is not None else "-"
+        step = f"{row['pct_of_previous']:.0f}%" if row["pct_of_previous"] is not None else "-"
+        lost = f"  lost {row['lost_here']}" if row["lost_here"] else ""
+        lines.append(
+            f"  {row['label']:<24} {row['reached']:>4}   "
+            f"{of_top:>5} of top   {step:>5} of previous{lost}"
+        )
+    return lines
+
+
+def _cohort_lines(table: list[dict[str, Any]]) -> list[str]:
+    """The retention triangle, in text.
+
+    An unfinished week prints `.` and not `0%` — the cell has not happened yet,
+    and a terminal is no more entitled to draw a cliff out of a calendar than the
+    HTML page is.
+    """
+    if not table:
+        return ["  no child has finished a first story in this window"]
+
+    columns = "  ".join(f"W{offset:<4}" for offset in range(1, metrics.COHORT_WEEKS + 1))
+    lines = ["  cohort        n  " + columns]
+    for row in table:
+        cells = "  ".join(
+            f"{cell['pct']:>4.0f}%" if cell["pct"] is not None else "    ." for cell in row["cells"]
+        )
+        lines.append(f"  {row['week_start']}  {row['size']:>3}  {cells}")
+    return lines
 
 
 def _rate_line(label: str, rate: metrics.Rate, target: float) -> str:
