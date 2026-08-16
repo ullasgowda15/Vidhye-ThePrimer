@@ -111,18 +111,20 @@ app.theprimer.xyz {
 }
 ```
 
-> **`/admax` needs its own `handle` block, and `/admin` deliberately does not get
-> one.** The catch-all below sends anything unmatched to `try_files {path}
-> /index.html`, so without the second block `/admax` reaches the built PWA and
-> renders the parent app's shell — Django never sees the request. This is also the
-> larger half of why the Django admin "isn't visible in production": it is not just
-> that its CSS is never collected, it is that nothing forwards `/admin` here at all.
+> **`/admax` needs its own `handle` block.** The catch-all below sends anything
+> unmatched to `try_files {path} /index.html`, so without it `/admax` reaches the
+> built PWA and renders the parent app's shell — Django never sees the request, and
+> the response is a React Router 404 carrying **HTTP 200**, which hides the problem
+> from any check that looks at the status code.
 >
-> Leaving it that way is the right call and is worth doing on purpose. With only
-> these two blocks proxied, `/admin` is unreachable from the internet at the edge,
-> which enforces "the Django admin is not the way in" as a network fact rather than
-> as a `staff_member_required` decorator. `/admax` carries its own two-factor login
-> and all of its CSS inline, so it needs nothing else forwarded to work.
+> **Correction, 2026-08-16.** An earlier version of this note claimed nothing
+> forwards `/admin` in production and that the admin was therefore unreachable.
+> That was inferred from the example above rather than read off the box, and it is
+> wrong: the deployed Caddyfile *does* proxy `/admin/*`. The Django admin is
+> reachable; it renders unstyled because no `collectstatic` runs, which is the
+> whole of "the admin isn't visible in production". The real config is recorded in
+> `Production-Facts.md`, and the exposure is assessed in `../Security-Notes.md` —
+> `infra/admax-setup.sh --close-admin` closes it if that is wanted.
 
 > Caddy sets `X-Forwarded-Proto`, which `prod.py`'s `SECURE_PROXY_SSL_HEADER` expects — so `SECURE_SSL_REDIRECT=1` works and cookies are marked secure. Add Caddy to your `docker-compose` or run it on the host; ask me and I'll wire whichever fits `infra/`.
 

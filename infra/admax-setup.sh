@@ -29,9 +29,11 @@
 set -euo pipefail
 
 ENROLL_EMAIL=""
+CLOSE_ADMIN=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --enroll) ENROLL_EMAIL="${2:-}"; shift 2 ;;
+        --close-admin) CLOSE_ADMIN=1; shift ;;
         -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -126,6 +128,49 @@ case "$INSERTED" in
     *)          die "unexpected result from the edit step: '$INSERTED'" ;;
 esac
 
+if [[ "$CLOSE_ADMIN" == "1" ]]; then
+    bold "3b. Closing /admin at the edge (--close-admin)"
+    # Opt-in, never automatic. The deployed Caddyfile proxies `/admin/*`, so the
+    # Django admin is reachable in production behind a password and nothing else
+    # — no second factor — while /admax shows the same data behind two. Removing
+    # the route makes the admin unreachable from the internet without touching
+    # Django, which is the strongest version of "the admin is not the way in".
+    #
+    # It is a flag rather than the default because it is *destructive to a
+    # workflow*: DEPLOY.md's own checklist uses /admin to create a Child and a
+    # Companion by hand. Anyone relying on that loses it, and only the operator
+    # knows whether they are.
+    CLOSED="$(sudo python3 - "$CADDYFILE" <<'PY'
+import re, sys, pathlib
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+
+# Comment the block out rather than deleting it: the next person to read this
+# file should be able to see that the exposure was considered and closed, and be
+# able to put it back in one edit.
+pattern = re.compile(r'^([ \t]*)handle\s+/admin/\*\s*\{[^}]*\}\s*\n', re.M)
+match = pattern.search(text)
+if not match:
+    print("absent")
+    raise SystemExit
+
+commented = "".join(
+    ("#" + line if line.strip() else line) + "\n"
+    for line in match.group(0).rstrip("\n").split("\n")
+)
+header = f"{match.group(1)}# closed: /admax is the way in (two-factor). Uncomment to restore.\n"
+path.write_text(text[: match.start()] + header + commented + text[match.end() :])
+print("closed")
+PY
+)"
+    case "$CLOSED" in
+        closed) ok "commented out the 'handle /admin/*' block" ;;
+        absent) ok "no /admin route to close" ;;
+        *)      warn "could not close /admin automatically — leaving it as is" ;;
+    esac
+fi
+
 bold "4. Validating, then reloading"
 
 # The rollback is the point. A Caddyfile that does not parse takes the whole site
@@ -165,13 +210,24 @@ fi
 
 bold "6. Second factor"
 
-# Mirrors `make migrate`: manage.py runs from the repo venv. Falls back to the
-# compose service if this box runs the web tier in Docker instead.
+# The web tier is a container on the real box (`primer-web-1`), not a venv — the
+# runbook's `make` targets assume a venv that is not there. Resolve the container
+# by name rather than through `docker compose`, because compose derives its
+# project name from the directory it is invoked in (`app`), which does not match
+# the name the containers were actually created under (`primer`), so
+# `compose exec` finds nothing.
 run_manage() {
-    if [[ -x "$APP_DIR/.venv/bin/python" ]]; then
+    local web
+    web="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '(^|[-_])web(-[0-9]+)?$' | head -1)"
+
+    if [[ -n "$web" ]]; then
+        docker exec -i "$web" python manage.py "$@"
+    elif [[ -x "$APP_DIR/.venv/bin/python" ]]; then
         (cd "$APP_DIR/backend" && "$APP_DIR/.venv/bin/python" manage.py "$@")
     else
-        docker compose -f "$APP_DIR/infra/docker-compose.yml" exec -T web python manage.py "$@"
+        echo "  could not find a web container or a venv — run manage.py yourself:" >&2
+        echo "    docker exec -it <web-container> python manage.py $*" >&2
+        return 1
     fi
 }
 
