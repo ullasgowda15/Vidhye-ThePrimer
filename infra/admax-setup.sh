@@ -30,9 +30,13 @@ set -euo pipefail
 
 ENROLL_EMAIL=""
 CLOSE_ADMIN=0
+# Empty or "1"; expanded as `${RESET:+--reset}` so an unset value adds no argument
+# at all rather than an empty string manage.py would reject.
+RESET=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --enroll) ENROLL_EMAIL="${2:-}"; shift 2 ;;
+        --reset) RESET=1; shift ;;
         --close-admin) CLOSE_ADMIN=1; shift ;;
         -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -233,12 +237,21 @@ run_manage() {
 
 if [[ -n "$ENROLL_EMAIL" ]]; then
     echo
-    # `|| true`: being enrolled already is a normal outcome, not a failure, and
-    # must not abort the script under `set -e` after everything else succeeded.
-    run_manage admax_enroll "$ENROLL_EMAIL" || true
-    echo
-    warn "the seed above is shown ONCE and is not recoverable — add it to your"
-    warn "authenticator app now. If it is lost, re-run with --reset."
+    # Success and failure are reported differently, which the first version of
+    # this got wrong: it ran the command with `|| true` and then printed "the seed
+    # above is shown ONCE" unconditionally — including when the command had
+    # refused and printed no seed at all. A warning about a secret that is not on
+    # screen teaches the reader to distrust the warnings that matter.
+    if run_manage admax_enroll "$ENROLL_EMAIL" ${RESET:+--reset}; then
+        echo
+        warn "the seed above is shown ONCE and is not recoverable — put it in your"
+        warn "authenticator app before closing this terminal."
+    else
+        echo
+        warn "no new seed was issued — see the message above."
+        warn "If it says 'already enrolled' and you do NOT have the code in your"
+        warn "authenticator app, re-run this script adding:  --reset"
+    fi
 else
     echo "  Not enrolled yet? Run:"
     echo "    bash infra/admax-setup.sh --enroll you@example.com"
