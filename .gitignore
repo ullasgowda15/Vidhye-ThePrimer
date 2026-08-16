@@ -18,12 +18,24 @@ backend/config/settings/local.py
 # `gemini-key.json`, untracked but visible to `git status` and one `git add -A`
 # away from a history that cannot be rewritten — `*.pem` and `*.key` above did
 # not match it, and a service-account key is a JSON file.
-*service-account*.json
-*service_account*.json
+#
+# The list below was extended after exactly the failure it predicts. A browser
+# download had left `vertex-sa_(1).json` beside `vertex-sa.json` on the deploy
+# box, and `*-sa.json` does not match it — the name ends `_(1).json`. The same
+# check found `env-for-server.txt`, a production env file that `.env*` misses
+# because somebody sensibly gave it a describing name instead of a dotfile one.
+# Both were one `git add -A` from a history that cannot be rewritten.
+#
+# So these patterns are **prefix-anchored and suffix-free**: a rule that ends in
+# `.json` only protects the copy nobody renamed, and every real leak starts with
+# a rename — a `(1)`, a `.bak`, a `.old`, a timestamp.
+*service-account*
+*service_account*
+vertex-sa*
+gemini-key*
+gcp-credentials*
 *-sa.json
-gemini-key.json
-vertex-sa.json
-gcp-credentials*.json
+env-for-server*
 
 # ===== Python / Django =====
 __pycache__/
