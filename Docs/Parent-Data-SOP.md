@@ -1,257 +1,247 @@
-# What happens to your child's data — a parent's guide
+# What I do with your child's data
 
-**Who this is for:** a parent deciding whether to trust The Primer with their child, and a
-parent who already has and wants to check we are still doing what we said.
+I built The Primer. I'm writing this myself because I don't think a parent should have to
+take a children's product on faith, and because most privacy pages are written to survive a
+lawyer rather than to be understood by the person they're addressed to.
 
-**What this is:** a walk through every stage your child's data passes, in order, in plain
-language — followed by the exact steps for reading, exporting, restricting or deleting all of
-it. Nothing here is aspirational. Every claim describes code that exists today, and the
-places where we have *not* done something yet are called out as plainly as the places we
-have.
-
-**What this is not:** a legal document. It has been written by the people who built the
-software and has not been through formal legal review. When it has, this line will say so.
-The in-product version of these claims lives in `backend/apps/accounts/privacy.py`, which is
-deliberately kept in the backend so that a claim and the code making it true have to change
-together.
+So this is the whole thing: what I collect, what leaves my servers, what I keep, and what
+I haven't built yet. If you only read one section, read the one about the voice recordings.
 
 ---
 
-## The short version
+## The five promises
 
-- Nothing about your child is generated or sent anywhere until you have consented.
-- We collect a first name, a birthdate, and what your child loves and fears. No surname, no
-  address, no school, no photograph, no contact details — and the companion is instructed
-  never to ask for any.
-- Your child's data is never sold, and never used to train anyone's AI models. The server
-  refuses to start if it is pointed at a provider whose terms permit training.
-- You can read every word your child has been told, export all of it, or delete all of it —
-  at any time, without our permission, and without needing to keep consent switched on.
-- There are no notifications, no streaks, and no reminders. Every control we give you can
-  only make your child's time here *shorter*.
+1. I don't sell your data or your child's. Not to anyone, not at any price.
+2. I don't train AI models on your child — not mine, and not my providers'.
+3. I don't send your child notifications, reminders, or streaks. Nothing in this product is
+   designed to pull them back to it.
+4. You can read every word your child has been told, take a copy of all of it, or destroy all
+   of it, whenever you want, without asking me.
+5. Where I haven't finished something, I say so on this page instead of waiting for you to
+   find out.
 
 ---
 
-## The journey, stage by stage
+## The whole path, on one page
+
+This is every stage your child's data passes through, in order. The rest of this document is
+just these boxes explained one at a time.
 
 ```mermaid
 flowchart TD
-    A[You consent] --> B[You create a child profile]
-    B --> C[A companion is made]
-    C --> D[A story beat is generated]
-    D --> E{Safety layer}
-    E -->|passes| F[Pictures + narration]
-    E -->|rewritten / blocked| G[Safety incident recorded]
-    F --> H[Your child plays]
-    H --> I[The companion remembers]
-    H --> J[Counters, no content]
-    I --> K[You can read / export / delete all of it]
-    G --> K
+    A["You consent<br/><i>nothing runs before this</i>"] --> B["You tell me: first name,<br/>birthdate, loves, fears, avoid-topics"]
+    B --> C["A companion is made<br/>and your child names it"]
+    C --> D["A story beat is written<br/><b>Google / Gemini on Vertex AI</b>"]
+    D --> E{"Safety layer<br/>rules + a second model"}
+    E -->|"passes"| F["Picture drawn <b>Cloudflare</b><br/>Voice spoken <b>Google TTS</b>"]
+    E -->|"rewritten or replaced"| G["Recorded as an incident<br/><i>you can read these</i>"]
+    F --> H["Your child plays"]
+    G --> H
+    H --> I["The companion remembers<br/><i>encrypted at rest</i>"]
+    H --> J["Counters only<br/><i>no story text, ever</i>"]
+    I --> K["You: read it, export it,<br/>limit it, or delete all of it"]
     J --> K
+    G --> K
+    K --> L["Delete = gone at once,<br/>and out of every backup within 7 days"]
+
+    style A fill:#e8f4ea,stroke:#5c9455
+    style E fill:#fdf0e4,stroke:#e2803c
+    style K fill:#e9e4f4,stroke:#7a5fb0
+    style L fill:#e9e4f4,stroke:#7a5fb0
 ```
 
-### Stage 1 — Consent, before anything else
+---
 
-Every operation that *creates* data about your child passes through a single consent gate.
-No consent, no processing: no child profile, no companion, no greeting, no story.
+## Nothing happens before you say yes
 
-The gate deliberately does **not** guard the other direction. If you withdraw consent, we
-stop generating anything new — but you keep full access to read, export and delete what
-already exists. An earlier version of the product got this wrong and locked parents out of
-their own child's records when consent lapsed. That was fixed because withdrawing consent
-has to stop *us* using the data, not stop *you* seeing it.
+Every operation that creates data about your child runs through one consent check. Without
+your consent there is no profile, no companion, no greeting, no story. Nothing is generated
+and nothing is sent anywhere.
 
-### Stage 2 — What you tell us
+Withdrawing it later stops me making anything new. It does not lock you out of what already
+exists.
 
-For you: an email address. For each child: the first name or nickname you choose, their
-birthdate, the things they love, the things they are frightened of, and any topics you ask
-us never to include.
+I'm making a point of that because I got it wrong once. For a while, one function guarded
+both "may I generate?" and "may you look?", so a parent who withdrew consent also lost access
+to their own child's records — couldn't read them, couldn't export them. That's backwards. If
+you revoke consent, the thing that should stop is *me using the data*, not *you seeing it*.
+It's split into two separate checks now.
 
-Each of those has one job. The birthdate sets the age band the safety layer enforces. The
-fears and avoid-topics are copied into *every* generation as hard rules. What they love is
-what tomorrow's adventure gets built from.
+---
 
-We do not ask for a surname, an address, a school, a photograph, or any contact detail.
+## What I ask for, and what each thing is for
 
-### Stage 3 — The companion
+From you: an email address. That's it.
 
-You pick an archetype, a colour palette and a temperament, and your child names it. From
-that we write one canonical description of what the companion looks like, save it, and reuse
-it for every picture forever — which is why the companion is recognisably the same friend on
-day sixty as on day one.
+For each child:
 
-### Stage 4 — Generating a story
+| What | Why it exists |
+|---|---|
+| First name or nickname | The companion says it out loud |
+| Birthdate | Sets the age band the safety layer enforces |
+| What they love | What tomorrow's story gets built out of |
+| What frightens them | Copied into every generation as a hard rule |
+| Topics to avoid | Same — a rule on every single generation |
 
-To write a story we send the words needed for that beat to an AI provider; to draw it, an
-image provider; to read it aloud, a voice provider.
+Then, as they play: the stories, the choices they make, how long a sitting lasted, and what
+the companion remembers.
 
-**What goes:** the story context, and your child's first name, because the companion says it
-out loud. Also the things you asked us to avoid, the things they fear, and what the companion
-remembers — because those are the rules the story must be written against, and a provider
-that was not told them could not keep them.
+I don't ask for a surname, an address, a school, a photograph, or any contact detail for your
+child. The companion is instructed never to ask for one either.
 
-**What does not go:** your email, your account, or anything identifying beyond that first
-name.
+---
 
-**On training:** every provider we use is on terms that forbid training on what we send. This
-is enforced by the software, not by good intentions — a preflight check
-(`privacy.provider_terms`) fails the deployment if any child-data route is pointed at a
-cheaper tier that reserves the right to learn from your child's words.
+## What actually leaves my servers
 
-**What we cannot promise:** anything about a provider's own internal operational logs. That
-is not ours to control, and we would rather say so than imply a guarantee we do not have.
+Writing a story needs an AI model, drawing it needs an image model, reading it aloud needs a
+voice. Three companies are involved, and they don't all get the same thing. As configured
+today:
 
-### Stage 5 — The safety layer
+| Who | What they receive |
+|---|---|
+| **Google** (Gemini on Vertex AI) | The most. Writes the story, grades it for safety, condenses the memories, and checks the pictures. This is the one that sees your child's first name, their fears, your avoid-topics, and what the companion remembers. |
+| **Cloudflare** (Workers AI) | Draws the pictures. Gets a description of the companion and the scene it's standing in. Google's Imagen is the backup if Cloudflare is unavailable. |
+| **Google Cloud Text-to-Speech** | Turns the finished sentence into audio. That sentence contains your child's first name whenever the companion says it. ElevenLabs is the backup. |
 
-Every generation traverses one path, and there is exactly one door:
+Google sees the most because it's doing the thinking. It gets your child's fears, your
+avoid-topics and the companion's memories for one reason: those are the rules the story must
+be written against, and a model that wasn't told them couldn't keep them.
+
+**None of them get:** your email, your account, or anything identifying your child beyond
+that first name.
+
+On training: every route is on terms that forbid training on what I send. That isn't a
+promise I'm asking you to trust — the server refuses to boot if it's pointed at a cheaper
+tier that reserves the right to learn from your child's words. I can't misconfigure it in a
+hurry and not notice.
+
+What I can't promise is anything about a provider's own internal logging. That isn't mine to
+control. I'd rather write that sentence than imply a guarantee I don't have.
+
+---
+
+## The safety layer
+
+Every generation takes one path, and there's only one door:
 
 ```
-inputs → guard input → generate → grade output → scan the picture → your child
-              ↓                        ↓
-        incident recorded    rewrite / replace / escalate
+what goes in  →  cleaned  →  story written  →  graded  →  picture scanned  →  your child
+                                                 ↓
+                                   rewritten, replaced, or escalated
+                                        (and always recorded)
 ```
 
-Two commitments hold this up, and both are easy to erode, so they are worth stating:
+Two rules hold this up.
 
-**A guard that could not run is never a pass.** If the classifier is unreachable, the
-deterministic check stands alone, the event is recorded as *degraded*, and the log says so.
-Nothing in this system converts "we did not check" into "it is fine."
+**If a check couldn't run, that is not a pass.** When the model-based grader is unreachable,
+the rule-based check stands on its own, and the beat is recorded as degraded. Nothing in this
+system turns "I didn't check" into "it's fine."
 
-**No decision is silent.** Every non-pass writes a safety incident. You can see these — they
-are in your transparency log and in your export, including the ones where we refused or
-rewrote something. An export that hid our own refusals would be the one omission you would
-most want.
+**Nothing is decided quietly.** Every rewrite, block and escalation is written down. You can
+see them — they're in your transparency log and in your export. I include my own refusals
+because if I hid them, that's precisely the thing you'd most want to have seen.
 
-Illustrations are scanned separately before they are ever stored or shown.
+Pictures are scanned on their own before they're stored or shown.
 
-### Stage 6 — What the companion remembers
+---
 
-Memories are what let the companion say *"do you still have that dragon you named?"* They are
-kept for as long as you keep the account, because losing them would mean losing the
-friendship your child has built.
+## What the companion remembers
 
-The memory content is **encrypted in the database**, with a key the database itself does not
-hold.
+The memories are the point of the product. They're what let it say *"do you still have that
+dragon you named?"* six weeks later. I keep them as long as you keep the account, because
+throwing them away would mean throwing away the friendship your child built.
 
-### Stage 7 — Reading aloud (optional, and the one to read closely)
+The memory text is encrypted in the database, with a key the database doesn't hold.
 
-If your child is old enough to read, the companion sometimes asks them to read a short line
-aloud. If you allow it, we keep that recording.
+---
 
-We are being direct because this is the part you would most want told plainly:
+## The voice recordings — read this one properly
 
-- The recording **stays on our own machine**. It is never uploaded to storage and never sent
-  to any other company.
-- **Nothing has listened to it** — not a person, not a program.
-- It never decides anything about your child, and the app never tells them they read
-  something wrong.
-- Turning it off for a child **deletes every recording we already hold of them, immediately**.
+If your child can read, the companion sometimes asks them to read a line aloud. If you allow
+it, I keep that recording. Here is exactly what that means.
+
+- It stays on my own server. It is never uploaded to storage and never sent to another
+  company.
+- Nothing has listened to it. Not a person, not a program.
+- It never decides anything about your child, and the app never tells them they got a word
+  wrong.
+- Switch it off for a child and every recording I hold of them is deleted immediately.
   Deleting the child or the account does the same.
 
-Its only purpose is letting us check whether the app actually heard a real child correctly.
-It was built and tested on adults imitating children, and that is not good enough to correct
-a real child with.
+Why I keep them at all: I need to know whether the app actually heard a real child. It was
+built and tested on adults imitating children, and that isn't good enough to correct a real
+five-year-old with.
 
-### Stage 8 — Counters, not content
-
-We record operational counters — a story started, a beat finished, how long a sitting lasted.
-
-The rule enforced in code is that these carry **shape, never content**. The event writer
-accepts simple values only, truncates them, and refuses containers, specifically so that
-nobody can casually pass in the narration text and quietly turn a counters table into an
-archive of what a four-year-old was told.
-
-These counters are tied to your child's record and are deleted with them. Analytics gets no
-exception to the deletion promise.
+If that trade isn't one you want to make, turn it off. The rest of the product works exactly
+the same without it.
 
 ---
 
-## Your controls — step by step
+## What I count
 
-Everything below is at **`/parent`**, behind the adult gate. None of it requires our
-permission, and none of it is affected by withdrawing consent.
+I record that a story started, that a beat finished, how long a sitting ran.
 
-### To read what your child has been told
+These carry shape, never content. The code that writes them accepts simple values only,
+truncates them, and rejects anything larger — specifically so that nobody, including me on a
+tired evening, can pass in the story text and quietly turn a counter table into a transcript
+of what a four-year-old was told.
 
-1. Sign in and pass the adult gate.
-2. Open **Transparency**.
-3. You will see every story, word for word — including the beats our safety layer rewrote or
-   replaced.
-
-The other tabs — **Reports**, **Weekly & growth**, **Insights** — are summaries for you.
-Transparency is the raw record.
-
-### To export everything
-
-1. Go to **Privacy** (in the dashboard header, not under a child — export and deletion span
-   every child).
-2. Choose export.
-3. You get one zip of JSON: the account, each child's profile and settings, their companion,
-   every adventure with every beat and every choice **verbatim**, every memory, learning
-   progress, the world map, every report, and our safety incidents.
-
-It contains no embeddings or internal vectors — those are noise that tells you nothing about
-your child.
-
-### To restrict without deleting
-
-1. Open a child's **Settings**.
-2. Lower the session length, tighten the intensity ceiling, narrow the daily window, or add
-   another avoid-topic.
-
-Every control here is a restriction. There is nothing in Settings that makes your child's
-time here longer or pulls them back.
-
-### To delete
-
-1. Go to **Privacy**.
-2. Delete a child, or delete the whole account.
-
-Deleting a child removes their profile, companion, every story, every memory, every report,
-every picture and recording made for them, and any recording of their own voice. Deleting the
-account does that for every child and then removes the account.
-
-**Both happen immediately. Neither is reversible.**
-
-One thing is deliberately kept: a dated line recording that a deletion happened, so we can
-prove it did. It holds a scrambled form of your email that cannot be turned back into it, and
-nothing else about you.
+They're attached to your child's record and they die with it. Analytics gets no exception to
+deletion.
 
 ---
 
-## What we never do
+## What you can do about any of it
 
-- **Never sell** your data or your child's. Not to anyone, not ever.
-- **Never train** AI models on your child's data — not ours, not our providers'.
-- **Never nudge.** No notification, no reminder, no streak, no mechanic designed to pull your
-  child back. This is deliberate, and it is not something we will change quietly.
-- **Never let one family's data reach another.** Every request is checked against the account
-  that owns it before a single row loads, and that check is tested from the outside with two
-  real accounts on every endpoint.
+All of this lives at **`/parent`**, behind the adult gate. None of it needs my permission, and
+none of it is affected by withdrawing consent.
+
+**Read what your child was told.** Sign in → **Transparency**. Every story, word for word,
+including the ones the safety layer rewrote or replaced. Reports, Weekly & growth and Insights
+are summaries for you; Transparency is the raw record.
+
+**Take a copy.** **Privacy** in the header → export. One zip: the account, each child's
+profile and settings, their companion, every adventure with every beat and every choice
+verbatim, every memory, learning progress, the world map, every report, and my safety
+incidents. No embeddings — a few hundred numbers per memory would tell you nothing.
+
+**Limit it without deleting.** A child's **Settings**: shorter sittings, a lower intensity
+ceiling, a narrower daily window, more avoid-topics. Every control there can only reduce.
+There is nothing in this product that lengthens your child's time in it.
+
+**Delete it.** **Privacy** → delete a child, or the whole account. A child takes their
+profile, companion, every story, memory, report, picture, and any recording of their voice.
+The account does that for every child, then removes the account.
+
+Both are immediate and neither can be undone. I keep one thing: a dated line saying a
+deletion happened, so I can prove it did. It holds a scrambled form of your email that can't
+be turned back into an address, and nothing else.
 
 ---
 
-## Where we are not finished yet
+## What I haven't done yet
 
-We would rather you read this section than discover it.
-
-| Area | Where it actually stands |
+| | Where it actually stands |
 |---|---|
-| Legal review | Not done. This document and the in-product disclosure are written by the engineers who built the system. |
-| Backups | A full copy is taken daily and deletes itself after a set retention window (`BACKUP_RETENTION_DAYS`, **7 days** by default), so a deletion you make today is gone from every copy within that window. The in-product disclosure reads this number from the live setting rather than quoting it, so it cannot drift. Today those copies sit on the same machine as the database and are **not separately encrypted**. Before we take on families beyond the pilot they will be encrypted and stored elsewhere. |
-| Restores | A backup is only ever used to bring the whole service back after a disaster, never to restore one family. Anything deleted before a disaster is deleted again immediately after the restore — that step is written into the runbook, not left to memory. |
-| Access logging | We are a very small team and nobody outside it can reach this data. Audited access logging on child data is not built yet. Before we take on families beyond the pilot we will add it and say so here. |
-| Provider logs | We control what we send and the terms it is sent under. We do not control a provider's internal logs, and we do not claim to. |
-| Public policy page | The privacy centre currently sits behind sign-in. A public, no-login policy page does not exist yet. This document is the shareable version until it does. |
+| Legal review | Hasn't happened. I wrote this and I wrote the code. |
+| Backups | Full copy daily, each deleting itself after 7 days, so a deletion today is gone from every copy inside a week. Right now those copies sit on the same machine as the database and aren't separately encrypted. That changes before I take families beyond the pilot. |
+| Restoring one | A backup only ever brings the whole service back after a disaster. It is never used to restore one family. Anything deleted before the disaster gets deleted again straight after — that step is in the written procedure, not in my memory. |
+| Access logs | Nobody outside a very small team can reach this data, but I don't yet have audited logging of who looked at what. I'll build it before the pilot widens, and this page will say so when I have. |
+| Provider logs | I control what I send and the terms it's sent under. I don't control what a provider writes in its own logs, and I'm not going to pretend otherwise. |
+| A public version of this | The privacy centre is still behind sign-in, which means you have to create an account to read it. That's the wrong way round and I know it. This document is what I can hand you until there's a page anyone can open. |
+
+The 7-day number is read from the live setting wherever it's shown in the app, so it can't
+drift away from what the backups actually do.
 
 ---
 
-## Standing
+## Where this stands
 
-The Primer is built for children, so we design to **COPPA** and **GDPR-K** from the first
-line of code rather than retrofitting them.
+The Primer is built for children, so COPPA and GDPR-K shaped it from the first line rather
+than being bolted on before launch.
 
-The whole product thesis is that a parent can *check* what we tell them. That is why the
-transparency log is verbatim, why the export includes our own refusals, and why this document
-names the things we have not built. If any statement here stops being true of the software,
-the statement is the bug.
+The whole idea of this product is that you can check me. That's why the transparency log is
+word for word, why my own refusals are in your export, and why the list above exists. If
+anything on this page stops being true of the software, treat that as a bug and tell me.
+
+— Ullas, founder
