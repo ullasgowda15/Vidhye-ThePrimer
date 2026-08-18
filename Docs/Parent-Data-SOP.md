@@ -34,14 +34,22 @@ flowchart TD
     C --> D[A story is written]
     D --> E{Safety layer}
     E -->|passes| F[Pictures and narration]
-    E -->|rewritten or blocked| G[Recorded as an incident]
+    E -->|does not pass| G[Written again, or a safe story used instead]
+    G --> F
     F --> H[Your child plays]
+    E -->|does not pass| L[A note for you, in your records]
     H --> I[The companion remembers]
     H --> J[Counters, never the story text]
     I --> K[You can read, export or delete all of it]
     J --> K
-    G --> K
+    L --> K
 ```
+
+**A story that fails that check never reaches your child.** It gets written again under a
+constraint, and if it fails repeatedly it is swapped for a story I approved in advance. The
+version that failed is not shown to them, and it is not even saved — the only thing that
+survives it is a line in your records saying it happened. Those notes go to you. They never
+go into your child's story.
 
 ---
 
@@ -119,12 +127,17 @@ Every generation takes one path, and there's only one door:
 
 ```
 what goes in  →  cleaned  →  story written  →  graded  →  picture scanned  →  your child
+                                  ↑              ↓
+                                  └──────────────┤  didn't pass: written again,
+                                                 │  or replaced with a safe story
                                                  ↓
-                                   rewritten, replaced, or escalated
-                                        (and always recorded)
+                                        recorded, for you
 ```
 
-Two rules hold this up.
+Note the loop. A story that doesn't pass goes back to be graded again, not forward. Only a
+version that passes is ever drawn, spoken or shown.
+
+Two more rules hold this up.
 
 **If a check couldn't run, that is not a pass.** When the model-based grader is unreachable,
 the rule-based check stands on its own, and the beat is recorded as degraded. Nothing in this
