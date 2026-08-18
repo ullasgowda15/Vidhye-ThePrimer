@@ -256,15 +256,27 @@ export default function Landing() {
             style={{ color: '#6b6486' }}
           >
             <span>The Primer — a storybook that grows with one child.</span>
-            {/* No "Privacy" link. `/parent/privacy` is the privacy *centre* —
-                export, delete, the controls for an account that already exists —
-                and it sits behind the adult gate and a login, so a visitor
-                clicking it here would be sent to a sign-in wall to read a policy.
-                A public policy page is a real gap; it wants its own route rather
-                than a link that lies about where it goes. */}
-            <Link to="/parent" className={`rounded-sm underline underline-offset-4 ${FOCUS_RING}`}>
-              Parents
-            </Link>
+            {/* Two links, to two different things, and the distinction is worth
+                keeping straight. `/privacy` is the *statement* — public, no gate,
+                readable before anyone has an account, which is the only moment it
+                is any use in deciding whether to have one. `/parent/privacy` is
+                the privacy *centre* — export, delete, the controls for an account
+                that already exists — and it stays behind the adult gate and a
+                login, because those controls act on real data. */}
+            <span className="flex items-center gap-5">
+              <Link
+                to="/privacy"
+                className={`rounded-sm underline underline-offset-4 ${FOCUS_RING}`}
+              >
+                Privacy
+              </Link>
+              <Link
+                to="/parent"
+                className={`rounded-sm underline underline-offset-4 ${FOCUS_RING}`}
+              >
+                Parents
+              </Link>
+            </span>
           </div>
         </footer>
       </div>

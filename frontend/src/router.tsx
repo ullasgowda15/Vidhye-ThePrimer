@@ -14,6 +14,7 @@ import Onboarding from './routes/parent/Onboarding';
 import ParentPrivacy from './routes/parent/Privacy';
 import ParentGate from './routes/parent/ParentGate';
 import ProtectedRoute from './routes/parent/ProtectedRoute';
+import PublicPrivacy from './routes/Privacy';
 import Reports from './routes/parent/Reports';
 import SessionReport from './routes/parent/SessionReport';
 import Settings from './routes/parent/Settings';
@@ -74,6 +75,26 @@ export const router = createBrowserRouter(
     // reason: the child is the one holding the tablet. It runs under the parent's
     // restored session; without one it stays a companion thinking, never a form.
     { path: '/story/:childId', element: forChild(<StoryPage />) },
+    // The privacy statement, public and outside every guard (§12.8).
+    //
+    // It is not under `/parent` and that is the entire point: everything there is
+    // behind `AdultGateRoute`, login included, so a statement mounted inside it
+    // could only be read by someone who had already handed us a child's details.
+    // The endpoint behind it has always been `AllowAny`; only the page was gated.
+    //
+    // `ParentBoundary` rather than `forChild`: the reader is an adult deciding
+    // whether to trust us, so a failure here should be a sentence they can act on
+    // rather than the companion having a rest. There is no adult challenge in
+    // front of it — a challenge on a privacy policy would be a gate on the one
+    // page that exists to be read before anyone commits to anything.
+    {
+      path: '/privacy',
+      element: (
+        <ParentBoundary>
+          <PublicPrivacy />
+        </ParentBoundary>
+      ),
+    },
     {
       path: '/parent',
       element: (

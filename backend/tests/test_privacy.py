@@ -151,6 +151,63 @@ class TestTheDisclosure:
     def test_it_is_versioned_so_a_parent_can_tell_what_changed(self, api) -> None:
         assert api.get(PRIVACY_URL).data["version"]
 
+    def test_it_says_the_same_thing_to_everyone(self, api, auth, parent) -> None:
+        """The security property behind making this page public.
+
+        A public endpoint that varies by who is asking is one refactor away from
+        being a leak — somebody adds "your export is ready" or a child's name to
+        the disclosure and it is served to anonymous callers too. So the contract
+        is that identity cannot reach this response at all: signed in and signed
+        out get the same bytes, and the parent's own address appears in neither.
+
+        Asserted rather than assumed because `PrivacyDisclosureView` sets
+        `authentication_classes = []`, which is what makes it true today and is
+        exactly the line a future "just add the user for convenience" would delete.
+        """
+        anonymous = api.get(PRIVACY_URL)
+        signed_in = auth.get(PRIVACY_URL)
+
+        assert anonymous.status_code == signed_in.status_code == 200
+        assert anonymous.data == signed_in.data
+
+        body = json.dumps(signed_in.data).lower()
+        assert parent.email.lower() not in body
+        assert str(parent.pk) not in body
+
+    def test_reading_it_cannot_spend_the_budget_signup_needs(self) -> None:
+        """The statement is linked from the landing footer, so visitors hit it.
+
+        On the shared `anon` scope — 100/day keyed by IP — reading the policy would
+        compete with signing up from the same address, and one school or NAT'd
+        household could be transparent-with'd right out of an account. Its own
+        scope, like `session_refresh` and `companion_read` before it.
+        """
+        from rest_framework.throttling import ScopedRateThrottle
+
+        from apps.accounts.views import PrivacyDisclosureView
+
+        assert PrivacyDisclosureView.throttle_classes == [ScopedRateThrottle]
+        assert PrivacyDisclosureView.throttle_scope == "privacy"
+
+        # Resolved through the throttle rather than read out of settings: that is
+        # the path DRF actually takes, and a scope with no configured rate fails
+        # there rather than in the dictionary.
+        throttle = ScopedRateThrottle()
+        throttle.scope = PrivacyDisclosureView.throttle_scope
+        assert throttle.get_rate()
+
+    def test_it_sets_no_cookie_and_needs_no_credential(self, api) -> None:
+        """Nothing about reading a privacy statement should start a session.
+
+        A `Set-Cookie` here would mean a visitor who only read the policy left
+        with a session artefact, which is both a tracking surface and a claim this
+        very page is making promises about.
+        """
+        response = api.get(PRIVACY_URL)
+
+        assert response.status_code == 200
+        assert not response.cookies
+
     def test_it_makes_the_three_commitments_13_8_requires(self, api) -> None:
         text = " ".join(
             section["body"] for section in api.get(PRIVACY_URL).data["sections"]

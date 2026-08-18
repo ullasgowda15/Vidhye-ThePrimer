@@ -237,6 +237,19 @@ REST_FRAMEWORK = {
         # secret (a refresh token is signed, and rotation makes a stolen one
         # single-use).
         "session_refresh": env("THROTTLE_SESSION_REFRESH", default="240/hour"),
+        # The privacy statement (§12.8). Its own scope for the same reason
+        # `companion_read` and `session_refresh` have theirs, and this is the third
+        # time that reason has come up: it is unauthenticated, so on the shared
+        # `anon` budget it competes with **signup** from the same IP. That budget
+        # is 100/day keyed by address, and one office, school or NAT'd household
+        # would spend it reading the policy and then be refused an account — the
+        # product turning "we were transparent with you" into "you may not join".
+        #
+        # Cheap enough to be generous with: `privacy.disclosure()` is module
+        # constants, so a request here is a serialisation and no database query at
+        # all. Rate-limited rather than exempt only so a runaway client still has a
+        # ceiling; nothing about reading a policy should ever hit it.
+        "privacy": env("THROTTLE_PRIVACY", default="600/hour"),
         # Creating a companion fans out into a handful of paid image calls plus a
         # TTS call (§16.6). A family does it once per child; anything beyond a
         # couple of attempts an hour is a bug or an attack, and either way it is

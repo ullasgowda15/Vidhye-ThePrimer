@@ -24,6 +24,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -308,11 +309,31 @@ class PrivacyDisclosureView(APIView):
     Unauthenticated on purpose. A parent deciding whether to sign up has to be
     able to read what we do with their child's data *before* they have an account,
     and a privacy statement behind a login is a privacy statement written for
-    people who have already agreed.
+    people who have already agreed. `routes/Privacy.tsx` is the public page that
+    reads it; `/parent/privacy` renders the same text beside the controls that act
+    on real data, and those stay behind the gate.
     """
 
+    # This docstring is the description drf-spectacular publishes at `/api/docs/`,
+    # so the reasoning below lives in comments rather than in it. Two of these are
+    # load-bearing and read like tidiness, which is exactly how they get reverted.
+
     permission_classes = [AllowAny]
+
+    #: No credential reaches this view at all. That is what makes the response
+    #: incapable of varying by who is asking — and therefore incapable of becoming
+    #: a leak when somebody later adds a helpful per-user field to the disclosure.
+    #: `TestTheDisclosure::test_it_says_the_same_thing_to_everyone` holds it.
     authentication_classes: list = []
+
+    #: Its own scope, not the shared `anon` bucket. The public page is linked from
+    #: the landing footer, so ordinary visitors hit this now; on `anon` (100/day,
+    #: keyed by IP) reading the policy would compete with *signup* from the same
+    #: address, and one school or NAT'd household could be refused an account for
+    #: having read it first. Third time that bucket has needed splitting — see
+    #: `session_refresh` and `companion_read` in `settings/base.py`.
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "privacy"
 
     @extend_schema(
         operation_id="privacy_disclosure",

@@ -1630,7 +1630,7 @@
         "/api/v1/privacy": {
             "get": {
                 "operationId": "privacy_disclosure",
-                "description": "The plain-language disclosure (§12.8, §13.8).\n\nUnauthenticated on purpose. A parent deciding whether to sign up has to be\nable to read what we do with their child's data *before* they have an account,\nand a privacy statement behind a login is a privacy statement written for\npeople who have already agreed.",
+                "description": "The plain-language disclosure (§12.8, §13.8).\n\nUnauthenticated on purpose. A parent deciding whether to sign up has to be\nable to read what we do with their child's data *before* they have an account,\nand a privacy statement behind a login is a privacy statement written for\npeople who have already agreed. `routes/Privacy.tsx` is the public page that\nreads it; `/parent/privacy` renders the same text beside the controls that act\non real data, and those stay behind the gate.",
                 "summary": "What we collect, why, and what we never do (§12.8)",
                 "tags": [
                     "v1"

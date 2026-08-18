@@ -750,7 +750,9 @@ export interface paths {
          *     Unauthenticated on purpose. A parent deciding whether to sign up has to be
          *     able to read what we do with their child's data *before* they have an account,
          *     and a privacy statement behind a login is a privacy statement written for
-         *     people who have already agreed.
+         *     people who have already agreed. `routes/Privacy.tsx` is the public page that
+         *     reads it; `/parent/privacy` renders the same text beside the controls that act
+         *     on real data, and those stay behind the gate.
          */
         get: operations["privacy_disclosure"];
         put?: never;
