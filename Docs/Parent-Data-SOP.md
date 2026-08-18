@@ -29,25 +29,18 @@ just these boxes explained one at a time.
 
 ```mermaid
 flowchart TD
-    A["You consent<br/><i>nothing runs before this</i>"] --> B["You tell me: first name,<br/>birthdate, loves, fears, avoid-topics"]
-    B --> C["A companion is made<br/>and your child names it"]
-    C --> D["A story beat is written<br/><b>Google / Gemini on Vertex AI</b>"]
-    D --> E{"Safety layer<br/>rules + a second model"}
-    E -->|"passes"| F["Picture drawn <b>Cloudflare</b><br/>Voice spoken <b>Google TTS</b>"]
-    E -->|"rewritten or replaced"| G["Recorded as an incident<br/><i>you can read these</i>"]
-    F --> H["Your child plays"]
-    G --> H
-    H --> I["The companion remembers<br/><i>encrypted at rest</i>"]
-    H --> J["Counters only<br/><i>no story text, ever</i>"]
-    I --> K["You: read it, export it,<br/>limit it, or delete all of it"]
+    A[You consent] --> B[You create a child profile]
+    B --> C[A companion is made]
+    C --> D[A story is written]
+    D --> E{Safety layer}
+    E -->|passes| F[Pictures and narration]
+    E -->|rewritten or blocked| G[Recorded as an incident]
+    F --> H[Your child plays]
+    H --> I[The companion remembers]
+    H --> J[Counters, never the story text]
+    I --> K[You can read, export or delete all of it]
     J --> K
     G --> K
-    K --> L["Delete = gone at once,<br/>and out of every backup within 7 days"]
-
-    style A fill:#e8f4ea,stroke:#5c9455
-    style E fill:#fdf0e4,stroke:#e2803c
-    style K fill:#e9e4f4,stroke:#7a5fb0
-    style L fill:#e9e4f4,stroke:#7a5fb0
 ```
 
 ---
