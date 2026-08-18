@@ -15,6 +15,27 @@ target-version = "py312"
 # matching this repo's house style. Code we write *around* it is not excluded.
 extend-exclude = ["**/migrations/*", "apps/reading/engine/*"]
 
+# What this file excludes is the whole story — `.gitignore` gets no vote.
+#
+# It used to get one, and it silently cost us the entire `apps/media` app: 32
+# files, every provider adapter and the image moderator among them, were never
+# linted or format-checked by `make lint`, which reported green the whole time.
+#
+# The root `.gitignore` anchors user-uploaded media as `/backend/media/` — correct
+# for git, which does not touch `backend/apps/media/` (`git check-ignore` agrees).
+# But `make lint` runs `ruff check .` from `backend/`, and ruff resolves a
+# multi-segment pattern whose first segment is the walk-root's own name by
+# dropping that segment and applying the rest *unanchored* — so `/backend/media/`
+# became `media/`, which matches `apps/media/` at any depth. Reproduced against
+# ruff 0.x: `/media/` alone does not do this; `backend/media/` does.
+#
+# So the fix is not to reword the ignore file. Turning the gitignore input off
+# entirely is both simpler and more honest: exclusions belong to the linter's
+# config, where they are declared above and can be read. The default excludes
+# still drop caches and virtualenvs, and this scans 294 files — exactly the
+# tracked Python minus migrations and the vendored engine, nothing generated.
+respect-gitignore = false
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "DJ", "RUF"]
 ignore = [

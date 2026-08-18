@@ -155,7 +155,7 @@ def test_the_gate_is_off_when_no_credential_is_present(settings: Any) -> None:
 # ---------------------------------------------------------------------------
 # The gate under Google (Vertex Gemini), with no Anthropic key
 # ---------------------------------------------------------------------------
-# The mitigation the Day-1–15 audit called unproven. `IMAGE_MODERATION=auto` on a
+# The mitigation the Day-1-15 audit called unproven. `IMAGE_MODERATION=auto` on a
 # deployment with no `ANTHROPIC_API_KEY` degraded to the structural check, which
 # means the vision layer behind the F-1/F-2 companion-injection fix **did not
 # run** — while the setting said `auto` and every scan logged
@@ -190,9 +190,7 @@ def _gemini_reply(
             [
                 types.Candidate(
                     content=(
-                        types.Content(role="model", parts=[types.Part(text=text)])
-                        if text
-                        else None
+                        types.Content(role="model", parts=[types.Part(text=text)]) if text else None
                     ),
                     finish_reason=types.FinishReason(finish),
                 )
@@ -319,9 +317,7 @@ class TestTheGeminiVerdict:
         assert verdict.status == SafetyStatus.BLOCKED
         assert "frightening" in verdict.reason
 
-    def test_a_provider_failure_fails_closed(
-        self, google_creds: None, gemini_vision: Any
-    ) -> None:
+    def test_a_provider_failure_fails_closed(self, google_creds: None, gemini_vision: Any) -> None:
         """Fail closed: a stock illustration is a cheap outcome and an unmoderated
         one is not. The exception must reach `moderation.classify`'s handler as an
         exception — a moderator that swallowed it would be a permanent pass."""
@@ -359,9 +355,10 @@ class TestTheGeminiVerdict:
             moderation.GeminiImageModerator._verdict_from(_gemini_reply(""))
 
     def test_an_answer_in_an_unexpected_shape_is_not_a_pass(self) -> None:
-        assert moderation.GeminiImageModerator._verdict_from(
-            _gemini_reply("hmm, hard to say")
-        ) == (False, "hmm, hard to say")
+        assert moderation.GeminiImageModerator._verdict_from(_gemini_reply("hmm, hard to say")) == (
+            False,
+            "hmm, hard to say",
+        )
 
     def test_thinking_is_disabled_so_the_hundred_token_budget_reaches_the_verdict(
         self, google_creds: None, gemini_vision: Any

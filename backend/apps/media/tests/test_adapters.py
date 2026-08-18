@@ -266,7 +266,7 @@ def test_a_voice_key_without_a_voice_id_is_not_configured(settings) -> None:
 QUOTA_EXCEEDED = MediaProviderError(
     'Voice provider returned 401 for voice \'v\': {"code":"quota_exceeded",'
     '"message":"This request exceeds your quota of 10000. You have 62 credits '
-    "remaining, while 188 credits are required for this request.\"}"
+    'remaining, while 188 credits are required for this request."}'
 )
 
 
@@ -434,9 +434,7 @@ def test_google_sends_the_language_its_voice_belongs_to(monkeypatch, settings) -
     assert "key" not in str(sent["url"])
 
 
-def test_a_google_outage_is_a_provider_error_the_chain_can_move_past(
-    monkeypatch, settings
-) -> None:
+def test_a_google_outage_is_a_provider_error_the_chain_can_move_past(monkeypatch, settings) -> None:
     import httpx
 
     settings.GOOGLE_TTS_API_KEY = "key"

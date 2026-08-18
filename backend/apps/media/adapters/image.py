@@ -505,7 +505,9 @@ def generate_with_failover(
                 provider.generate(
                     prompt,
                     negative_prompt=(
-                        negative_prompt_for() if supports(provider, "supports_negative_prompt") else ""
+                        negative_prompt_for()
+                        if supports(provider, "supports_negative_prompt")
+                        else ""
                     ),
                     seed=seed if supports(provider, "supports_seed") else None,
                 ),

@@ -148,7 +148,5 @@ def _classify(data: bytes) -> Scan:
         )
         return Scan(status=status, content_type=content_type, reason=reason, moderated=True)
 
-    logger.info(
-        "media.scan content_type=%s bytes=%d moderation=passed", content_type, len(data)
-    )
+    logger.info("media.scan content_type=%s bytes=%d moderation=passed", content_type, len(data))
     return Scan(status=SafetyStatus.PASSED, content_type=content_type, moderated=True)
