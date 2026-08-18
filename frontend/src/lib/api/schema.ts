@@ -901,9 +901,10 @@ export interface components {
          *     * `robot` - robot
          *     * `star` - star
          *     * `owl` - owl
+         *     * `princess` - princess
          * @enum {string}
          */
-        ArchetypeEnum: "dragon" | "fox" | "robot" | "star" | "owl";
+        ArchetypeEnum: "dragon" | "fox" | "robot" | "star" | "owl" | "princess";
         ArchetypeOption: {
             key: components["schemas"]["ArchetypeEnum"];
             label: string;

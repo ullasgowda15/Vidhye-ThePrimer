@@ -87,6 +87,84 @@ def test_a_descriptor_always_exists_even_with_no_language_model(companion) -> No
     assert companion.visual_descriptor == descriptor
 
 
+def test_every_archetype_points_at_a_palette_and_preset_that_exist() -> None:
+    """A default that names a missing key is a companion nobody can create.
+
+    Not hypothetical: the defaults are written by hand next to the silhouette,
+    and `catalog.palette` / `catalog.preset` swallow an unknown key by returning
+    the *global* default — so a typo would not raise anywhere, it would quietly
+    give one archetype the wrong colours forever.
+    """
+    for key, spec in ARCHETYPES.items():
+        assert spec.default_palette in PALETTES, f"{key} defaults to a missing palette"
+        assert spec.default_preset in PERSONALITY_PRESETS, f"{key} defaults to a missing preset"
+        assert spec.voice_id, f"{key} has no voice"
+        assert spec.silhouette and spec.signature, f"{key} has nothing for an illustrator"
+
+
+def test_the_princess_is_a_person_but_never_a_realistic_one() -> None:
+    """The one human archetype, and the line that keeps it shippable.
+
+    `princess` is deliberately a girl rather than a creature. What was never
+    negotiable is realism: `media.style.NEGATIVE_TERMS` sends "no realistic human
+    children" on every render as a §15.9 safety control, and
+    `media.moderation` refuses a photorealistic child outright. So the silhouette
+    has to carry its own picture-book vocabulary — a descriptor that merely said
+    "a young girl" would be generated against a negative prompt pulling the other
+    way, and the result is the uncanny half-photo this rule exists to prevent.
+
+    Asserted rather than trusted because the silhouette is prose, and prose drifts.
+    """
+    princess = ARCHETYPES["princess"]
+
+    assert "storybook illustration" in princess.silhouette
+    assert "crown" in princess.silhouette
+    assert princess.default_palette == "blossom"
+
+    # The guard the archetype leans on, pinned here so removing it fails loudly
+    # in the companion suite rather than silently in production art.
+    from apps.media.style import NEGATIVE_TERMS
+
+    assert "no realistic human children" in NEGATIVE_TERMS
+    assert "no photorealism" in NEGATIVE_TERMS
+
+
+def test_the_image_moderator_accepts_drawn_people() -> None:
+    """The princess must not be refused by her own safety scan.
+
+    Her portraits are the only companion art with a human figure in it, and the
+    accept list used to name only animals and imaginary creatures. The refusal
+    side is the part that matters and is asserted unchanged: a photorealistic
+    child is still UNSAFE.
+    """
+    from apps.media.moderation import MODERATION_PROMPT
+
+    assert "non-photographic picture-book style" in MODERATION_PROMPT
+    assert "photorealistic depiction of a real human child" in MODERATION_PROMPT
+
+
+@pytest.mark.django_db
+def test_a_princess_gets_a_descriptor_with_no_language_model(child) -> None:
+    """The fallback path, on the newest archetype rather than the oldest.
+
+    Same guarantee the dragon gets above: a companion created during a provider
+    outage still ends up art-directed rather than generic.
+    """
+    companion = create_companion(
+        child=child,
+        archetype="princess",
+        name="Rosie",
+        palette="blossom",
+        personality_preset="warm_guide",
+    )
+
+    descriptor = ensure_visual_descriptor(companion)
+
+    assert "Rosie" in descriptor
+    assert "crown" in descriptor
+    assert PALETTES["blossom"].description in descriptor
+
+
 @pytest.mark.django_db
 def test_the_descriptor_is_generated_once(companion) -> None:
     first = ensure_visual_descriptor(companion)

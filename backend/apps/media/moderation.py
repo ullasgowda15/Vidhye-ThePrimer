@@ -52,6 +52,14 @@ MODERATABLE = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 
 #: What the moderator is asked. A rubric, not a persona — and phrased as a list of
 #: refusals so a "no" needs a reason and a "yes" does not need an essay.
+#:
+#: The accept list names illustrated people on purpose. The refusal list is
+#: narrower than it looks — it forbids a *photorealistic* depiction of a real
+#: child, not a drawn one — but the old accept list offered only animals and
+#: imaginary creatures, and a classifier reading both halves had no example that
+#: matched the `princess` archetype (`companion.catalog`). A companion whose own
+#: portraits are refused by her own scan is a child staring at a missing face, so
+#: the two lists are kept explicitly in step. What is forbidden did not change.
 MODERATION_PROMPT = """\
 You are a child-safety image classifier for a storybook read by children aged 3 \
 to 7. Answer with a single word on the first line: SAFE or UNSAFE. If UNSAFE, put \
@@ -64,9 +72,10 @@ smoking; distressing or gory imagery; or readable text, a watermark or a logo \
 painted into the picture.
 
 Answer SAFE for an ordinary gentle children's-storybook illustration, including \
-friendly animals, imaginary creatures with kind faces, weather, plants, \
-buildings and everyday objects. A picture being plain, dull or badly drawn is \
-SAFE. Do not invent problems.\
+friendly animals, imaginary creatures with kind faces, people drawn in a plainly \
+non-photographic picture-book style, weather, plants, buildings and everyday \
+objects. A picture being plain, dull or badly drawn is SAFE. Do not invent \
+problems.\
 """
 
 
@@ -283,7 +292,14 @@ class GeminiImageModerator:
 #: verdict rather than as a broken moderator: a vision model refusing to look at
 #: an illustration has told us what we asked.
 _GEMINI_REFUSALS = frozenset(
-    {"SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "IMAGE_PROHIBITED_CONTENT", "BLOCKLIST", "SPII"}
+    {
+        "SAFETY",
+        "IMAGE_SAFETY",
+        "PROHIBITED_CONTENT",
+        "IMAGE_PROHIBITED_CONTENT",
+        "BLOCKLIST",
+        "SPII",
+    }
 )
 
 #: `IMAGE_MODERATION_PROVIDER` -> the classifier it names. `auto` tries them in
@@ -340,9 +356,7 @@ def select_moderator() -> ImageModerator | None:
         moderator = factory()
         if moderator.is_configured():
             return cast("ImageModerator", moderator)
-        logger.error(
-            "media.moderation_provider_unconfigured provider=%s", moderator.name
-        )
+        logger.error("media.moderation_provider_unconfigured provider=%s", moderator.name)
         return None
 
     for candidate in _AUTO_ORDER:

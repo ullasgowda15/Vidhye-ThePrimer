@@ -216,6 +216,16 @@ function CompanionMark({ archetype, colors }: { archetype: string; colors?: Pale
           <circle cx="40" cy="18" r="6" fill={secondary} />
         </>
       )}
+      {archetype === 'princess' && (
+        <>
+          {/* A crown with three blunt points, echoing the catalogue's signature
+              detail. Symmetric here on purpose: the marks are flat emblems a
+              child picks from, not portraits, and the crooked-crown detail is
+              for the illustrator to carry, not for a 64px swatch. */}
+          <path d="M20 20 l0 -10 l6 5 l6 -8 l6 8 l6 -5 l0 10 Z" fill={secondary} />
+          <circle cx="32" cy="7" r="2" fill={primary} />
+        </>
+      )}
       <circle cx="25" cy="34" r="3.5" fill="#fffdf8" />
       <circle cx="39" cy="34" r="3.5" fill="#fffdf8" />
       <circle cx="25" cy="34" r="1.8" fill="#3a2b1f" />

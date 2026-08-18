@@ -6,7 +6,7 @@ validates against them, and the descriptor prompt is built from them. Duplicatin
 them in the frontend is how "gentle fox" becomes two slightly different foxes.
 
 **Few options, excellent defaults.** §9.1 is explicit: a sixty-second setup must
-yield a lovable companion. Five archetypes, five palettes and three personality
+yield a lovable companion. Six archetypes, five palettes and four personality
 presets is a choice a four-year-old can make by pointing, and every combination
 is one we are happy to ship.
 
@@ -150,6 +150,37 @@ ARCHETYPES: dict[str, Archetype] = {
             default_palette="moss",
             default_preset="calm_anchor",
             voice_id="calm_deep",
+        ),
+        # The one archetype that is a person rather than a creature, and the only
+        # place in the catalogue where the "small soft animal" assumption does not
+        # hold. Three other files had to agree before this could exist, and they
+        # are worth knowing about before anyone edits the silhouette below:
+        #
+        # * `descriptor.SYSTEM` used to say "never a human child" outright.
+        # * `media.style.NEGATIVE_TERMS` still sends "no realistic human children"
+        #   on every render, which is a §15.9 safety control and stays.
+        # * `media.moderation.MODERATION_PROMPT` still refuses a *photorealistic*
+        #   child and now names illustrated people in what it accepts, so the
+        #   princess's own portraits are not rejected by her own safety scan.
+        #
+        # The common thread is that "human" was never the forbidden thing —
+        # *realism* is. Every word below is therefore picture-book vocabulary, and
+        # anything that drifts toward a real photographed girl will be fought by
+        # the negative prompt and then refused by moderation.
+        Archetype(
+            key="princess",
+            label="a little princess",
+            blurb="A little princess who is kind to absolutely everyone.",
+            silhouette=(
+                "a young girl drawn as a simple storybook illustration, large round head and "
+                "small rounded body like a picture-book character, big kind eyes, warm smile, "
+                "long hair, a soft flowing gown with a sash, "
+                "a tiny crown with blunt rounded points"
+            ),
+            signature="a tiny crown that always sits slightly crooked and one ribboned braid",
+            default_palette="blossom",
+            default_preset="warm_guide",
+            voice_id="warm_bright",
         ),
     )
 }

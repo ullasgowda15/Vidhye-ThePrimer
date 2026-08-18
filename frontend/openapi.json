@@ -1847,10 +1847,11 @@
                     "fox",
                     "robot",
                     "star",
-                    "owl"
+                    "owl",
+                    "princess"
                 ],
                 "type": "string",
-                "description": "* `dragon` - dragon\n* `fox` - fox\n* `robot` - robot\n* `star` - star\n* `owl` - owl"
+                "description": "* `dragon` - dragon\n* `fox` - fox\n* `robot` - robot\n* `star` - star\n* `owl` - owl\n* `princess` - princess"
             },
             "ArchetypeOption": {
                 "type": "object",
