@@ -101,7 +101,7 @@ today:
 | Who | What they receive |
 |---|---|
 | **Google** (Gemini on Vertex AI) | The most. Writes the story, grades it for safety, condenses the memories, and checks the pictures. This is the one that sees your child's first name, their fears, your avoid-topics, and what the companion remembers. |
-| **Cloudflare** (Workers AI) | Draws the pictures. Gets a description of the companion and the scene it's standing in. Google's Imagen is the backup if Cloudflare is unavailable. |
+| **Cloudflare** (Workers AI) | Draws the pictures. Gets what the companion looks like, the name your child gave it, and the scene it's standing in — never your child's own name. Google's Imagen is the backup if Cloudflare is unavailable. |
 | **Google Cloud Text-to-Speech** | Turns the finished sentence into audio. That sentence contains your child's first name whenever the companion says it. ElevenLabs is the backup. |
 
 Google sees the most because it's doing the thinking. It gets your child's fears, your
@@ -143,9 +143,17 @@ Two more rules hold this up.
 the rule-based check stands on its own, and the beat is recorded as degraded. Nothing in this
 system turns "I didn't check" into "it's fine."
 
-**Nothing is decided quietly.** Every rewrite, block and escalation is written down. You can
-see them — they're in your transparency log and in your export. I include my own refusals
-because if I hid them, that's precisely the thing you'd most want to have seen.
+**Nothing is decided quietly.** Every rewrite, block and escalation is written down, and you
+can see all of it. The two places differ, so here is exactly where each one shows up:
+
+- **In the transparency log**, a scene the safety layer *rewrote* carries a label saying so,
+  next to the version your child actually saw.
+- **In your export**, the full record — every rewrite, and also every block and escalation.
+  A blocked scene never becomes part of the story, so it has nothing to label in the log; it
+  appears in the export as an incident instead.
+
+I include my own refusals because if I hid them, that's precisely the thing you'd most want
+to have seen.
 
 Pictures are scanned on their own before they're stored or shown.
 
@@ -163,23 +171,49 @@ The memory text is encrypted in the database, with a key the database doesn't ho
 
 ## The voice recordings — read this one properly
 
-If your child can read, the companion sometimes asks them to read a line aloud. If you allow
-it, I keep that recording. Here is exactly what that means.
+If your child can read, the companion sometimes asks them to read a line aloud, and I keep
+that recording. **This is on unless you turn it off** — you don't have to switch it on, you
+have to switch it off, and I'd rather tell you that than let you find it.
 
-- It stays on my own server. It is never uploaded to storage and never sent to another
-  company.
-- Nothing has listened to it. Not a person, not a program.
-- It never decides anything about your child, and the app never tells them they got a word
+### What is true today
+
+- The recording stays on my own machine. It is never uploaded to storage and never sent to
+  another company.
+- Nothing has listened to it. Not a person, not a program. There is no score, no verdict, no
+  per-word result — the database has nowhere to put one.
+- It decides nothing about your child, and the app never tells them they read something
   wrong.
-- Switch it off for a child and every recording I hold of them is deleted immediately.
-  Deleting the child or the account does the same.
+- Switch it off for a child and every recording I hold of them is deleted immediately, files
+  and all. Deleting the child or the account does the same.
 
-Why I keep them at all: I need to know whether the app actually heard a real child. It was
-built and tested on adults imitating children, and that isn't good enough to correct a real
-five-year-old with.
+### What I am keeping them *for*
 
-If that trade isn't one you want to make, turn it off. The rest of the product works exactly
-the same without it.
+I should be straight about this, because "nothing listens to it" is true now and is not the
+end state I'm working towards.
+
+I want the companion to help your child learn to read. To do that I need software that can
+hear a five-year-old say a sound and tell whether they got it — and the version I have was
+built and tuned on **adults imitating children**, which is not good enough to correct a real
+child with. These recordings are how I fix that.
+
+So the plan, in order:
+
+1. **Now.** Collect. Nothing analyses anything.
+2. **Next.** Run the collected recordings through the detector, off in the background, and
+   retune it against how children actually speak. Out of this, your dashboard starts showing
+   which sounds your child has solid and which are shaky — in plain language, not a score.
+   Still nothing reaches your child while they're reading.
+3. **Only after that works.** The companion starts gently correcting a sound as your child
+   reads — in its own voice, and only for mistakes the detector has been proven right about.
+
+Step 2 is the one to weigh, because that's where a recording stops being an archive and
+becomes an assessment of your child. When it's ready I'll say so here and on the dashboard,
+before it turns on, not after.
+
+### If that isn't a trade you want
+
+Turn it off. The rest of the product works exactly the same, and your child is never told
+they opted out of anything.
 
 ---
 
@@ -209,7 +243,7 @@ are summaries for you; Transparency is the raw record.
 **Take a copy.** **Privacy** in the header → export. One zip: the account, each child's
 profile and settings, their companion, every adventure with every beat and every choice
 verbatim, every memory, learning progress, the world map, every report, and my safety
-incidents. No embeddings — a few hundred numbers per memory would tell you nothing.
+incidents. No embeddings — that's 1,536 numbers per memory and it would tell you nothing.
 
 **Limit it without deleting.** A child's **Settings**: shorter sittings, a lower intensity
 ceiling, a narrower daily window, more avoid-topics. Every control there can only reduce.
@@ -219,9 +253,16 @@ There is nothing in this product that lengthens your child's time in it.
 profile, companion, every story, memory, report, picture, and any recording of their voice.
 The account does that for every child, then removes the account.
 
-Both are immediate and neither can be undone. I keep one thing: a dated line saying a
-deletion happened, so I can prove it did. It holds a scrambled form of your email that can't
-be turned back into an address, and nothing else.
+Both are immediate and neither can be undone.
+
+I keep one record of it, so I can prove the deletion happened. It is six things and no more:
+the date, the internal id of the account (which now points at nothing), a scrambled form of
+your email, and three counts — how many children, how many files, how many stored objects
+were removed. Nothing about who your child was, or a word they read or heard.
+
+The scrambled email can't be turned back into an address. It *can* be matched if you already
+have the address, which is deliberate: it's how I can answer "was this account really
+deleted?" without keeping the account.
 
 ---
 
@@ -234,6 +275,7 @@ be turned back into an address, and nothing else.
 | Restoring one | A backup only ever brings the whole service back after a disaster. It is never used to restore one family. Anything deleted before the disaster gets deleted again straight after — that step is in the written procedure, not in my memory. |
 | Access logs | Nobody outside a very small team can reach this data, but I don't yet have audited logging of who looked at what. I'll build it before the pilot widens, and this page will say so when I have. |
 | Provider logs | I control what I send and the terms it's sent under. I don't control what a provider writes in its own logs, and I'm not going to pretend otherwise. |
+| Reading recordings | Kept on by default, which is a choice that suits a pilot of children whose parents I have spoken to personally and does not automatically suit a thousand. It gets revisited before this is open to families I haven't met. |
 | A public version of this | The privacy centre is still behind sign-in, which means you have to create an account to read it. That's the wrong way round and I know it. This document is what I can hand you until there's a page anyone can open. |
 
 The 7-day number is read from the live setting wherever it's shown in the app, so it can't
