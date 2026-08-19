@@ -36,10 +36,12 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.shortcuts import render
 from django.utils import timezone
 
-from apps.analytics import budget, cost, metrics
+from apps.analytics import budget, cost, insights, metrics
 from apps.analytics.models import Event, GenerationCost
 
 if TYPE_CHECKING:
+    import zoneinfo
+
     from django.http import HttpRequest, HttpResponse
 
 #: The windows the page offers. Seven days is the default because §22.1's North
@@ -62,6 +64,19 @@ def days_from(request: HttpRequest) -> int:
     return requested if requested in WINDOWS else DEFAULT_DAYS
 
 
+def zone_from(request: HttpRequest) -> zoneinfo.ZoneInfo:
+    """`?tz=` as a timezone, clamped to the offered list.
+
+    Separate from `days_from` because it changes a different class of number.
+    `days` changes *how much* is counted; `tz` changes only how the clock readings
+    are bucketed — every rate, funnel and cohort on the page is computed in the
+    server's own UTC day and is untouched by this. That split is deliberate and is
+    stated on the page: a retention cohort that moved when somebody changed a
+    dropdown would be a metric nobody could quote.
+    """
+    return insights.resolve_zone(request.GET.get("tz"))
+
+
 @staff_member_required
 def metrics_dashboard(request: HttpRequest) -> HttpResponse:
     """`/admin/metrics` — §22's numbers for one window.
@@ -71,10 +86,14 @@ def metrics_dashboard(request: HttpRequest) -> HttpResponse:
     403 with no way forward, and so this page's idea of "staff" is the same one
     `/admin/` uses.
     """
-    return render(request, "analytics/metrics.html", dashboard_context(days_from(request)))
+    return render(
+        request,
+        "analytics/metrics.html",
+        dashboard_context(days_from(request), zone=zone_from(request)),
+    )
 
 
-def dashboard_context(days: int) -> dict[str, Any]:
+def dashboard_context(days: int, *, zone: zoneinfo.ZoneInfo | None = None) -> dict[str, Any]:
     """Every number both dashboards render, computed once.
 
     `/admin/metrics` and `/admax` (`apps.analytics.admax`) are two renderings of
@@ -84,11 +103,19 @@ def dashboard_context(days: int) -> dict[str, Any]:
     nobody will know which is the metric.
     """
     window = metrics.Window.last(days)
+    clock = zone or insights.resolve_zone(None)
     return {
         "days": days,
         "windows": WINDOWS,
         "window": window,
         "snapshot": metrics.snapshot(window),
+        # The behavioural half: when families are here, who they are, where the
+        # time goes and where a story loses them (`apps.analytics.insights`).
+        # Everything §22 judges the product on is in `snapshot`; everything that
+        # explains *why* a §22 number reads the way it does is in here.
+        "insights": insights.snapshot(window, zone=clock),
+        "zone": str(clock),
+        "zones": insights.ZONES,
         "targets": TARGETS,
         # The cohort table's column headings. Built here rather than in the
         # template because Django's template language cannot count, and a
@@ -143,20 +170,30 @@ def _recent_spans(limit: int = 20) -> list[dict[str, Any]]:
     ]
 
 
-def as_text(window_days: int = DEFAULT_DAYS, *, now: datetime.datetime | None = None) -> str:
+def as_text(
+    window_days: int = DEFAULT_DAYS,
+    *,
+    now: datetime.datetime | None = None,
+    tz: str | None = None,
+) -> str:
     """The same page as plain text, for `manage.py metrics`.
 
-    Shares `metrics.snapshot` and `cost.cost_per_session` with the HTML view — the
-    numbers are computed once, in one module, and rendered twice. A terminal
-    report with its own arithmetic is a second dashboard that will disagree with
-    the first.
+    Shares `metrics.snapshot`, `insights.snapshot` and `cost.cost_per_session`
+    with the HTML view — the numbers are computed once, in one module, and
+    rendered twice. A terminal report with its own arithmetic is a second
+    dashboard that will disagree with the first.
+
+    `tz` is the clock the behavioural sections are read on, exactly as `?tz=` is
+    on the page. It moves no rate and no cohort — see `zone_from`.
     """
     window = metrics.Window.last(window_days, now=now)
+    zone = insights.resolve_zone(tz)
     snapshot = metrics.snapshot(window)
+    reading = insights.snapshot(window, zone=zone)
     spend = cost.cost_per_session(since=window.since, until=window.until)
 
     lines = [
-        f"The Primer — metrics for the last {window_days} days",
+        f"The Primer - metrics for the last {window_days} days",
         f"  {window.since:%Y-%m-%d %H:%M} .. {window.until:%Y-%m-%d %H:%M}",
         "",
         "Funnel and engagement (PRODUCT.md 22.3)",
@@ -213,6 +250,8 @@ def as_text(window_days: int = DEFAULT_DAYS, *, now: datetime.datetime | None = 
             f"finished {finished:>5} ({row['completed']}/{row['started']})"
         )
 
+    lines += _insight_lines(reading)
+
     lines += ["", "Unit economics (22.4)"]
     per_session = spend["cost_per_session_usd"]
     lines.append(
@@ -230,7 +269,7 @@ def as_text(window_days: int = DEFAULT_DAYS, *, now: datetime.datetime | None = 
     length = guardrails["session_minutes"]
     lines += [
         "",
-        "Wellbeing guardrails (22.5) — watched, never maximised",
+        "Wellbeing guardrails (22.5) - watched, never maximised",
         f"  sittings                {guardrails['sessions']}",
         f"  ended reasons           {guardrails['ended_reasons'] or '-'}",
         (
@@ -285,6 +324,197 @@ def _breaker_line() -> str:
         f"({state.fraction * 100:.0f}%) this {state.window_s}s window, "
         f"resets in {state.resets_in_s}s"
     )
+
+
+def _bar(value: float, peak: float, width: int = 24) -> str:
+    """A value as a block bar against a shared peak.
+
+    The peak is passed in rather than taken per row, because a bar chart whose
+    longest bar is always full width is not a chart — it is the same picture for
+    every dataset. A non-zero value always gets at least one block, so "one" and
+    "none" never look identical.
+
+    `#` rather than a block-drawing character, for the reason the `metrics`
+    command already gives about section headings: this goes to a Windows console,
+    which mangles anything outside ASCII.
+    """
+    if peak <= 0:
+        return ""
+    filled = int(round(width * value / peak))
+    return "#" * (filled or (1 if value else 0))
+
+
+def _pct(rate: metrics.Rate) -> str:
+    """A `Rate` as a percentage, or `-` when there is nothing to divide by."""
+    return f"{rate.pct:.0f}%" if rate.pct is not None else "-"
+
+
+def _rounded(value: float | None, unit: str = "") -> str:
+    return f"{value:.1f}{unit}" if value is not None else "-"
+
+
+def _insight_lines(reading: dict[str, Any]) -> list[str]:
+    """The behavioural half, in text (`apps.analytics.insights`).
+
+    Deliberately a *summary* of what the page draws, not a transcription of it: the
+    account roster and the 7x24 grid are tables that a terminal cannot show without
+    becoming unreadable, and the number worth having in a shell — the peak hour,
+    the beat that loses them, the position bias — is a line each. Anything printed
+    here is the same object the template renders, so the two cannot drift.
+    """
+    clock = reading["clock"]
+    daily = reading["daily"]
+    accounts = reading["accounts"]
+    speed = reading["activation_speed"]
+    attention = reading["attention"]
+    flow = reading["storyflow"]
+    tapping = reading["interaction"]
+    audience = reading["audience"]
+    content = reading["content"]
+
+    lines = ["", f"When families are here (clock: {clock['zone']})"]
+    if not clock["plays"]:
+        lines.append("  no adventures started in this window")
+    else:
+        lines.append(
+            f"  busiest hour {clock['busiest_hour']}"
+            f"   busiest day {clock['busiest_weekday']}"
+            f"   weekend share {_pct(clock['weekend_share'])}"
+        )
+        for row in clock["hours"]:
+            if row["plays"] or row["signups"]:
+                lines.append(
+                    f"  {row['label']}:00  {row['plays']:>4} "
+                    f"{_bar(row['plays'], clock['peak_plays'])}"
+                    + (f"   +{row['signups']} signup" if row["signups"] else "")
+                )
+        for part in clock["dayparts"]:
+            lines.append(
+                f"  {part['label']:<10} {part['window']}  "
+                f"{part['plays']:>4}  {_pct(part['share']):>5}"
+            )
+
+    lines += ["", "Day by day"]
+    for row in daily["series"]:
+        lines.append(
+            f"  {row['date']} {'(wk)' if row['weekend'] else '    '} "
+            f"{row['signups']:>3} signups  {row['children']:>3} children  "
+            f"{row['started']:>4} started  {row['completed']:>4} finished  "
+            f"{row['minutes']:>5} min  {_bar(row['started'], daily['max_started'], 16)}"
+        )
+
+    lines += ["", f"Signups - {accounts['total']} in this window"]
+    for stage in accounts["stages"]:
+        lines.append(f"  {stage['label']:<16} {stage['count']:>4}  {_pct(stage['share']):>5}")
+    lines.append(
+        f"  first story arrived in a median of "
+        f"{_rounded(speed['to_first_completion']['median'], 'h')} "
+        f"({speed['activated']} activated, {speed['waiting']} still waiting)"
+    )
+    lines.append(
+        "  the roster of who signed up and when is on /admax - it names accounts, "
+        "so it is not printed here"
+    )
+
+    lines += ["", "Where the time goes"]
+    lines.append(
+        f"  sitting length   median {_rounded(attention['sitting_minutes']['median'], 'min')}"
+        f"  p90 {_rounded(attention['sitting_minutes']['p90'], 'min')}"
+        f"   ({attention['sitting_minutes']['measured']} measured)"
+    )
+    lines.append(
+        f"  beats/sitting    median {_rounded(attention['beats_per_sitting']['median'])}"
+        f"   pacing {_rounded(attention['minutes_per_beat']['median'], 'min')}/beat"
+    )
+    for row in attention["worlds"]:
+        lines.append(
+            f"  {row['world']:<22} {row['minutes']:>5} min  {_pct(row['share']):>5}"
+            f"  {row['sittings']:>3} sittings  avg {_rounded(row['avg_min'], 'min')}"
+        )
+
+    lines += ["", "How far into a story they get"]
+    if not flow["reached_one"]:
+        lines.append("  no beats delivered in this window")
+    else:
+        for row in flow["rows"]:
+            if not row["reached"]:
+                continue
+            lines.append(
+                f"  beat {row['seq']:>2}  {row['reached']:>4}  "
+                f"{_pct(row['of_first']):>5} of first  {_pct(row['kept']):>5} kept"
+                + (f"  lost {row['lost']}" if row["lost"] else "")
+            )
+        if flow["worst_step"]:
+            lines.append(
+                f"  biggest drop: beat {flow['worst_step']['seq']} "
+                f"({flow['worst_step']['lost']} adventures)"
+            )
+        if flow["no_first_beat"]:
+            lines.append(
+                f"  started but never got a first beat: {flow['no_first_beat']}"
+                "  <- a generation failure, not a drop-off"
+            )
+
+    lines += ["", "How children answer"]
+    lines.append(
+        f"  decision time    median {_rounded(tapping['latency_s']['median'], 's')}"
+        f"  p90 {_rounded(tapping['latency_s']['p90'], 's')}"
+        f"   under 2s: {_pct(tapping['instant'])}"
+    )
+    lines.append(
+        f"  needed a retry {_pct(tapping['retried'])}"
+        f"   companion helped {_pct(tapping['assisted'])}"
+        f"   (learning beats {_pct(tapping['assisted_on_learning'])},"
+        f" story beats {_pct(tapping['assisted_on_story'])})"
+    )
+    # Where on the screen they tapped, against what chance alone would give. The
+    # `x` column is the one to read: 1.00 is chance, and a first card well above it
+    # means the cards are not being read.
+    if tapping["positioned"]:
+        lines.append(
+            f"  positions   ({tapping['positioned']} of {tapping['choices']} choices"
+            f" recorded one)"
+        )
+        for row in tapping["positions"]:
+            lift = f"x{row['lift']:.2f}" if row["lift"] else "   -"
+            lines.append(
+                f"    {row['label']:<5} card  {row['count']:>5}  {_pct(row['share']):>5}"
+                f"   chance {row['expected_pct'] or 0:>4.0f}%   {lift}"
+            )
+    else:
+        lines.append("  positions   none recorded in this window")
+
+    lines.append(
+        f"  {tapping['distinct_options']} distinct options taken;"
+        f" the most-taken is {_pct(tapping['top_option_share'])} of all choices"
+    )
+    for row in tapping["options"]:
+        lines.append(f"  option {row['label']:<28} {row['count']:>5}  {_pct(row['share']):>5}")
+
+    lines += ["", "Who these families are"]
+    for label, rows in (
+        ("age", audience["age_bands"]),
+        ("companion", audience["archetypes"]),
+        ("session cap", audience["session_caps"]),
+        ("intensity", audience["intensity_ceilings"]),
+    ):
+        for row in rows[:6]:
+            lines.append(
+                f"  {label:<12} {row['label']:<18} {row['count']:>4}  {_pct(row['share'])}"
+            )
+    lines.append(f"  parents who seeded interests {_pct(audience['seeded'])}")
+
+    lines += ["", "What the machine served"]
+    for row in content["safety"]:
+        lines.append(f"  safety {row['label']:<18} {row['count']:>5}  {_pct(row['share'])}")
+    for row in content["interactions"][:8]:
+        lines.append(f"  asked  {row['label']:<18} {row['count']:>5}  {_pct(row['share'])}")
+    lines.append(
+        f"  learning asks {_pct(content['learning_asks'])}"
+        f"   returning places {_pct(content['returning_places'])}"
+        f"   difficulty median {_rounded(content['difficulty']['median'])}"
+    )
+    return lines
 
 
 def _funnel_lines(rows: list[dict[str, Any]]) -> list[str]:

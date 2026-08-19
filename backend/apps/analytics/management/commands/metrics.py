@@ -12,7 +12,7 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
 
-from apps.analytics import internal
+from apps.analytics import insights, internal
 
 
 class Command(BaseCommand):
@@ -29,8 +29,18 @@ class Command(BaseCommand):
                 "anything under 7 cannot contain one."
             ),
         )
+        parser.add_argument(
+            "--tz",
+            default=insights.DEFAULT_ZONE,
+            choices=list(insights.ZONES),
+            help=(
+                "The clock the behavioural sections are read on (default: "
+                f"{insights.DEFAULT_ZONE}). It buckets hours and calendar days "
+                "only — no rate, funnel or cohort moves when you change it."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         # Plain ASCII section headings in `as_text` on purpose: this prints to a
         # terminal, and the Windows console mangles anything that is not.
-        self.stdout.write(internal.as_text(options["days"]))
+        self.stdout.write(internal.as_text(options["days"], tz=options["tz"]))

@@ -1,15 +1,23 @@
 {% comment %}
-Shared shell for the three `/admax` pages (`apps.analytics.admax`).
+Shared shell for the three `/admax` pages and for `/admin/metrics`
+(`apps.analytics.admax`, `apps.analytics.internal`).
 
 **Every byte of CSS is inline, and that is the point.** This page exists because
 the Django admin is unstyled in production — `infra/Dockerfile.backend` runs no
 `collectstatic` and `staticfiles_urlpatterns()` is DEBUG-only — so a dashboard
 that linked a stylesheet would fail in exactly the same way, in exactly the same
-environment, for exactly the same reason. No `<link>`, no `<script src>`, no font
-CDN: this renders correctly from a single HTML response or it is broken.
+environment, for exactly the same reason. No `<link>`, no `<script>`, no font CDN,
+no chart library: this renders correctly from a single HTML response or it is
+broken. Every chart is CSS boxes sized by Django's `widthratio` — the one piece of
+arithmetic the template language has — so the charts have no runtime at all and
+nothing to fail after the page has loaded.
 
-`color-scheme: light dark` plus system colours means it follows the operator's
-theme without a media query per rule.
+**The palette is explicit rather than the system `Canvas`/`CanvasText` it used
+to be.** Charts need a known surface: a shade in a sequential ramp only means
+"more" if the colour it sits on is fixed, and system colours are not. Both modes
+are chosen, not flipped — the dark steps are their own steps against the dark
+surface (see the data-viz reference palette). `color-scheme` is still declared so
+form controls and scrollbars follow.
 {% endcomment %}<!doctype html>
 <html lang="en">
 <head>
@@ -18,79 +26,249 @@ theme without a media query per rule.
   <meta name="robots" content="noindex, nofollow">
   <title>{% block title %}The Primer — ops{% endblock %}</title>
   <style>
-    :root { color-scheme: light dark; --line: rgba(128,128,128,.35); }
+    /* ---- tokens ------------------------------------------------------- */
+    :root {
+      color-scheme: light;
+      --plane:   #f9f9f7;
+      --surface: #fcfcfb;
+      --ink:     #0b0b0b;
+      --ink-2:   #52514e;
+      --muted:   #898781;
+      --grid:    #e1e0d9;
+      --axis:    #c3c2b7;
+      --ring:    rgba(11,11,11,.10);
+
+      --s1: #2a78d6;   /* play / the primary series          */
+      --s2: #eb6834;   /* signups / the second series        */
+      --s3: #1baf7a;   /* completions                        */
+
+      --good:     #0ca30c;
+      --warning:  #fab219;
+      --serious:  #ec835a;
+      --critical: #d03b3b;
+
+      /* Sequential blue, light->dark, for the heatmap only. */
+      --h0: #f2f1ec; --h1: #cde2fb; --h2: #86b6ef;
+      --h3: #3987e5; --h4: #1c5cab; --h5: #0d366b;
+      --h-ink: #ffffff;   /* label ink on the two darkest steps */
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --plane:   #0d0d0d;
+        --surface: #1a1a19;
+        --ink:     #ffffff;
+        --ink-2:   #c3c2b7;
+        --muted:   #898781;
+        --grid:    #2c2c2a;
+        --axis:    #383835;
+        --ring:    rgba(255,255,255,.10);
+
+        --s1: #3987e5;
+        --s2: #d95926;
+        --s3: #199e70;
+
+        /* Dark-surface steps of the same one hue: darkest = least. */
+        --h0: #232322; --h1: #184f95; --h2: #256abf;
+        --h3: #3987e5; --h4: #6da7ec; --h5: #b7d3f6;
+        --h-ink: #0b0b0b;
+      }
+    }
+
     * { box-sizing: border-box; }
     body {
-      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      margin: 0; padding: 2rem 1.5rem 4rem;
-      background: Canvas; color: CanvasText;
+      font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0; padding: 1.5rem 1.25rem 4rem;
+      background: var(--plane); color: var(--ink);
     }
     a { color: inherit; }
-    h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-    h2 { font-size: 1.1rem; margin: 2.5rem 0 .35rem; }
-    h3 { font-size: .95rem; margin: 1.5rem 0 .35rem; }
-    p.sub { margin: 0 0 1.25rem; opacity: .7; font-size: .875rem; }
-    p.why { margin: .1rem 0 .75rem; font-size: .875rem; opacity: .8; max-width: 60rem; }
-    code { font-size: .9em; }
+    h1 { font-size: 1.35rem; margin: 0 0 .2rem; letter-spacing: -.01em; }
+    h2 { font-size: 1.05rem; margin: 0; letter-spacing: -.01em; }
+    h3 { font-size: .8125rem; margin: 0 0 .6rem; color: var(--ink-2);
+         text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+    p  { margin: 0; }
+    code { font: .85em ui-monospace, "SF Mono", Consolas, monospace; }
+    .muted { color: var(--muted); }
+    .page { max-width: 84rem; margin: 0 auto; }
 
-    /* --- the sign-in pages --- */
+    /* ---- sign-in pages ------------------------------------------------ */
     .card {
       max-width: 22rem; margin: 12vh auto 0; padding: 1.75rem;
-      border: 1px solid var(--line); border-radius: .75rem;
+      background: var(--surface);
+      border: 1px solid var(--ring); border-radius: .75rem;
     }
     .card h1 { font-size: 1.15rem; }
-    label { display: block; font-size: .8125rem; opacity: .8; margin: 1rem 0 .25rem; }
-    input {
-      width: 100%; padding: .55rem .7rem; font: inherit;
-      background: Canvas; color: CanvasText;
-      border: 1px solid var(--line); border-radius: .4rem;
+    label { display: block; font-size: .8125rem; color: var(--ink-2); margin: 1rem 0 .25rem; }
+    input, select {
+      width: 100%; padding: .5rem .65rem; font: inherit;
+      background: var(--surface); color: var(--ink);
+      border: 1px solid var(--axis); border-radius: .4rem;
     }
     input.code {
       font: 1.6rem/1 ui-monospace, "SF Mono", Consolas, monospace;
       letter-spacing: .5rem; text-align: center; padding: .7rem;
     }
     button {
-      width: 100%; margin-top: 1.25rem; padding: .6rem 1rem; font: inherit; font-weight: 600;
-      background: CanvasText; color: Canvas;
+      padding: .5rem 1rem; font: inherit; font-weight: 600;
+      background: var(--ink); color: var(--plane);
       border: 0; border-radius: .4rem; cursor: pointer;
     }
+    .card button { width: 100%; margin-top: 1.25rem; }
     .error {
       margin-top: 1rem; padding: .6rem .7rem; font-size: .875rem;
-      border: 1px solid currentColor; border-radius: .4rem;
+      color: var(--critical);
+      border: 1px solid var(--critical); border-radius: .4rem;
     }
 
-    /* --- the dashboard --- */
-    .page { max-width: 68rem; margin: 0 auto; }
-    nav a {
-      display: inline-block; padding: .25rem .7rem; margin: 0 .35rem .35rem 0;
-      border: 1px solid currentColor; border-radius: 999px;
-      text-decoration: none; font-size: .8125rem; opacity: .65;
-    }
-    nav a[aria-current="page"] { opacity: 1; font-weight: 600; }
-    table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-    caption { text-align: left; font-size: .8125rem; opacity: .75; padding-bottom: .4rem; }
-    th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--line); }
-    th { font-weight: 600; font-size: .8125rem; opacity: .75; }
-    td.n, th.n { text-align: right; }
-    .grid { display: flex; flex-wrap: wrap; gap: 1.25rem 2.5rem; margin: .5rem 0 0; padding: 0; }
-    .grid div { min-width: 9rem; }
-    .grid dt { font-size: .8125rem; opacity: .7; }
-    .grid dd { margin: .15rem 0 0; font-size: 1.5rem; font-weight: 600; }
-    .muted { opacity: .6; }
-    .flag { font-weight: 600; }
-    .wrap { overflow-x: auto; }
+    /* ---- top bar and controls ----------------------------------------- */
     .topbar {
-      display: flex; flex-wrap: wrap; gap: .75rem; align-items: baseline;
-      justify-content: space-between; border-bottom: 1px solid var(--line);
-      padding-bottom: .75rem; margin-bottom: 1.25rem;
+      display: flex; flex-wrap: wrap; gap: .75rem 1.5rem; align-items: flex-end;
+      justify-content: space-between; margin-bottom: 1rem;
     }
-    .topbar form { display: inline; }
-    .topbar button { width: auto; margin: 0; padding: .25rem .7rem; font-size: .8125rem; }
-    footer { margin-top: 3.5rem; padding-top: 1rem; border-top: 1px solid var(--line);
-             font-size: .8125rem; opacity: .7; }
-    dl.glossary { margin: 0; }
-    dl.glossary dt { font-weight: 600; margin-top: .75rem; font-size: .875rem; }
-    dl.glossary dd { margin: .15rem 0 0; font-size: .875rem; opacity: .85; }
+    .topbar .sub { font-size: .8125rem; color: var(--muted); }
+    .topbar button { padding: .3rem .8rem; font-size: .8125rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: .4rem 1.25rem; align-items: center;
+                margin-bottom: 1.5rem; }
+    .controls .lab { font-size: .75rem; color: var(--muted);
+                     text-transform: uppercase; letter-spacing: .06em; }
+    .seg { display: inline-flex; border: 1px solid var(--axis); border-radius: .4rem;
+           overflow: hidden; }
+    .seg a { padding: .25rem .7rem; font-size: .8125rem; text-decoration: none;
+             color: var(--ink-2); border-right: 1px solid var(--axis); }
+    .seg a:last-child { border-right: 0; }
+    .seg a[aria-current="page"] { background: var(--ink); color: var(--plane); font-weight: 600; }
+
+    /* ---- jump links ----------------------------------------------------- */
+    nav.jump { display: flex; flex-wrap: wrap; gap: .3rem .4rem; margin: 0 0 1.5rem; }
+    nav.jump a {
+      padding: .18rem .6rem; font-size: .75rem; text-decoration: none;
+      color: var(--ink-2); background: var(--surface);
+      border: 1px solid var(--ring); border-radius: 999px;
+    }
+    nav.jump a:hover { border-color: var(--axis); color: var(--ink); }
+    section { scroll-margin-top: 1rem; }
+
+    /* ---- stat tiles ---------------------------------------------------- */
+    .tiles { display: grid; gap: .75rem; margin-bottom: 1.5rem;
+             grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr)); }
+    .tile { background: var(--surface); border: 1px solid var(--ring);
+            border-radius: .6rem; padding: .7rem .85rem; }
+    .tile .k { font-size: .75rem; color: var(--muted); display: block;
+               text-transform: uppercase; letter-spacing: .05em; }
+    .tile .v { font-size: 1.6rem; font-weight: 650; line-height: 1.2; margin-top: .15rem;
+               display: block; letter-spacing: -.02em; }
+    .tile .n { font-size: .75rem; color: var(--ink-2); display: block; margin-top: .1rem; }
+
+    /* ---- panels -------------------------------------------------------- */
+    .panels { display: grid; gap: 1rem; margin-bottom: 1rem;
+              grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+    .panels.wide { grid-template-columns: repeat(auto-fit, minmax(30rem, 1fr)); }
+    .panel { background: var(--surface); border: 1px solid var(--ring);
+             border-radius: .6rem; padding: .95rem 1.1rem 1.1rem; min-width: 0; }
+    .panel.full { grid-column: 1 / -1; }
+    section { margin: 2.25rem 0 0; }
+    .shead { display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem 1rem;
+             margin: 0 0 .6rem; padding-bottom: .4rem; border-bottom: 1px solid var(--grid); }
+    .shead .n { font-size: .8125rem; color: var(--muted); }
+
+    /* "How to read this" — present, never in the way. The prose is part of the
+       deliverable; a dashboard is not. */
+    details.why { margin-top: .75rem; font-size: .8125rem; color: var(--ink-2); }
+    details.why > summary { cursor: pointer; color: var(--muted); }
+    details.why > summary::marker { color: var(--axis); }
+    details.why p { margin: .5rem 0 0; max-width: 62rem; }
+
+    /* ---- column chart (hour of day, day by day) ------------------------ */
+    .cols { display: flex; align-items: flex-end; gap: 2px; height: 108px;
+            border-bottom: 1px solid var(--axis); }
+    .cols > div { flex: 1 1 0; min-width: 0; display: flex; align-items: flex-end; height: 100%; }
+    .cols i { display: block; width: 100%; background: var(--s1);
+              border-radius: 3px 3px 0 0; min-height: 1px; }
+    .cols i.s2 { background: var(--s2); }
+    .cols i.s3 { background: var(--s3); }
+    .cols > div.zero i { background: var(--grid); }
+    .cols > div.wk i { opacity: .68; }
+    .xax { display: flex; gap: 2px; margin-top: .3rem;
+           font: 600 .625rem/1 system-ui; color: var(--muted);
+           font-variant-numeric: tabular-nums; }
+    .xax > span { flex: 1 1 0; min-width: 0; text-align: center;
+                  overflow: hidden; white-space: nowrap; }
+    .peak { font-size: .75rem; color: var(--muted); margin-bottom: .35rem; }
+
+    /* ---- horizontal bars ----------------------------------------------- */
+    .hb { display: grid; grid-template-columns: minmax(5rem, 11rem) 1fr auto;
+          gap: .5rem .6rem; align-items: center; font-size: .8125rem; }
+    .hb > .l { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; }
+    .hb > .t { position: relative; height: 11px; background: var(--grid);
+               border-radius: 3px; }
+    .hb > .t > i { display: block; height: 100%; background: var(--s1);
+                   border-radius: 3px; min-width: 2px; }
+    .hb > .t > i.s2 { background: var(--s2); }
+    .hb > .t > i.s3 { background: var(--s3); }
+    .hb > .v { font-variant-numeric: tabular-nums; color: var(--ink);
+               font-weight: 600; white-space: nowrap; }
+    /* The reference line an "is this even?" bar is read against. */
+    .hb > .t > b { position: absolute; top: -3px; bottom: -3px; width: 2px;
+                   background: var(--ink-2); opacity: .55; }
+
+    /* ---- heatmap -------------------------------------------------------- */
+    .heat { display: grid; grid-template-columns: 2.3rem repeat(24, 1fr);
+            gap: 2px; min-width: 34rem; }
+    .heat > .rl { font-size: .6875rem; color: var(--muted); align-self: center; }
+    .heat > .hl { font: 600 .5625rem/1 system-ui; color: var(--muted);
+                  text-align: center; font-variant-numeric: tabular-nums; }
+    .heat > .c { aspect-ratio: 1 / 1; border-radius: 2px; background: var(--h0);
+                 min-height: 12px; }
+    .heat > .c.l1 { background: var(--h1); }
+    .heat > .c.l2 { background: var(--h2); }
+    .heat > .c.l3 { background: var(--h3); }
+    .heat > .c.l4 { background: var(--h4); }
+    .heat > .c.l5 { background: var(--h5); }
+    .scale { display: flex; align-items: center; gap: .35rem; margin-top: .6rem;
+             font-size: .75rem; color: var(--muted); }
+    .scale i { width: 1.4rem; height: .6rem; border-radius: 2px; display: block; }
+
+    /* ---- tables --------------------------------------------------------- */
+    .wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; font-size: .8125rem;
+            font-variant-numeric: tabular-nums; }
+    caption { text-align: left; font-size: .75rem; color: var(--muted); padding-bottom: .4rem; }
+    th, td { text-align: left; padding: .35rem .55rem; border-bottom: 1px solid var(--grid);
+             white-space: nowrap; }
+    th { font-weight: 600; font-size: .6875rem; color: var(--muted);
+         text-transform: uppercase; letter-spacing: .05em; }
+    td.n, th.n { text-align: right; }
+    tbody tr:last-child td { border-bottom: 0; }
+
+    /* ---- chips and status ------------------------------------------------ */
+    .chip { display: inline-block; padding: .05rem .45rem; border-radius: 999px;
+            font-size: .6875rem; font-weight: 600; border: 1px solid var(--axis);
+            color: var(--ink-2); white-space: nowrap; }
+    .chip.good     { border-color: var(--good);     color: var(--good); }
+    .chip.warning  { border-color: var(--warning);  color: var(--ink-2); }
+    .chip.serious  { border-color: var(--serious);  color: var(--ink-2); }
+    .chip.critical { border-color: var(--critical); color: var(--critical); }
+    .legend { display: flex; flex-wrap: wrap; gap: .25rem .9rem; margin-bottom: .5rem;
+              font-size: .75rem; color: var(--ink-2); }
+    .legend span { display: inline-flex; align-items: center; gap: .3rem; }
+    .legend i { width: .7rem; height: .7rem; border-radius: 2px; background: var(--s1); }
+    .legend i.s2 { background: var(--s2); }
+    .legend i.s3 { background: var(--s3); }
+    .kv { display: flex; flex-wrap: wrap; gap: .35rem 1.5rem; font-size: .8125rem;
+          color: var(--ink-2); margin: 0 0 .6rem; }
+    .kv b { color: var(--ink); font-weight: 650; }
+    .empty { font-size: .8125rem; color: var(--muted); padding: .6rem 0; }
+
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--grid);
+             font-size: .75rem; color: var(--muted); }
+    footer p { margin-bottom: .5rem; max-width: 62rem; }
+    dl.glossary { margin: 0; display: grid; gap: .4rem 1.5rem;
+                  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); }
+    dl.glossary dt { font-weight: 650; font-size: .8125rem; color: var(--ink); }
+    dl.glossary dd { margin: 0 0 .4rem; font-size: .8125rem; color: var(--ink-2); }
+
+    @media print { body { background: #fff; } .controls, .topbar button { display: none; } }
   </style>
 </head>
 <body>

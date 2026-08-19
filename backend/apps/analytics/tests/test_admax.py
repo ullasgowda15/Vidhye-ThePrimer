@@ -26,7 +26,7 @@ from django.test import Client
 from django.utils import timezone
 
 from apps.analytics import admax, totp
-from apps.analytics.models import AdmaxCredential
+from apps.analytics.models import AdmaxCredential, Event
 
 pytestmark = pytest.mark.django_db
 
@@ -299,12 +299,22 @@ class TestThePageExplainsItself:
         body = client.get(f"{DASHBOARD}?days=90").content.decode()
 
         for section in (
-            "The five headline metrics",
+            # The behavioural half — when families are here, who they are, where
+            # the time goes, and where a story loses them.
+            "Who signed up, and what happened next",
+            "When families are actually here",
+            "Day by day",
+            "Where the time goes",
+            "Where a story loses them",
+            "How children answer",
+            "Who these families are",
+            "What the machine served",
+            # The §22 half.
+            "The metrics the product is judged on",
             "Where families stop",
-            "How many children are still here",
             "Is retention improving?",
             "Adventures per child per week",
-            "What children actually pick",
+            "Children still here",
             "What it costs",
             "Wellbeing guardrails",
             "Is the pipeline healthy?",
@@ -312,10 +322,36 @@ class TestThePageExplainsItself:
         ):
             assert section in body, section
 
-        # The explanations themselves, not just the headings.
-        assert "How to read this page" in body
+        # The explanations themselves, not just the headings. Each of these lives
+        # inside a `<details>` — present for anyone who wants it, out of the way of
+        # anyone who does not. The old page put this prose inline and buried the
+        # numbers in an essay, which is the failure mode this test now guards from
+        # the other side: the prose must still be *there*.
+        assert '<details class="why">' in body
         assert "Delighted Weekly Active" in body
-        assert "not a zero" in body
+        assert "Not a zero" in body
+        assert "the customer record" in body  # why the roster is allowed to name people
+        assert "rolling" in body.lower()  # what the window actually means
+        # The page states what it *cannot* answer, rather than quietly omitting it.
+        assert "where it sat" in body
+
+    def test_it_says_what_data_the_product_collects(self, client: Any, operator: Any) -> None:
+        """The data dictionary is on the page, not in a doc somebody has to find.
+
+        A dashboard is only trustworthy if the reader can see what is behind it, so
+        every event is listed with what it carries, what it deliberately withholds
+        and which section it pays for. The withheld column is the one that matters:
+        it is how somebody reading this page learns that no child's words are in the
+        pipeline at all.
+        """
+        _sign_in(client, operator)
+        body = client.get(DASHBOARD).content.decode()
+
+        assert "Everything the product records" in body
+        for name in Event.NAMES:
+            assert name in body, name
+        assert "What we don" in body  # the column heading, split before its curly apostrophe
+        assert "never the content" in body
 
     def test_the_window_selector_changes_the_window(self, client: Any, operator: Any) -> None:
         _sign_in(client, operator)

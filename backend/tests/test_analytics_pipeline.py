@@ -40,6 +40,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 #: any of these.
 PRODUCT_ANALYTICS = {
     "apps.analytics.metrics",
+    "apps.analytics.insights",
     "apps.analytics.internal",
     "apps.analytics.cost",
     "apps.analytics.pricing",
@@ -260,28 +261,37 @@ class TestTheInternalDashboardIsStaffOnly:
         for heading in (
             "Activation",
             "Day-2 return",
-            "W1 retention",
-            "Completion rate",
+            "Completion",
             "Adventures per child per week",
-            "Cost per session",
-            "Unattributed spend",
-            "Unpriced generations",
+            "Cost / session",
+            "Unattributed",
+            "Unpriced",
             # The four diagnostics: which step lost them, how many are still
             # here, whether retention is improving, and what they picked. Listed
             # here because these sections are the only place in the product where
             # a template typo would render as a silently missing metric rather
             # than as an error.
-            "Onboarding funnel",
-            "Children still playing",
-            "Retention by weekly cohort",
-            "Worlds children picked",
+            "Where families stop",
+            "Children still here",
+            "Is retention improving?",
+            "What children pick, and whether they finish it",
+            # The behavioural half (`apps.analytics.insights`), which explains why
+            # each of the numbers above reads the way it does. Same reasoning: a
+            # dropped section here is a silently missing answer, not an error.
+            "Who signed up, and what happened next",
+            "When families are actually here",
+            "Where the time goes",
+            "Where a story loses them",
+            "How children answer",
+            "Who these families are",
         ):
             assert heading in body, heading
 
         # The North Star's own vocabulary, and the §22.3 targets beside the
         # numbers they judge.
         assert "DWA" in body
-        assert "≥70" in body
+        assert "target 70%" in body
+        assert "≥3 per child per week" in body
         # And nothing per-child. A staff page that could be pointed at one named
         # four-year-old is a raw behavioural record with a nicer font (§13.8).
         assert "Ivy" not in body

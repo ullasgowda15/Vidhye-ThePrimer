@@ -1,0 +1,1451 @@
+{% comment %}
+The dashboard body — included by `/admax` and by `/admin/metrics` so the two are
+one page rendered twice, exactly as `internal.dashboard_context` is one context
+computed once. See `apps.analytics.internal` and `apps.analytics.insights`.
+
+**Read top to bottom, it answers one question at a time:** how are we doing (the
+tiles) · who signed up and when · when are they here · what did each day look like
+· where does the time go · where does a story lose them · how do children answer ·
+who are these families · what is the machine serving · then the §22 metrics, the
+money, the guardrails and the pipeline.
+
+Three honesty rules, kept everywhere:
+
+* every rate shows the **fraction** it came from, so "100%" over two signups
+  cannot be read as a result;
+* every §22.3 **target** is printed beside the number it judges;
+* anything that has **not happened yet** reads `·` or `—`, never `0`.
+
+The prose that explains a section lives in its `<details>`, open to anyone who
+wants it and out of the way of anyone who does not — the old version of this page
+put it inline and buried the numbers in an essay.
+
+Charts are CSS boxes sized by `widthratio`. No SVG, no script, no library: this
+page has to render from one HTTP response on a box with no collected static files.
+Nothing here is per-child (§13.8); the one table that names anybody names the
+*account holder*, and `insights.accounts` says why.
+{% endcomment %}
+
+<div class="controls">
+  <span class="lab">Window</span>
+  <span class="seg">
+    {% for option in windows %}
+      <a href="?days={{ option }}&amp;tz={{ zone|urlencode }}"
+         {% if option == days %}aria-current="page"{% endif %}>{{ option }}d</a>
+    {% endfor %}
+  </span>
+  <form method="get" style="display:flex;gap:.4rem;align-items:center">
+    <input type="hidden" name="days" value="{{ days }}">
+    <label for="tz" class="lab" style="margin:0">Clock</label>
+    <select id="tz" name="tz" style="width:auto;padding:.25rem .5rem;font-size:.8125rem">
+      {% for option in zones %}
+        <option value="{{ option }}"{% if option == zone %} selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" style="padding:.28rem .7rem;font-size:.8125rem">Apply</button>
+  </form>
+</div>
+
+<details class="why" style="margin:-.75rem 0 1.25rem">
+  <summary>What “{{ days }} days” means, and what the clock changes</summary>
+  <p>
+    <strong>The window is rolling, not a fixed calendar period.</strong> “{{ days }} days” means the
+    {{ days }} × 24 hours ending <em>right now</em> — {{ window.since|date:"j M Y, H:i" }} to
+    {{ window.until|date:"j M Y, H:i" }} UTC — and it is recomputed from scratch every time the
+    page loads. Reload in an hour and both ends have moved by an hour. It is <em>not</em> a snapshot
+    taken once, and it is not last calendar week, so a number here is “the last {{ days }} days as
+    of this moment” and that is how it should be quoted.
+  </p>
+  <p>
+    Two consequences worth knowing. <strong>Today is a partial day</strong> — the most recent bar in
+    “Day by day” covers only the hours that have happened, so it is always short and is not a
+    downturn. And <strong>a metric can change without anyone doing anything</strong>: events aging
+    out of the far end of the window move it just as new events do.
+  </p>
+  <p>
+    <strong>The clock is a display setting only.</strong> It decides which local hour and which
+    calendar day an event is filed under, so it changes the hour charts, the heatmap, the day-by-day
+    table and the timestamps in the roster. It moves <em>no</em> rate, funnel, cohort or retention
+    number — those are computed on the server's own UTC days so that a figure cannot change because
+    somebody picked a different dropdown.
+  </p>
+</details>
+
+{% comment %}
+Jump links. A dashboard this dense needs a way in that is not the scrollbar, and
+anchors cost no JavaScript — which this page cannot have. `{% comment %}` rather
+than `{# … #}`: the short form is single-line only, and a multi-line one renders
+its own text onto the page.
+{% endcomment %}
+<nav class="jump" aria-label="Sections">
+  <a href="#signups">Who signed up</a>
+  <a href="#when">When they’re here</a>
+  <a href="#days">Day by day</a>
+  <a href="#time">Where time goes</a>
+  <a href="#storyflow">Where stories lose them</a>
+  <a href="#answers">How children answer</a>
+  <a href="#families">Who they are</a>
+  <a href="#content">What we served</a>
+  <a href="#metrics">§22 metrics</a>
+  <a href="#money">Money</a>
+  <a href="#wellbeing">Wellbeing</a>
+  <a href="#data">What we collect</a>
+</nav>
+
+{# ==================================================================== #}
+{# A · The tiles — everything worth knowing in one screenful            #}
+{# ==================================================================== #}
+{% with a=snapshot.activation d=snapshot.day2_return c=snapshot.completion_rate w=snapshot.weeks|last %}
+<div class="tiles">
+  <div class="tile">
+    <span class="k">Signups</span>
+    <span class="v">{{ insights.accounts.total }}</span>
+    <span class="n">{{ insights.activation_speed.activated }} reached a first story</span>
+  </div>
+  <div class="tile">
+    <span class="k">Children playing</span>
+    <span class="v">{{ snapshot.active.wau }}</span>
+    <span class="n">this week · {{ snapshot.active.dau }} yesterday</span>
+  </div>
+  <div class="tile">
+    <span class="k">DWA <span class="muted">North Star</span></span>
+    <span class="v">{% if w %}{{ w.dwa }}{% else %}—{% endif %}</span>
+    <span class="n">children with {{ targets.per_child|floatformat:0 }}+ adventures in a week</span>
+  </div>
+  <div class="tile">
+    <span class="k">Activation</span>
+    <span class="v">{% if a.pct is None %}—{% else %}{{ a.pct|floatformat:0 }}%{% endif %}</span>
+    <span class="n">{{ a.numerator }}/{{ a.denominator }} · target {{ targets.activation|floatformat:0 }}%</span>
+  </div>
+  <div class="tile">
+    <span class="k">Day-2 return</span>
+    <span class="v">{% if d.pct is None %}—{% else %}{{ d.pct|floatformat:0 }}%{% endif %}</span>
+    <span class="n">{{ d.numerator }}/{{ d.denominator }} · target {{ targets.day2_return|floatformat:0 }}%</span>
+  </div>
+  <div class="tile">
+    <span class="k">Completion</span>
+    <span class="v">{% if c.pct is None %}—{% else %}{{ c.pct|floatformat:0 }}%{% endif %}</span>
+    <span class="n">{{ c.numerator }}/{{ c.denominator }} · target {{ targets.completion_rate|floatformat:0 }}%</span>
+  </div>
+  <div class="tile">
+    <span class="k">Time played</span>
+    <span class="v">{{ insights.attention.minutes_total }}<span class="muted" style="font-size:.9rem"> min</span></span>
+    <span class="n">over {{ insights.attention.sittings }} sittings</span>
+  </div>
+  <div class="tile">
+    <span class="k">Busiest hour</span>
+    <span class="v">{{ insights.clock.busiest_hour|default:"—" }}</span>
+    <span class="n">{{ insights.clock.busiest_weekday|default:"no play yet" }} · {{ zone }}</span>
+  </div>
+  <div class="tile">
+    <span class="k">Cost / session</span>
+    <span class="v">{% if spend.cost_per_session_usd is None %}—{% else %}${{ spend.cost_per_session_usd|floatformat:3 }}{% endif %}</span>
+    <span class="n">${{ spend.total_usd|floatformat:2 }} total spend</span>
+  </div>
+  <div class="tile">
+    <span class="k">Safety</span>
+    <span class="v">{{ snapshot.guardrails.safety_incidents }}</span>
+    <span class="n">
+      {% if snapshot.guardrails.serious_safety_incidents %}
+        <span class="chip critical">{{ snapshot.guardrails.serious_safety_incidents }} serious</span>
+      {% else %}incidents · none serious{% endif %}
+    </span>
+  </div>
+</div>
+{% endwith %}
+
+{# ==================================================================== #}
+{# B · Who signed up, and when                                          #}
+{# ==================================================================== #}
+<section id="signups">
+  <div class="shead">
+    <h2>Who signed up, and what happened next</h2>
+    <span class="n">{{ insights.accounts.total }} accounts in this window · times shown in {{ zone }}</span>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h3>How far each family got</h3>
+      <div class="hb">
+        {% for row in insights.accounts.stages %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i style="width:{% widthratio row.count insights.accounts.total 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}
+          <p class="empty" style="grid-column:1/-1">No signups in this window.</p>
+        {% endfor %}
+      </div>
+      <div class="kv" style="margin-top:.9rem">
+        <span><b>{{ insights.activation_speed.activated }}</b> activated</span>
+        <span><b>{{ insights.activation_speed.waiting }}</b> still waiting</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Signup → first finished story</h3>
+      {% if insights.activation_speed.activated %}
+        <div class="kv">
+          <span>median <b>{{ insights.activation_speed.to_first_completion.median|floatformat:1 }}h</b></span>
+          <span>p90 <b>{{ insights.activation_speed.to_first_completion.p90|floatformat:1 }}h</b></span>
+          <span>first story <em>started</em> after
+            <b>{{ insights.activation_speed.to_first_start.median|floatformat:1 }}h</b></span>
+        </div>
+        <div class="hb">
+          {% for bucket in insights.activation_speed.buckets %}
+            <span class="l">{{ bucket.label }}</span>
+            <span class="t"><i class="s3" style="width:{% widthratio bucket.count insights.activation_speed.activated 100 %}%"></i></span>
+            <span class="v">{{ bucket.count }} <span class="muted">{% if bucket.share.pct is None %}—{% else %}{{ bucket.share.pct|floatformat:0 }}%{% endif %}</span></span>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">No account in this window has finished a first story yet.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:1rem">
+    <h3>The roster — newest first</h3>
+    <div class="wrap">
+      <table>
+        <caption>
+          Showing {{ insights.accounts.shown }} of {{ insights.accounts.total }}.
+          <strong>Quiet</strong> is hours since this account last did anything at all — the column
+          that finds a family about to churn. A dash means they have done nothing since signing up.
+        </caption>
+        <thead>
+          <tr>
+            <th>Account</th><th>Signed up</th><th class="n">Age</th><th>Reached</th>
+            <th class="n">Children</th><th class="n">Started</th><th class="n">Finished</th>
+            <th class="n">Sittings</th><th class="n">Minutes</th>
+            <th>Last seen</th><th class="n">Quiet</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in insights.accounts.rows %}
+            <tr>
+              <td>{{ row.email }}{% if not row.active %} <span class="chip">disabled</span>{% endif %}</td>
+              <td>{{ row.signed_up_at|date:"D j M, H:i" }}</td>
+              <td class="n muted">{{ row.age_h|floatformat:0 }}h</td>
+              <td>
+                {% if row.stage == "playing" %}<span class="chip good">playing</span>
+                {% elif row.stage == "signed up" %}<span class="chip critical">signed up</span>
+                {% elif row.stage == "first story" %}<span class="chip">first story</span>
+                {% else %}<span class="chip warning">{{ row.stage }}</span>{% endif %}
+              </td>
+              <td class="n">{{ row.children|default:"—" }}</td>
+              <td class="n">{{ row.started|default:"—" }}</td>
+              <td class="n">{{ row.completed|default:"—" }}</td>
+              <td class="n">{{ row.sittings|default:"—" }}</td>
+              <td class="n">{{ row.minutes|default:"—" }}</td>
+              <td class="muted">{% if row.last_seen_at %}{{ row.last_seen_at|date:"D j M, H:i" }}{% else %}—{% endif %}</td>
+              <td class="n">{% if row.quiet_h is None %}<span class="muted">—</span>{% else %}{{ row.quiet_h|floatformat:0 }}h{% endif %}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="11" class="empty">No signups in this window.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <details class="why">
+      <summary>How to read this, and why it is allowed to name people</summary>
+      <p>
+        <strong>This is the only table on the page that names anybody, and it names the
+        account holder</strong> — the adult who gave us an email address to buy a product.
+        That is the customer record, and reading it is running the business: “who signed up
+        on Tuesday and never came back” is a list of people to call, and no aggregate can
+        answer it. Everything about the <em>child</em> stays counted and never itemised — a row
+        says three children and eleven adventures, and nothing about which worlds, which
+        choices, or which evening (§13.8).
+      </p>
+      <p>
+        <strong>“Reached” is where a family stopped, not what they failed.</strong> An account
+        an hour old that reads <em>signed up</em> has not stalled — check the age column before
+        reading a red chip as bad news. Counts follow each family <em>past</em> the end of the
+        window, so a family who signed up on the last day and played the next morning shows
+        that play; the window decides who is in the table, not what they are credited with.
+      </p>
+    </details>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# C · When they are here                                               #}
+{# ==================================================================== #}
+<section id="when">
+  <div class="shead">
+    <h2>When families are actually here</h2>
+    <span class="n">
+      {{ insights.clock.plays }} adventures started · {{ insights.clock.signups }} signups · clock: {{ zone }}
+    </span>
+  </div>
+
+  <div class="panels wide">
+    <div class="panel">
+      <h3>Children — adventures started by hour</h3>
+      {% if insights.clock.plays %}
+        <p class="peak">peak {{ insights.clock.peak_plays }} in one hour</p>
+        <div class="cols">
+          {% for row in insights.clock.hours %}
+            <div{% if not row.plays %} class="zero"{% endif %} title="{{ row.label }}:00 — {{ row.plays }} started">
+              <i style="height:{% widthratio row.plays insights.clock.peak_plays 100 %}%"></i>
+            </div>
+          {% endfor %}
+        </div>
+        <div class="xax">
+          {% for row in insights.clock.hours %}
+            <span>{% if row.hour == 0 or row.hour == 6 or row.hour == 12 or row.hour == 18 %}{{ row.label }}{% endif %}</span>
+          {% endfor %}
+        </div>
+      {% else %}<p class="empty">No adventures started in this window.</p>{% endif %}
+    </div>
+
+    <div class="panel">
+      <h3>Parents — signups by hour</h3>
+      {% if insights.clock.signups %}
+        <p class="peak">peak {{ insights.clock.peak_signups }} in one hour</p>
+        <div class="cols">
+          {% for row in insights.clock.hours %}
+            <div{% if not row.signups %} class="zero"{% endif %} title="{{ row.label }}:00 — {{ row.signups }} signups">
+              <i class="s2" style="height:{% widthratio row.signups insights.clock.peak_signups 100 %}%"></i>
+            </div>
+          {% endfor %}
+        </div>
+        <div class="xax">
+          {% for row in insights.clock.hours %}
+            <span>{% if row.hour == 0 or row.hour == 6 or row.hour == 12 or row.hour == 18 %}{{ row.label }}{% endif %}</span>
+          {% endfor %}
+        </div>
+      {% else %}<p class="empty">No signups in this window.</p>{% endif %}
+    </div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h3>Which day of the week</h3>
+      <div class="hb">
+        {% for row in insights.clock.weekdays %}
+          <span class="l">{{ row.day }}{% if row.weekend %} <span class="muted">wknd</span>{% endif %}</span>
+          <span class="t"><i style="width:{% widthratio row.plays insights.clock.peak_weekday_plays 100 %}%"></i></span>
+          <span class="v">{{ row.plays }}</span>
+        {% endfor %}
+      </div>
+      <p class="peak" style="margin:.7rem 0 0">
+        Weekend share of all play:
+        <strong>{% if insights.clock.weekend_share.pct is None %}—{% else %}{{ insights.clock.weekend_share.pct|floatformat:0 }}%{% endif %}</strong>
+        <span class="muted">(two of seven days is 29%)</span>
+      </p>
+    </div>
+
+    <div class="panel">
+      <h3>Which part of the day</h3>
+      <div class="hb">
+        {% for row in insights.clock.dayparts %}
+          <span class="l">{{ row.label }} <span class="muted">{{ row.window }}</span></span>
+          <span class="t"><i style="width:{% widthratio row.plays insights.clock.plays 100 %}%"></i></span>
+          <span class="v">{{ row.plays }} <span class="muted">{% if row.share.pct is None %}—{% else %}{{ row.share.pct|floatformat:0 }}%{% endif %}</span></span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:1rem">
+    <h3>The week, hour by hour</h3>
+    <div class="wrap">
+      <div class="heat">
+        <span></span>
+        {% for row in insights.clock.hours %}
+          <span class="hl">{% if row.hour == 0 or row.hour == 3 or row.hour == 6 or row.hour == 9 or row.hour == 12 or row.hour == 15 or row.hour == 18 or row.hour == 21 %}{{ row.label }}{% endif %}</span>
+        {% endfor %}
+        {% for day in insights.clock.grid %}
+          <span class="rl">{{ day.day }}</span>
+          {% for cell in day.cells %}
+            <span class="c l{{ cell.level }}"
+                  title="{{ day.day }} {{ cell.hour }}:00 — {{ cell.count }} adventure{{ cell.count|pluralize }} started"></span>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </div>
+    <div class="scale">
+      <span>none</span>
+      <i style="background:var(--h0)"></i>
+      {% for step in insights.clock.grid_legend %}
+        <i style="background:var(--h{{ step.level }})" title="{{ step.from }}+"></i>
+      {% endfor %}
+      <span>{{ insights.clock.grid_max }} in one hour</span>
+    </div>
+    <details class="why">
+      <summary>Why this grid and not just the hour chart</summary>
+      <p>
+        A product used at 19:00 on weeknights and 10:00 at weekends has an
+        <em>identical</em> hour-of-day profile to one used at both times every day. Only the
+        grid tells those two apart, and they are completely different products — one has a
+        bedtime ritual, the other has a habit with two modes. Zero is drawn as bare surface
+        rather than as the palest shade, so an empty hour and a quiet hour never look alike.
+      </p>
+      <p>
+        <strong>Every clock figure on this page is in {{ zone }}</strong>, chosen with the picker at
+        the top. The server stores UTC, which is right for a calendar day and wrong for a
+        clock: read in the wrong zone, a bedtime product looks like an after-lunch one. Set
+        this to where your families actually live before quoting an hour.
+      </p>
+    </details>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# D · Day by day                                                        #}
+{# ==================================================================== #}
+<section id="days">
+  <div class="shead">
+    <h2>Day by day</h2>
+    <span class="n">
+      {{ insights.daily.total_signups }} signups · {{ insights.daily.total_started }} adventures ·
+      {{ insights.daily.total_minutes }} minutes across the window
+    </span>
+  </div>
+  <div class="panels wide">
+    <div class="panel">
+      <h3>Adventures started</h3>
+      <p class="peak">peak {{ insights.daily.max_started }} in a day · weekends shaded lighter</p>
+      <div class="cols">
+        {% for row in insights.daily.series %}
+          <div class="{% if row.weekend %}wk {% endif %}{% if not row.started %}zero{% endif %}"
+               title="{{ row.date|date:'D j M' }} — {{ row.started }} started, {{ row.completed }} finished, {{ row.children }} children">
+            <i style="height:{% widthratio row.started insights.daily.max_started 100 %}%"></i>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="xax">
+        {% for row in insights.daily.series %}<span>{{ row.date|date:"j" }}</span>{% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Minutes played</h3>
+      <p class="peak">peak {{ insights.daily.max_minutes }} minutes in a day</p>
+      <div class="cols">
+        {% for row in insights.daily.series %}
+          <div class="{% if row.weekend %}wk {% endif %}{% if not row.minutes %}zero{% endif %}"
+               title="{{ row.date|date:'D j M' }} — {{ row.minutes }} min over {{ row.sittings }} sittings">
+            <i class="s3" style="height:{% widthratio row.minutes insights.daily.max_minutes 100 %}%"></i>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="xax">
+        {% for row in insights.daily.series %}<span>{{ row.date|date:"j" }}</span>{% endfor %}
+      </div>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:1rem">
+    <div class="wrap">
+      <table>
+        <thead>
+          <tr><th>Day</th><th class="n">Signups</th><th class="n">Children</th>
+              <th class="n">Started</th><th class="n">Finished</th>
+              <th class="n">Sittings</th><th class="n">Minutes</th></tr>
+        </thead>
+        <tbody>
+          {% for row in insights.daily.series %}
+            <tr>
+              <td>{{ row.date|date:"D j M" }}{% if row.weekend %} <span class="muted">wknd</span>{% endif %}</td>
+              <td class="n">{{ row.signups|default:"—" }}</td>
+              <td class="n">{{ row.children|default:"—" }}</td>
+              <td class="n">{{ row.started|default:"—" }}</td>
+              <td class="n">{{ row.completed|default:"—" }}</td>
+              <td class="n">{{ row.sittings|default:"—" }}</td>
+              <td class="n">{{ row.minutes|default:"—" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <details class="why">
+      <summary>Why every day is here, including the empty ones</summary>
+      <p>
+        A series built by grouping events skips the quiet days entirely, and a chart drawn
+        from it joins Friday to Monday with a straight line — which hides the weekend, the
+        single most misleading thing a time series can do to a product used at weekends. A
+        day with nothing in it is drawn as a grey stub, not omitted.
+      </p>
+    </details>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# E · Where the time goes                                              #}
+{# ==================================================================== #}
+<section id="time">
+  <div class="shead">
+    <h2>Where the time goes</h2>
+    <span class="n">{{ insights.attention.sittings }} sittings · {{ insights.attention.minutes_total }} minutes</span>
+  </div>
+
+  <div class="tiles">
+    <div class="tile">
+      <span class="k">Median sitting</span>
+      <span class="v">{% if insights.attention.sitting_minutes.median is None %}—{% else %}{{ insights.attention.sitting_minutes.median|floatformat:1 }}<span class="muted" style="font-size:.9rem"> min</span>{% endif %}</span>
+      <span class="n">over {{ insights.attention.sitting_minutes.measured }} measured</span>
+    </div>
+    <div class="tile">
+      <span class="k">p90 sitting</span>
+      <span class="v">{% if insights.attention.sitting_minutes.p90 is None %}—{% else %}{{ insights.attention.sitting_minutes.p90|floatformat:1 }}<span class="muted" style="font-size:.9rem"> min</span>{% endif %}</span>
+      <span class="n">longest {{ insights.attention.sitting_minutes.max|floatformat:0|default:"—" }} min</span>
+    </div>
+    <div class="tile">
+      <span class="k">Beats per sitting</span>
+      <span class="v">{% if insights.attention.beats_per_sitting.median is None %}—{% else %}{{ insights.attention.beats_per_sitting.median|floatformat:0 }}{% endif %}</span>
+      <span class="n">median</span>
+    </div>
+    <div class="tile">
+      <span class="k">Pacing</span>
+      <span class="v">{% if insights.attention.minutes_per_beat.median is None %}—{% else %}{{ insights.attention.minutes_per_beat.median|floatformat:1 }}<span class="muted" style="font-size:.9rem"> min/beat</span>{% endif %}</span>
+      <span class="n">median across sittings</span>
+    </div>
+    <div class="tile">
+      <span class="k">Sittings that finished a story</span>
+      <span class="v">{% if insights.attention.completed_sittings.pct is None %}—{% else %}{{ insights.attention.completed_sittings.pct|floatformat:0 }}%{% endif %}</span>
+      <span class="n">{{ insights.attention.completed_sittings.numerator }}/{{ insights.attention.completed_sittings.denominator }}</span>
+    </div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h3>How long a sitting lasts</h3>
+      <div class="hb">
+        {% for bucket in insights.attention.sitting_buckets %}
+          <span class="l">{{ bucket.label }}</span>
+          <span class="t"><i style="width:{% widthratio bucket.count insights.attention.sitting_minutes.measured 100 %}%"></i></span>
+          <span class="v">{{ bucket.count }} <span class="muted">{% if bucket.share.pct is None %}—{% else %}{{ bucket.share.pct|floatformat:0 }}%{% endif %}</span></span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <h3>How much story fits in one</h3>
+      <div class="hb">
+        {% for bucket in insights.attention.beat_buckets %}
+          <span class="l">{{ bucket.label }}</span>
+          <span class="t"><i class="s3" style="width:{% widthratio bucket.count insights.attention.beats_per_sitting.measured 100 %}%"></i></span>
+          <span class="v">{{ bucket.count }} <span class="muted">{% if bucket.share.pct is None %}—{% else %}{{ bucket.share.pct|floatformat:0 }}%{% endif %}</span></span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h3>Which worlds hold them — by minutes, not by picks</h3>
+      <div class="hb">
+        {% for row in insights.attention.worlds %}
+          <span class="l" title="{{ row.world }}">{{ row.world }}</span>
+          <span class="t"><i style="width:{% widthratio row.minutes insights.attention.world_minutes_max 100 %}%"></i></span>
+          <span class="v">{{ row.minutes }}m <span class="muted">avg {{ row.avg_min|floatformat:1 }}</span></span>
+        {% empty %}
+          <p class="empty" style="grid-column:1/-1">No sittings with a recorded world.</p>
+        {% endfor %}
+      </div>
+      {% if insights.attention.multi_world_sittings %}
+        <p class="peak" style="margin-top:.7rem">
+          {{ insights.attention.multi_world_sittings }} sitting{{ insights.attention.multi_world_sittings|pluralize }}
+          spanned more than one world and {{ insights.attention.multi_world_sittings|pluralize:"is,are" }}
+          credited to the world it started in.
+        </p>
+      {% endif %}
+    </div>
+    <div class="panel">
+      <h3>How sittings ended</h3>
+      <div class="hb">
+        {% for row in insights.attention.ended_reasons %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i class="{% if row.label == 'exit' %}s2{% endif %}" style="width:{% widthratio row.count insights.attention.sittings 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{% if row.share.pct is None %}—{% else %}{{ row.share.pct|floatformat:0 }}%{% endif %}</span></span>
+        {% empty %}
+          <p class="empty" style="grid-column:1/-1">No sittings recorded.</p>
+        {% endfor %}
+      </div>
+      <p class="peak" style="margin-top:.7rem">
+        <code>completed</code> finished · <code>cap</code> is the wellbeing limit working,
+        not a session cut short · <code>exit</code> is a child who left.
+      </p>
+    </div>
+  </div>
+
+  <details class="why">
+    <summary>Why worlds are ranked by minutes rather than by how often they are picked</summary>
+    <p>
+      A world picked constantly and abandoned in ninety seconds and a world picked rarely
+      and held for twenty minutes are <em>identical</em> on a popularity chart and opposite
+      here — and the second one is the product working. Popularity says what the catalog and
+      the personalizer are steering children towards; minutes say what actually held them.
+      The §22 world table further down still shows picks and completion rate, which is the
+      third view: whether they finished what they were held by.
+    </p>
+  </details>
+</section>
+
+{# ==================================================================== #}
+{# F · Where a story loses them                                         #}
+{# ==================================================================== #}
+<section id="storyflow">
+  <div class="shead">
+    <h2>Where a story loses them</h2>
+    <span class="n">
+      {{ insights.storyflow.reached_one }} adventures reached beat 1 · deepest {{ insights.storyflow.deepest }}
+    </span>
+  </div>
+
+  <div class="panels wide">
+    <div class="panel">
+      <h3>Of the adventures that saw beat 1, how many saw beat n</h3>
+      {% if insights.storyflow.reached_one %}
+        {# One row past the deepest beat anyone reached: enough to show the arc
+           ending, without five empty rows of noise below it. #}
+        <div class="hb">
+          {% for row in insights.storyflow.rows %}
+            {% if row.seq <= insights.storyflow.deepest|add:1 %}
+              <span class="l">Beat {{ row.seq }}</span>
+              <span class="t"><i style="width:{% widthratio row.reached insights.storyflow.reached_one 100 %}%"></i></span>
+              <span class="v">
+                {{ row.reached }}
+                <span class="muted">{% if row.of_first.pct is None %}—{% else %}{{ row.of_first.pct|floatformat:0 }}%{% endif %}</span>
+                {% if row.lost and row.seq > 1 %}<span class="chip serious">−{{ row.lost }}</span>{% endif %}
+              </span>
+            {% endif %}
+          {% endfor %}
+        </div>
+        {% if insights.storyflow.beyond %}
+          <p class="peak" style="margin-top:.7rem">
+            {{ insights.storyflow.beyond }} adventure{{ insights.storyflow.beyond|pluralize }} ran past
+            beat 12 and {{ insights.storyflow.beyond|pluralize:"is,are" }} counted in beat 12's row.
+          </p>
+        {% endif %}
+      {% else %}
+        <p class="empty">No beats delivered in this window.</p>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h3>What that says</h3>
+      {% if insights.storyflow.worst_step %}
+        {% with step=insights.storyflow.worst_step %}
+        <p style="font-size:.9rem;margin-bottom:.6rem">
+          The steepest drop is <strong>between beat {{ step.seq|add:"-1" }} and beat {{ step.seq }}</strong>:
+          {{ step.lost }} adventure{{ step.lost|pluralize }} never got past beat {{ step.seq|add:"-1" }},
+          so beat {{ step.seq }} held only
+          {% if step.kept.pct is None %}—{% else %}{{ step.kept.pct|floatformat:0 }}%{% endif %}
+          of the one before it. <strong>Beat {{ step.seq|add:"-1" }} is a thing somebody can open and
+          read this afternoon</strong> — which is the whole reason this chart exists.
+        </p>
+        {% endwith %}
+      {% else %}
+        <p class="empty">Not enough beats yet to name a drop-off point.</p>
+      {% endif %}
+      <div class="kv">
+        <span>adventures traced <b>{{ insights.storyflow.adventures }}</b></span>
+        <span>median depth <b>{{ insights.storyflow.depth.median|floatformat:0|default:"—" }}</b> beats</span>
+        <span>past beat 12 <b>{{ insights.storyflow.beyond }}</b></span>
+      </div>
+      {% if insights.storyflow.no_first_beat %}
+        <p class="peak" style="margin-top:.6rem">
+          <span class="chip critical">{{ insights.storyflow.no_first_beat }} never got a first beat</span>
+          — started, but no beat was ever delivered. That is a generation failure, not a
+          drop-off, and it should be zero.
+        </p>
+      {% endif %}
+      <div class="wrap" style="margin-top:.8rem">
+        <table>
+          <thead><tr><th>Beat</th><th class="n">Reached</th><th class="n">Of first</th><th class="n">Kept</th><th class="n">Lost</th></tr></thead>
+          <tbody>
+            {% for row in insights.storyflow.rows %}
+              {% if row.reached %}
+                <tr>
+                  <td>{{ row.seq }}</td>
+                  <td class="n">{{ row.reached }}</td>
+                  <td class="n muted">{% if row.of_first.pct is None %}—{% else %}{{ row.of_first.pct|floatformat:0 }}%{% endif %}</td>
+                  <td class="n">{% if row.kept.pct is None %}—{% else %}{{ row.kept.pct|floatformat:0 }}%{% endif %}</td>
+                  <td class="n">{{ row.lost|default:"—" }}</td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <details class="why">
+    <summary>Why this is the most actionable chart on the page</summary>
+    <p>
+      A completion rate says 62% and leaves you nowhere. A reach curve says they leave at
+      beat three — and beat three is a thing somebody can open and read this afternoon.
+      <strong>Read the “kept” column, not “of first”:</strong> measured against the top, every
+      beat after a bad one looks bad too, which points at the wrong beat.
+    </p>
+    <p>
+      Counted over distinct adventures, so an adventure that retried a beat is one adventure
+      at that depth and not two. The denominator is adventures that reached beat 1; one that
+      never got a first beat is a generation failure and is counted separately, because
+      folding it in would make a broken generator look like a boring story.
+    </p>
+  </details>
+</section>
+
+{# ==================================================================== #}
+{# G · How children answer                                              #}
+{# ==================================================================== #}
+<section id="answers">
+  <div class="shead">
+    <h2>How children answer</h2>
+    <span class="n">{{ insights.interaction.choices }} choices made</span>
+  </div>
+
+  <div class="tiles">
+    <div class="tile">
+      <span class="k">Median decision</span>
+      <span class="v">{% if insights.interaction.latency_s.median is None %}—{% else %}{{ insights.interaction.latency_s.median|floatformat:1 }}<span class="muted" style="font-size:.9rem">s</span>{% endif %}</span>
+      <span class="n">p90 {{ insights.interaction.latency_s.p90|floatformat:1|default:"—" }}s</span>
+    </div>
+    <div class="tile">
+      <span class="k">Tapped under 2s</span>
+      <span class="v">{% if insights.interaction.instant.pct is None %}—{% else %}{{ insights.interaction.instant.pct|floatformat:0 }}%{% endif %}</span>
+      <span class="n">a tap before the words landed</span>
+    </div>
+    <div class="tile">
+      <span class="k">Needed a retry</span>
+      <span class="v">{% if insights.interaction.retried.pct is None %}—{% else %}{{ insights.interaction.retried.pct|floatformat:0 }}%{% endif %}</span>
+      <span class="n">{{ insights.interaction.retried.numerator }}/{{ insights.interaction.retried.denominator }}</span>
+    </div>
+    <div class="tile">
+      <span class="k">Companion helped</span>
+      <span class="v">{% if insights.interaction.assisted.pct is None %}—{% else %}{{ insights.interaction.assisted.pct|floatformat:0 }}%{% endif %}</span>
+      <span class="n">{{ insights.interaction.assisted.numerator }}/{{ insights.interaction.assisted.denominator }}</span>
+    </div>
+    <div class="tile">
+      <span class="k">Learning asks</span>
+      <span class="v">{% if insights.interaction.learning_share.pct is None %}—{% else %}{{ insights.interaction.learning_share.pct|floatformat:0 }}%{% endif %}</span>
+      <span class="n">of all choices</span>
+    </div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h3>Where on the screen they tapped</h3>
+      {% if insights.interaction.positioned %}
+        <div class="legend">
+          <span><i></i> taken</span>
+          <span><b style="display:inline-block;width:2px;height:.7rem;background:var(--ink-2);opacity:.55"></b> what chance alone would give</span>
+        </div>
+        <div class="hb">
+          {% for row in insights.interaction.positions %}
+            <span class="l">{{ row.label }} card</span>
+            <span class="t">
+              <i style="width:{% widthratio row.count insights.interaction.positioned 100 %}%"></i>
+              {% if row.expected_pct %}
+                <b style="left:{{ row.expected_pct|floatformat:0 }}%"
+                   title="Chance alone would give this position {{ row.expected_pct }}% ({{ row.expected }} of {{ insights.interaction.positioned }})"></b>
+              {% endif %}
+            </span>
+            <span class="v">
+              {{ row.count }}
+              <span class="muted">{% if row.share.pct is None %}—{% else %}{{ row.share.pct|floatformat:0 }}%{% endif %}</span>
+              {% if row.lift %}
+                {% if row.lift >= 1.25 %}<span class="chip critical" title="Taken {{ row.lift }}× more often than chance">×{{ row.lift }}</span>
+                {% elif row.lift <= 0.75 %}<span class="chip warning" title="Taken {{ row.lift }}× as often as chance">×{{ row.lift }}</span>
+                {% else %}<span class="chip good" title="In line with chance">×{{ row.lift }}</span>{% endif %}
+              {% endif %}
+            </span>
+          {% empty %}
+            <p class="empty" style="grid-column:1/-1">No choice recorded a position yet.</p>
+          {% endfor %}
+        </div>
+        <p class="peak" style="margin-top:.7rem">
+          The upright mark is what <strong>chance alone</strong> would give that position, allowing
+          for beats that offered two options and beats that offered three. A first card well past
+          its mark — <code>×1.25</code> or more — means the cards are not being read.
+          {% if insights.interaction.unpositioned %}
+            {{ insights.interaction.unpositioned }} of {{ insights.interaction.choices }} choices
+            carry no position and are left out of this chart.
+          {% endif %}
+        </p>
+      {% elif not insights.interaction.position_instrumented %}
+        <p class="empty">
+          <span class="chip warning">not recorded</span>
+          The option’s on-screen position is not being written to the event log, so this check
+          cannot run. Add <code>option_index</code> to <code>choice.made</code> in
+          <code>apps/story/orchestrator.py</code> to switch it on.
+        </p>
+      {% else %}
+        <p class="empty">
+          No choice in this window recorded a position.
+          {% if insights.interaction.choices %}
+            All {{ insights.interaction.choices }} of them predate the <code>option_index</code>
+            field, or were beats that offered no options to have a position in.
+          {% endif %}
+        </p>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h3>Which options get picked</h3>
+      <div class="hb">
+        {% for row in insights.interaction.options %}
+          <span class="l" title="{{ row.label }}"><code>{{ row.label }}</code></span>
+          <span class="t"><i class="s2" style="width:{% widthratio row.count insights.interaction.choices 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{% if row.share.pct is None %}—{% else %}{{ row.share.pct|floatformat:0 }}%{% endif %}</span></span>
+        {% empty %}
+          <p class="empty" style="grid-column:1/-1">No choices recorded in this window.</p>
+        {% endfor %}
+      </div>
+      {% if insights.interaction.choices %}
+        <p class="peak" style="margin-top:.7rem">
+          {{ insights.interaction.distinct_options }} distinct options taken{% if insights.interaction.other_options %},
+          {{ insights.interaction.other_options }} more below the top {{ insights.interaction.options|length }}{% endif %}.
+          The most-taken one is
+          <strong>{% if insights.interaction.top_option_share.pct is None %}—{% else %}{{ insights.interaction.top_option_share.pct|floatformat:0 }}%{% endif %}</strong>
+          of all choices — a generic <code>continue</code> dominating means children are
+          <em>advancing</em> rather than choosing, which is about the writing, not the layout.
+        </p>
+      {% endif %}
+    </div>
+
+    <div class="panel">
+      <h3>How long a decision takes</h3>
+      <div class="hb">
+        {% for bucket in insights.interaction.latency_buckets %}
+          <span class="l">{{ bucket.label }}</span>
+          <span class="t"><i class="s3" style="width:{% widthratio bucket.count insights.interaction.latency_s.measured 100 %}%"></i></span>
+          <span class="v">{{ bucket.count }} <span class="muted">{% if bucket.share.pct is None %}—{% else %}{{ bucket.share.pct|floatformat:0 }}%{% endif %}</span></span>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Help and retries — the same number means two opposite things</h3>
+    <div class="wrap">
+      <table>
+        <thead><tr><th>On</th><th class="n">Companion helped</th><th class="n">Needed a retry</th><th></th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Learning beats <span class="muted">(§10.5 asks)</span></td>
+            <td class="n">{% if insights.interaction.assisted_on_learning.pct is None %}—{% else %}{{ insights.interaction.assisted_on_learning.pct|floatformat:0 }}%{% endif %}
+              <span class="muted">({{ insights.interaction.assisted_on_learning.numerator }}/{{ insights.interaction.assisted_on_learning.denominator }})</span></td>
+            <td class="n">{% if insights.interaction.retried_on_learning.pct is None %}—{% else %}{{ insights.interaction.retried_on_learning.pct|floatformat:0 }}%{% endif %}</td>
+            <td class="muted" style="white-space:normal">Help here is the system working as designed.</td>
+          </tr>
+          <tr>
+            <td>Ordinary story branches</td>
+            <td class="n">{% if insights.interaction.assisted_on_story.pct is None %}—{% else %}{{ insights.interaction.assisted_on_story.pct|floatformat:0 }}%{% endif %}
+              <span class="muted">({{ insights.interaction.assisted_on_story.numerator }}/{{ insights.interaction.assisted_on_story.denominator }})</span></td>
+            <td class="n">{% if insights.interaction.retried_on_story.pct is None %}—{% else %}{{ insights.interaction.retried_on_story.pct|floatformat:0 }}%{% endif %}</td>
+            <td class="muted" style="white-space:normal">Help here is a child who could not tell what was being asked.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <details class="why">
+      <summary>Why position is the check that decides what every other number here means</summary>
+      <p>
+        If four-year-olds are tapping the first card without reading it, then the completion
+        rate, the learning signal and every mastery estimate built on top of them are measuring
+        a reflex. <strong>Nothing else on this dashboard would show that</strong> — a reflexive
+        tap and a considered choice produce identical rows everywhere else. That is why this
+        panel is a design check rather than a metric: there is no target, and the only question
+        is whether the bars sit near their chance marks.
+      </p>
+      <p>
+        <strong>Chance is computed, not assumed.</strong> Beats offer two or three options and
+        the mix moves week to week, so the fair share for the first card is the average of
+        1 ÷ (options offered) across the choices that actually offered one — not a flat third.
+        Measured against a flat third, a week heavy in two-option beats would read as a
+        first-card bias that is pure arithmetic. <code>×</code> is taken ÷ chance:
+        <code>×1.00</code> is exactly chance.
+      </p>
+      <p>
+        <strong>A position that reads all zeros is a finding, not a gap.</strong> Rows run to the
+        highest position ever <em>offered</em>, so a third option nobody ever picks gets a row of
+        zeros — and an option children never take is worth going and reading.
+      </p>
+      <p>
+        Choices carrying no position are excluded rather than counted as the first card: those
+        are events written before <code>option_index</code> existed, plus the genuine cases (an
+        unrecognised key, or a beat offering only “carry on”). Counting them as position 0 would
+        draw a first-card habit out of history.
+      </p>
+    </details>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# H · Who these families are                                           #}
+{# ==================================================================== #}
+<section id="families">
+  <div class="shead">
+    <h2>Who these families are</h2>
+    <span class="n">{{ insights.audience.children }} children added in this window</span>
+  </div>
+  <div class="panels">
+    <div class="panel">
+      <h3>Age band</h3>
+      <div class="hb">
+        {% for row in insights.audience.age_bands %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i style="width:{% widthratio row.count insights.audience.children 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}<p class="empty" style="grid-column:1/-1">No children added.</p>{% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Companion archetype</h3>
+      <div class="hb">
+        {% for row in insights.audience.archetypes %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i class="s2" style="width:{% widthratio row.count row.share.denominator 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}<p class="empty" style="grid-column:1/-1">No companions made.</p>{% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Session cap the parent chose</h3>
+      <div class="hb">
+        {% for row in insights.audience.session_caps %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i class="s3" style="width:{% widthratio row.count insights.audience.children 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}<p class="empty" style="grid-column:1/-1">Nothing recorded.</p>{% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Intensity ceiling the parent chose</h3>
+      <div class="hb">
+        {% for row in insights.audience.intensity_ceilings %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i class="s3" style="width:{% widthratio row.count insights.audience.children 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}<p class="empty" style="grid-column:1/-1">Nothing recorded.</p>{% endfor %}
+      </div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="kv">
+      <span>filled in interests <b>{% if insights.audience.seeded.pct is None %}—{% else %}{{ insights.audience.seeded.pct|floatformat:0 }}%{% endif %}</b>
+        <span class="muted">({{ insights.audience.seeded.numerator }}/{{ insights.audience.seeded.denominator }})</span></span>
+      <span>named a fear <b>{% if insights.audience.with_fears.pct is None %}—{% else %}{{ insights.audience.with_fears.pct|floatformat:0 }}%{% endif %}</b></span>
+      <span>set topics to avoid <b>{% if insights.audience.with_avoid_topics.pct is None %}—{% else %}{{ insights.audience.with_avoid_topics.pct|floatformat:0 }}%{% endif %}</b></span>
+      <span>interests per child, median <b>{{ insights.audience.interests_per_child.median|floatformat:0|default:"—" }}</b></span>
+    </div>
+    <div class="kv">
+      {% for row in insights.audience.consent_methods %}
+        <span>consent by {{ row.label }} <b>{{ row.count }}</b></span>
+      {% endfor %}
+    </div>
+    <details class="why">
+      <summary>Why the parents’ settings matter more than they look</summary>
+      <p>
+        <code>session_cap_min</code> is the parent’s own answer to “how long should my child be
+        on this”, and <code>intensity_ceiling</code> is their answer to “how brave is my child”.
+        Both are given freely at setup and neither is a guess — the distribution of them says
+        more about the market than any engagement chart here. <strong>If most parents pick
+        fifteen minutes, a twenty-minute story arc is the wrong product</strong>, and no amount of
+        retention work will fix that.
+      </p>
+      <p>
+        A parent who wrote no interests leaves the personalizer running on defaults, so their
+        child is getting a materially different product from the seeded families. That share
+        is worth watching against activation.
+      </p>
+    </details>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# I · What the machine served                                          #}
+{# ==================================================================== #}
+<section id="content">
+  <div class="shead">
+    <h2>What the machine served</h2>
+    <span class="n">{{ insights.content.beats }} beats delivered</span>
+  </div>
+  <div class="panels">
+    <div class="panel">
+      <h3>Safety status of every beat</h3>
+      <div class="hb">
+        {% for row in insights.content.safety %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i class="{% if row.label != 'pass' and row.label != 'ok' %}s2{% endif %}" style="width:{% widthratio row.count insights.content.beats 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}<p class="empty" style="grid-column:1/-1">No beats delivered.</p>{% endfor %}
+      </div>
+      <p class="peak" style="margin-top:.7rem">
+        A rising fallback share is the product quietly degrading while every engagement
+        number on this page still looks fine.
+      </p>
+    </div>
+    <div class="panel">
+      <h3>What children were asked to do</h3>
+      <div class="hb">
+        {% for row in insights.content.interactions %}
+          <span class="l">{{ row.label }}</span>
+          <span class="t"><i style="width:{% widthratio row.count insights.content.beats 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}<p class="empty" style="grid-column:1/-1">No beats delivered.</p>{% endfor %}
+      </div>
+      <p class="peak" style="margin-top:.7rem">
+        A mix that has collapsed to one interaction type is a story engine that has stopped
+        varying — children notice that long before a metric does.
+      </p>
+    </div>
+    <div class="panel">
+      <h3>Learning objectives attempted</h3>
+      <div class="hb">
+        {% for row in insights.content.objectives %}
+          <span class="l" title="{{ row.label }}">{{ row.label }}</span>
+          <span class="t"><i class="s3" style="width:{% widthratio row.count row.share.denominator 100 %}%"></i></span>
+          <span class="v">{{ row.count }} <span class="muted">{{ row.share.pct|floatformat:0 }}%</span></span>
+        {% empty %}<p class="empty" style="grid-column:1/-1">No adventures started.</p>{% endfor %}
+      </div>
+    </div>
+    <div class="panel">
+      <h3>What the planner intended</h3>
+      <div class="kv">
+        <span>difficulty, median <b>{{ insights.content.difficulty.median|floatformat:2|default:"—" }}</b>
+          <span class="muted">p90 {{ insights.content.difficulty.p90|floatformat:2|default:"—" }}</span></span>
+        <span>arc length, median <b>{{ insights.content.estimated_beats.median|floatformat:0|default:"—" }}</b> beats</span>
+        <span>learning asks <b>{% if insights.content.learning_asks.pct is None %}—{% else %}{{ insights.content.learning_asks.pct|floatformat:0 }}%{% endif %}</b> of beats</span>
+        <span>returning places <b>{% if insights.content.returning_places.pct is None %}—{% else %}{{ insights.content.returning_places.pct|floatformat:0 }}%{% endif %}</b> of starts</span>
+      </div>
+      <p class="peak">
+        This is what the planner <em>intended</em>; “Where a story loses them” above is what
+        actually happened. Read together they answer whether the arcs are simply too long —
+        which is a planner setting and a one-line change.
+      </p>
+      {% if insights.content.incident_categories %}
+        <h3 style="margin-top:1rem">Safety incidents</h3>
+        <div class="kv">
+          {% for row in insights.content.incident_severities %}
+            <span><span class="chip {% if row.label == 'serious' or row.label == 'critical' %}critical{% else %}warning{% endif %}">{{ row.label }}</span> <b>{{ row.count }}</b></span>
+          {% endfor %}
+        </div>
+        <div class="kv">
+          {% for row in insights.content.incident_categories %}<span>{{ row.label }} <b>{{ row.count }}</b></span>{% endfor %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# J · The §22 metrics                                                  #}
+{# ==================================================================== #}
+<section id="metrics">
+  <div class="shead">
+    <h2>The metrics the product is judged on <span class="muted" style="font-weight:400">§22.3</span></h2>
+    <span class="n">targets are directional — set before there was data, to be calibrated</span>
+  </div>
+
+  <div class="panels wide">
+    <div class="panel">
+      <h3>Where families stop — the onboarding funnel</h3>
+      <div class="wrap">
+        <table>
+          <thead><tr><th>Step</th><th class="n">Families</th><th class="n">Of top</th><th class="n">Of previous</th><th class="n">Lost here</th></tr></thead>
+          <tbody>
+            {% for step in snapshot.funnel %}
+              <tr>
+                <td>{{ step.label }}</td>
+                <td class="n">{{ step.reached }}</td>
+                <td class="n muted">{% if step.pct_of_top is None %}—{% else %}{{ step.pct_of_top|floatformat:0 }}%{% endif %}</td>
+                <td class="n">{% if step.pct_of_previous is None %}—{% else %}{{ step.pct_of_previous|floatformat:0 }}%{% endif %}</td>
+                <td class="n">{% if step.lost_here %}<span class="chip serious">{{ step.lost_here }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="empty">No signups in this window.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <details class="why">
+        <summary>Read the “of previous” column</summary>
+        <p>
+          It is the one that names which step lost them. Measured against the top of the
+          funnel, every step after a bad one also looks bad, which points at the wrong
+          problem. Steps are counted independently rather than nested, so if a step ever
+          reads <em>higher</em> than the one above it, the step above has stopped emitting —
+          check the pipeline table at the foot of this page.
+        </p>
+      </details>
+    </div>
+
+    <div class="panel">
+      <h3>Is retention improving? — weekly cohorts</h3>
+      <div class="wrap">
+        <table>
+          <thead>
+            <tr><th>Cohort week</th><th class="n">Children</th>
+              {% for offset in cohort_offsets %}<th class="n">W{{ offset }}</th>{% endfor %}</tr>
+          </thead>
+          <tbody>
+            {% for row in snapshot.cohorts %}
+              <tr>
+                <td>{{ row.week_start|date:"j M Y" }}</td>
+                <td class="n">{{ row.size }}</td>
+                {% for cell in row.cells %}
+                  <td class="n">
+                    {% if cell.pct is None %}<span class="muted" title="This week has not finished yet">·</span>
+                    {% else %}{{ cell.pct|floatformat:0 }}%<span class="muted"> ({{ cell.returned }})</span>{% endif %}
+                  </td>
+                {% endfor %}
+              </tr>
+            {% empty %}
+              <tr><td colspan="{{ cohort_offsets|length|add:2 }}" class="empty">No child has finished a first story in this window.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <details class="why">
+        <summary>A <code>·</code> is a week that has not happened yet</summary>
+        <p>
+          Not a zero. Drawing an unfinished week as 0% would show a retention cliff made
+          entirely of calendar. Switch the window to <strong>90 days</strong> to see several
+          cohorts — a 7-day window can only contain one. Cohorts are never mixed, which is
+          what makes “are we getting better?” answerable rather than assertable.
+        </p>
+      </details>
+    </div>
+  </div>
+
+  <div class="panels wide">
+    <div class="panel">
+      <h3>Adventures per child per week — the North Star input</h3>
+      <div class="wrap">
+        <table>
+          <thead><tr><th>Week of</th><th class="n">Adventures</th><th class="n">Active children</th><th class="n">Per child</th><th class="n">DWA</th></tr></thead>
+          <tbody>
+            {% for week in snapshot.weeks %}
+              <tr>
+                <td>{{ week.week_start|date:"j M Y" }}</td>
+                <td class="n">{{ week.adventures }}</td>
+                <td class="n">{{ week.active_children }}</td>
+                <td class="n">{{ week.per_child|floatformat:2 }}</td>
+                <td class="n"><strong>{{ week.dwa }}</strong></td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="empty">No completed adventures in this window.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="peak" style="margin-top:.6rem">
+        Target ≥{{ targets.per_child|floatformat:0 }} per child per week. Weeks start Monday.
+        DWA counts <em>children</em>, never time on the app.
+      </p>
+    </div>
+
+    <div class="panel">
+      <h3>What children pick, and whether they finish it</h3>
+      <div class="wrap">
+        <table>
+          <thead><tr><th>World</th><th class="n">Started</th><th class="n">Children</th><th class="n">Finished</th><th class="n">Of started</th></tr></thead>
+          <tbody>
+            {% for row in snapshot.worlds %}
+              <tr>
+                <td>{% if row.world %}{{ row.world }}{% else %}<span class="muted">(no world recorded)</span>{% endif %}</td>
+                <td class="n">{{ row.started }}</td>
+                <td class="n">{{ row.children }}</td>
+                <td class="n">{{ row.completed }}</td>
+                <td class="n">{% if row.completion.pct is None %}—{% else %}{{ row.completion.pct|floatformat:0 }}%{% endif %}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="empty">No adventures started in this window.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="peak" style="margin-top:.6rem">
+        Read the completion column, not the popularity one. “Children” is distinct children —
+        one child replaying a world nine times is a fact about that child, not about the world.
+      </p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Children still here</h3>
+    <div class="kv">
+      <span>DAU <b>{{ snapshot.active.dau }}</b></span>
+      <span>average DAU over {{ snapshot.active.days_in_window }} days <b>{{ snapshot.active.avg_dau|floatformat:2 }}</b></span>
+      <span>WAU <b>{{ snapshot.active.wau }}</b></span>
+      <span>MAU <b>{{ snapshot.active.mau }}</b></span>
+      <span>stickiness <b>{% if snapshot.active.stickiness is None %}—{% else %}{{ snapshot.active.stickiness|floatformat:3 }}{% endif %}</b></span>
+      <span>days with any play <b>{{ snapshot.active.days_with_play }}</b> <span class="muted">/ {{ snapshot.active.days_in_window }}</span></span>
+    </div>
+    <details class="why">
+      <summary>Quote average DAU, not DAU</summary>
+      <p>
+        A single evening’s number at this scale is mostly noise about which evening you
+        looked. Average DAU divides by <em>every</em> day in the window, including days nobody
+        played — dividing only by active days would report a twice-a-week product as though
+        it were a daily one. There is deliberately <strong>no target on stickiness</strong>: this is
+        a bedtime product, and a low number is not automatically bad news.
+      </p>
+    </details>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# K · Money                                                            #}
+{# ==================================================================== #}
+<section id="money">
+  <div class="shead">
+    <h2>What it costs <span class="muted" style="font-weight:400">§22.4</span></h2>
+    <span class="n">{{ spend.spans }} traced generations · {{ spend.sessions }} sittings with spend</span>
+  </div>
+
+  <div class="tiles">
+    <div class="tile">
+      <span class="k">Cost / session</span>
+      <span class="v">{% if spend.cost_per_session_usd is None %}—{% else %}${{ spend.cost_per_session_usd|floatformat:4 }}{% endif %}</span>
+      <span class="n">the number to quote</span>
+    </div>
+    <div class="tile"><span class="k">Total spend</span><span class="v">${{ spend.total_usd|floatformat:2 }}</span><span class="n">this window</span></div>
+    <div class="tile"><span class="k">Unattributed</span><span class="v">${{ spend.unattributed_usd|floatformat:2 }}</span><span class="n">real money, not in the ratio</span></div>
+    <div class="tile"><span class="k">Unpriced</span><span class="v">{{ spend.unpriced_spans }}</span><span class="n">generations at an unknown price</span></div>
+    <div class="tile">
+      <span class="k">Budget breaker</span>
+      <span class="v">
+        {% if not breaker.available %}<span class="chip critical">not enforcing</span>
+        {% elif not breaker.cap_usd %}<span class="chip warning">no cap</span>
+        {% elif breaker.tripped %}<span class="chip critical">tripped</span>
+        {% else %}<span class="chip good">ok</span>{% endif %}
+      </span>
+      <span class="n">
+        {% if not breaker.available %}the spend counter is unreadable (Redis) — no cap is in force
+        {% elif not breaker.cap_usd %}<code>INFERENCE_BUDGET_USD_PER_WINDOW=0</code>
+        {% else %}${{ breaker.spent_usd|floatformat:2 }} of ${{ breaker.cap_usd|floatformat:2 }} · resets in {{ breaker.resets_in_s }}s{% endif %}
+      </span>
+    </div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h3>Where the money goes — by kind</h3>
+      <div class="wrap">
+        <table>
+          <thead><tr><th>Kind</th><th class="n">Spend</th><th class="n">Generations</th></tr></thead>
+          <tbody>
+            {% for row in spend.by_kind %}
+              <tr><td>{{ row.kind }}</td><td class="n">${{ row.total_usd|floatformat:4 }}</td><td class="n">{{ row.spans }}</td></tr>
+            {% empty %}<tr><td colspan="3" class="empty">Nothing generated in this window.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>By operation — which to right-size first</h3>
+      <div class="wrap">
+        <table>
+          <thead><tr><th>Operation</th><th>Kind</th><th class="n">Spend</th><th class="n">Generations</th></tr></thead>
+          <tbody>
+            {% for row in spend.by_operation %}
+              <tr><td>{{ row.operation }}</td><td class="muted">{{ row.kind }}</td><td class="n">${{ row.total_usd|floatformat:4 }}</td><td class="n">{{ row.spans }}</td></tr>
+            {% empty %}<tr><td colspan="4" class="empty">Nothing generated in this window.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <details class="why">
+    <summary>Why unattributed and unpriced sit next to the headline</summary>
+    <p>
+      <strong>Unattributed spend</strong> is real money that could not be filed under a sitting,
+      so it is excluded from the ratio and shown here rather than hidden. An <strong>unpriced
+      generation</strong> is a model with no entry in the price table: counted at zero
+      <em>and flagged</em>, rather than silently averaged in — so the day a paid route is swapped
+      in, cost/session cannot read $0.00 and look like good news. A genuinely free route is
+      priced, at zero, and does not appear there.
+    </p>
+    <p>
+      The breaker belongs beside these figures because “cost/session looks great this week”
+      and “the breaker has been open since Tuesday and children have been served cached art”
+      are the same number with opposite meanings.
+    </p>
+  </details>
+</section>
+
+{# ==================================================================== #}
+{# L · Guardrails                                                       #}
+{# ==================================================================== #}
+<section id="wellbeing">
+  <div class="shead">
+    <h2>Wellbeing guardrails <span class="muted" style="font-weight:400">§22.5</span></h2>
+    <span class="n">watched and capped, never maximised — nothing here is a number to improve</span>
+  </div>
+  <div class="tiles">
+    <div class="tile"><span class="k">Sittings</span><span class="v">{{ snapshot.guardrails.sessions }}</span><span class="n">in this window</span></div>
+    <div class="tile">
+      <span class="k">Median length</span>
+      <span class="v">{% if snapshot.guardrails.session_minutes.measured %}{{ snapshot.guardrails.session_minutes.median_min }}<span class="muted" style="font-size:.9rem"> min</span>{% else %}—{% endif %}</span>
+      <span class="n">p90 {% if snapshot.guardrails.session_minutes.measured %}{{ snapshot.guardrails.session_minutes.p90_min }} min{% else %}—{% endif %}</span>
+    </div>
+    <div class="tile">
+      <span class="k">Over {{ snapshot.guardrails.session_minutes.over_long_threshold_min }} min</span>
+      <span class="v">{{ snapshot.guardrails.session_minutes.over_long }}</span>
+      <span class="n">children’s evenings to notice</span>
+    </div>
+    <div class="tile">
+      <span class="k">Most sittings, one child, one day</span>
+      <span class="v">{{ snapshot.guardrails.max_sessions_per_child_day }}</span>
+      <span class="n">a maximum, never an average</span>
+    </div>
+    <div class="tile">
+      <span class="k">Safety incidents</span>
+      <span class="v">{{ snapshot.guardrails.safety_incidents }}</span>
+      <span class="n">{% if snapshot.guardrails.serious_safety_incidents %}<span class="chip critical">{{ snapshot.guardrails.serious_safety_incidents }} serious — stop the line</span>{% else %}none serious{% endif %}</span>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="kv"><span>how sittings ended <b>{{ snapshot.guardrails.ended_reasons|default:"—" }}</b></span></div>
+    <details class="why">
+      <summary>Why these sit on the same page as the growth numbers</summary>
+      <p>
+        They hold a veto over them, and a veto exercised on a different screen is not a veto.
+        A rising session length is not good news here. <code>cap</code> is the wellbeing limit
+        working — a story landed warmly at the parent’s chosen limit, not a session cut
+        short — and a child who wandered off after two beats is not a failed session and is
+        not reported as one. “Most sittings by one child in a day” is a maximum because the
+        pattern worth catching belongs to one child on one evening, and a mean over a healthy
+        cohort hides it exactly.
+      </p>
+    </details>
+  </div>
+</section>
+
+{# ==================================================================== #}
+{# M · Pipeline health                                                  #}
+{# ==================================================================== #}
+<section id="data">
+  <div class="shead">
+    <h2>Is the pipeline healthy?</h2>
+    <span class="n">every number on this page is computed from these events and nothing else</span>
+  </div>
+  <div class="panel">
+    <h3>Everything the product records — and what it deliberately does not</h3>
+    <div class="wrap">
+      <table>
+        <caption>
+          Eleven events. That is the whole of it. <strong>None of them carries a word a child
+          said, or a word said to a child</strong> — the count is the signal, never the content.
+          A row powering a section you care about with a count of <strong>0</strong> is the fastest
+          way to tell a metric that has genuinely gone quiet from an emit site that was never
+          wired.
+        </caption>
+        <thead>
+          <tr><th>Signal</th><th class="n">Seen</th><th>What it carries</th><th>What we don’t keep</th><th>What it powers</th></tr>
+        </thead>
+        <tbody>
+          {% for row in insights.catalogue %}
+            <tr>
+              <td><code>{{ row.name }}</code></td>
+              <td class="n">
+                {% if row.count %}{{ row.count }}
+                {% elif row.name in silent %}<span class="chip critical" title="This event has never been emitted, ever">never</span>
+                {% else %}<span class="muted">0</span>{% endif %}
+              </td>
+              <td style="white-space:normal;max-width:22rem">{{ row.carries }}</td>
+              <td class="muted" style="white-space:normal;max-width:20rem">{{ row.withheld }}</td>
+              <td class="muted" style="white-space:normal;max-width:20rem">{{ row.powers }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if silent %}
+      <p class="peak" style="margin-top:.7rem">
+        <strong>Never emitted, ever:</strong>
+        {% for name in silent %}<code>{{ name }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}.
+        Each is either a feature nobody has exercised yet or an emit site that was never
+        wired — worth telling those apart before trusting a metric that depends on one.
+      </p>
+    {% endif %}
+    <details class="why">
+      <summary>Why this table is the one to read first if you are new to the page</summary>
+      <p>
+        Every figure above is computed from these rows and from nothing else — there is no
+        second source, no tracking script, no third-party pixel. So this table is both the
+        data dictionary (“what does <em>reach curve</em> actually measure?”) and the health
+        check (“has the thing that feeds it stopped?”). Those two questions are usually on
+        different pages, and keeping them on one is what makes a number here quotable.
+      </p>
+      <p>
+        The “what we don’t keep” column is not an apology, it is the design. Story text,
+        choice labels, names, birthdates and the interests a parent typed are all
+        <em>deliberately</em> absent from this pipeline (§13.8) — which is why this page can be
+        rich about behaviour and still hold that no child is readable on it.
+      </p>
+    </details>
+  </div>
+
+  <div class="panels">
+    <div class="panel full">
+      <h3>Last {{ cost_rows|length }} generations</h3>
+      <div class="wrap">
+        <table>
+          <caption>The raw rows behind the averages. No child, no sitting, no prompt.</caption>
+          <thead><tr><th>When</th><th>Operation</th><th>Route</th><th>Units</th><th class="n">Cost</th><th class="n">Latency</th><th>Attributed</th></tr></thead>
+          <tbody>
+            {% for row in cost_rows %}
+              <tr>
+                <td class="muted">{{ row.occurred_at|date:"j M H:i:s" }}</td>
+                <td>{{ row.operation }}</td>
+                <td class="muted"><code>{{ row.label }}</code></td>
+                <td class="muted">{{ row.units }}</td>
+                <td class="n">{% if row.priced %}${{ row.cost_usd|floatformat:6 }}{% else %}<span class="chip warning">unpriced</span>{% endif %}</td>
+                <td class="n muted">{{ row.latency_ms|default_if_none:"—" }}</td>
+                <td class="muted">{% if row.attributed %}sitting{% else %}—{% endif %}</td>
+              </tr>
+            {% empty %}<tr><td colspan="7" class="empty">No generations traced yet.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ==================================================================== #}
+<section id="glossary">
+  <div class="shead"><h2>Glossary</h2></div>
+  <div class="panel">
+    <dl class="glossary">
+      <div><dt>Active</dt><dd>A child who <em>started</em> an adventure. Starting counts; finishing is a separate metric.</dd></div>
+      <div><dt>Sitting / session</dt><dd>One continuous period of play. It can span more than one adventure, and it is the unit cost is measured per.</dd></div>
+      <div><dt>Beat</dt><dd>One turn of the story: some narration, and something for the child to do.</dd></div>
+      <div><dt>Cohort</dt><dd>The children whose first finished story fell in the same week. Never mixed, which is what lets one be compared with another.</dd></div>
+      <div><dt>DWA — Delighted Weekly Active</dt><dd>A child who completed three or more adventures in a week. The North Star. A count of children, never a measure of time spent.</dd></div>
+      <div><dt>Reach curve</dt><dd>Of the adventures that got a first beat, how many got an <em>n</em>th. The chart that names the beat people leave at.</dd></div>
+      <div><dt>Quiet</dt><dd>Hours since an account last did anything. The churn column.</dd></div>
+      <div><dt>Generation / span</dt><dd>One call to a model that cost money — a beat, an illustration, a line of speech, an embedding. One traced row each.</dd></div>
+      <div><dt>Unattributed spend</dt><dd>A generation that could not be tied to a sitting. Real money, excluded from cost-per-session, reported separately so the headline is not flattered.</dd></div>
+      <div><dt>Unpriced generation</dt><dd>A model with no entry in the price table. Counted at zero <em>and flagged</em>, so an unknown price can never be mistaken for a free one.</dd></div>
+      <div><dt>Matured</dt><dd>A child or a week old enough to be judged. A child whose first story was this morning cannot yet have returned tomorrow, so they are left out of the denominator rather than counted as a miss.</dd></div>
+      <div><dt>Fallback beat</dt><dd>A beat served from the pre-vetted pool because a generation did not pass the safety layer. The child sees a good story either way; a rising share is the signal.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<footer>
+  <p>
+    Metric definitions, and the judgement call inside each one, are written down in
+    <code>apps/analytics/metrics.py</code> and <code>apps/analytics/insights.py</code>; prices are
+    list prices from <code>apps/analytics/pricing.py</code>, not quotes. The same numbers print
+    in a terminal with
+    <code>python manage.py metrics --days {{ days }} --tz {{ zone }}</code>.
+  </p>
+  <p>
+    Product analytics and the parent-facing dashboard are separate by design. Nothing on this
+    page is per-child; the roster names account holders, which is the customer record, and
+    says so where it sits. This sign-in is independent of the Django admin and grants no
+    access to it.
+  </p>
+  <p>
+    Window {{ window.since|date:"j M Y, H:i" }} → {{ window.until|date:"j M Y, H:i" }} (UTC) ·
+    clock {{ zone }} · generated {{ generated_at|date:"j M Y, H:i" }} UTC.
+  </p>
+</footer>

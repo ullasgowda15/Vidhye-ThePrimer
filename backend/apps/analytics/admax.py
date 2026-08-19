@@ -348,7 +348,9 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     also uses, so the two pages are two renderings of one set of numbers rather
     than two dashboards that will eventually disagree.
     """
-    context = internal.dashboard_context(internal.days_from(request))
+    context = internal.dashboard_context(
+        internal.days_from(request), zone=internal.zone_from(request)
+    )
     # Whose session this is, shown in the header. An operator who is looking at
     # production data should be able to see which account they are doing it as.
     context["operator"] = current_user(request)

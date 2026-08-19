@@ -2372,8 +2372,30 @@ def record_choice(
     # the value they answered. Those are the child's own words and the content of
     # their afternoon (§13.8), and the analytics question — *did a tap happen, how
     # long did it take, did the companion help* — is answered without them.
-    # `chosen_key` is a positional key (`a`/`b`/`c`) rather than a label, which is
-    # shape.
+    #
+    # `chosen_key` is the option's **key**, which is a slug of its label
+    # (`_normalised(chosen_label)`, above) — so it is `red_leaf`, not `b`. This
+    # comment used to claim it was a positional `a`/`b`/`c`; it never was, and the
+    # claim survived long enough to be built on.
+    #
+    # `option_index` / `option_count` are the position, added because of that:
+    # they are what answers **"is the child reading the choices, or tapping the
+    # top card?"**, which is invisible in every other number the product records
+    # and which caps the meaning of all of them — if a four-year-old is tapping
+    # position 0 by reflex, the learning signal underneath is measuring a reflex.
+    # Two small integers are also *more* data-minimal than `chosen_key` already
+    # is: a position is shape, where a slug is words the child was shown.
+    #
+    # `None` when the key is not one of this beat's options, which is a real case
+    # and not an error — an unrecognised key is recorded as sent (see this
+    # function's docstring), and a beat that only offers "carry on" has no
+    # position to report. `_clean` keeps `None`, so the reading can tell "no
+    # position" from "position 0" instead of counting the first as the second.
+    options = beat.options
+    chosen_index = next(
+        (index for index, option in enumerate(options) if option.get("key") == chosen_key),
+        None,
+    )
     events.track(
         Event.CHOICE_MADE,
         child=adventure.child,
@@ -2381,6 +2403,11 @@ def record_choice(
         adventure_id=str(adventure.pk),
         seq=beat.seq,
         chosen_key=chosen_key,
+        option_index=chosen_index,
+        # The denominator. Tapping the first of two is a coin toss; tapping the
+        # first of four is a habit, and the same `option_index` means different
+        # things in each — so the count travels with it or the metric is unread.
+        option_count=len(options),
         latency_ms=latency_ms,
         retries=retries,
         assisted=assisted,
