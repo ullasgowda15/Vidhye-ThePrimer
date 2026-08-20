@@ -66,6 +66,27 @@ export default defineConfig({
       // production these are CDN URLs on another host and never touch Vite or
       // Django (PRODUCT.md §16.6).
       '/media': { target: API_TARGET, changeOrigin: true },
+
+      // `/admax` — the ops dashboard, which Django serves, not React.
+      //
+      // Without this line Vite's SPA fallback answers `/admax` with `index.html`,
+      // React Router matches nothing, and the browser renders its own "404 Not
+      // Found". That reads as a missing route when the route is fine and simply
+      // lives on the other server — in production one hostname fronts both, so
+      // this proxy is what makes dev behave the way the deployed box does.
+      //
+      // This is the dev-side counterpart of `infra/admax-setup.sh`, which fixes
+      // the identical bug at the Caddy edge: any edge that fronts both the PWA
+      // and Django has to route `/admax` explicitly, or the SPA catch-all eats
+      // it and React Router answers 404. Change one, consider the other.
+      //
+      // `changeOrigin: false`, unlike `/api` above, and the difference is load
+      // bearing: `/admax` signs in with a session + CSRF form POST, so Django
+      // compares the browser's `Origin` (`http://localhost:5173`) against the
+      // `Host` it is handed. Rewriting Host to `127.0.0.1:8000` makes those two
+      // disagree and every sign-in 403s. The parent API is bearer-token and
+      // exempt from that check, so it is free to rewrite.
+      '/admax': { target: API_TARGET, changeOrigin: false },
     },
   },
   test: {
