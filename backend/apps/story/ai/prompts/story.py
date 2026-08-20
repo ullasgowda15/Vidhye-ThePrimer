@@ -258,13 +258,27 @@ about most rather than the one the child pointed at.\
 COUNT_RULE = """\
 End this beat by asking the child to count something. Put exactly {quantity} of \
 one kind of thing in the scene, set interaction.type to "count", set \
-interaction.expected to {quantity}, and set interaction.choices to null — this \
-beat asks for a number, not a pick.
+interaction.expected to {quantity}, and set interaction.choices to \
+null — this beat asks for a number, not a pick.
 
-Those {quantity} things must be in the scene and named in \
-scene.illustration_prompt, arranged so they can be counted at a glance, so the \
-child can answer by looking at the picture. interaction.prompt_audio is the \
-you asking how many there are, in one short sentence.
+scene.illustration_prompt must contain the literal phrase "exactly {quantity} \
+({word})" immediately before the thing being counted — for example \
+"exactly {quantity} ({word}) round green frogs sitting in a row on a mossy \
+log". Write the digit and the word exactly like that. It is the only \
+instruction the illustrator gets about how many to draw, and the child \
+answers by looking at what it drew.
+
+Nothing else in the scene may be the same kind of thing. If the child is \
+counting frogs there are no other frogs anywhere in the picture — not \
+in the background, not partly out of frame, not smaller ones further away. \
+Arrange the {quantity} of them plainly and apart from each other, so they can \
+be counted at a glance rather than searched for. Do not write any other \
+"exactly N" in scene.illustration_prompt.
+
+The number must not appear in the narration. The child works it out by \
+looking; a narration that says "{word} frogs hopped up" has answered the \
+question before it was asked. interaction.prompt_audio is you asking how many \
+there are, in one short sentence, without saying the number.
 
 There is no wrong answer here. Do not hint at what happens if they miscount, do \
 not praise the right number in advance, and do not make the counting sound like \
@@ -274,14 +288,20 @@ a test.\
 #: Numeracy, comparison. Answered by tapping a card rather than on the number pad,
 #: because "which is more" is a judgement about two groups and not a count of one.
 COMPARE_RULE = """\
-End this beat by putting two groups of things side by side — {more} of one kind \
-and {fewer} of another — and asking the child which group has more. Set \
-interaction.type to "choose" with exactly two options, one naming each group, and \
-set interaction.expected to the key of the option with {more} in it.
+End this beat by putting two groups of things side by side — {more} of \
+one kind and {fewer} of another — and asking the child which group has \
+more. Set interaction.type to "choose" with exactly two options, one naming \
+each group, and set interaction.expected to the key of the option with {more} \
+in it.
 
-Both groups must be in scene.illustration_prompt and countable at a glance, so \
-the child answers by looking rather than by knowing. Give each option an \
-icon_prompt showing its own group and nothing else.
+Both groups must be in scene.illustration_prompt, written as the literal \
+phrases "exactly {more} ({more_word})" and "exactly {fewer} ({fewer_word})" \
+immediately before each group — the digit and the word, exactly like \
+that. Those are the only instructions the illustrator gets about how many to \
+draw. Write no other "exactly N" anywhere in the prompt, and put nothing else \
+of either kind in the scene. Set the two groups plainly side by side, \
+countable at a glance, so the child answers by looking rather than by knowing. \
+Give each option an icon_prompt showing its own group and nothing else.
 
 Neither option is a wrong option. Whichever the child taps, the story goes \
 somewhere good and you are delighted with them — the difference between \
@@ -538,6 +558,37 @@ def safety_constraint(categories: Sequence[str]) -> str:
 #: and nine untested branches.
 _NUMBER_WORDS = {2: "two", 3: "three"}
 
+#: The same idea for a *quantity* rather than a card count, and a separate table
+#: because it answers a different question and runs to a different ceiling: the top
+#: rung of `COUNT_LADDER` is ten and `COMPARE_LADDER` reaches nine.
+#:
+#: Both counting rules make the model write the digit *and* the word ("exactly 3
+#: (three)"). That is belt and braces on purpose — an image model reads a digit
+#: more reliably than a number word, and `story.coherence` needs a literal it can
+#: check without parsing English.
+_QUANTITY_WORDS: dict[int, str] = {
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+}
+
+
+def _quantity_word(quantity: int) -> str:
+    """The word for a quantity, falling back to the digit for anything off-table.
+
+    A ladder rung that grew past ten would otherwise raise here, on the beat-
+    generation path, for a cosmetic reason. The digit alone still reads.
+    """
+    return _QUANTITY_WORDS.get(quantity, str(quantity))
+
+
 #: What a beat offers when no objective is set at all — the pre-Day-10 wording,
 #: kept for that case only.
 DEFAULT_CHOICE_COUNT = 3
@@ -563,9 +614,14 @@ def learning_rule(demand: Demand) -> str:
     (§8.10). A reader of the finished beat sees a river with five stepping stones.
     """
     if demand.kind == learning_demands.COUNT:
-        rule = COUNT_RULE.format(quantity=demand.quantity)
+        rule = COUNT_RULE.format(quantity=demand.quantity, word=_quantity_word(demand.quantity))
     elif demand.kind == learning_demands.COMPARE:
-        rule = COMPARE_RULE.format(more=demand.quantity, fewer=demand.smaller)
+        rule = COMPARE_RULE.format(
+            more=demand.quantity,
+            more_word=_quantity_word(demand.quantity),
+            fewer=demand.smaller,
+            fewer_word=_quantity_word(demand.smaller),
+        )
     else:
         rule = WORD_RULE.format(familiarity=NOVEL_WORD if demand.novel_word else FAMILIAR_WORD)
 

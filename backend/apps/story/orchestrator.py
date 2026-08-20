@@ -127,7 +127,7 @@ from apps.safety import pipeline as safety
 from apps.safety.models import Action, Severity
 from apps.safety.prompting import assembler
 from apps.safety.prompting.layers import render as render_layers
-from apps.story import wellbeing, worlds
+from apps.story import coherence, wellbeing, worlds
 from apps.story.ai import router as ai_router
 from apps.story.ai.prompts import story as story_prompts
 from apps.story.ai.schemas import Beat as BeatContract
@@ -1243,6 +1243,16 @@ def _guarded_generation(
     # chain, and a stamp missing from the row is a stamp that cannot be backfilled.
     model = ai_router.model_label(router.select_provider())
 
+    # The same ask `build_beat_context` is about to put in the prompt, resolved
+    # once here so the coherence check below reads the demand the writer was
+    # actually given rather than one recomputed after the fact. Recomputing would
+    # be a real bug and a subtle one: a child answering on another connection can
+    # move the difficulty mid-generation, and a beat judged against the *newer*
+    # demand would be rewritten for disagreeing with a question it was never
+    # asked.
+    objective = learning.objective_by_code(adventure.primary_objective_id)
+    demand = learning.demand_for_adventure(adventure) if objective is not None else None
+
     constraint = ""
     decision = safety.Decision()
     #: The refusal that caused the last regeneration. Kept because a beat that
@@ -1294,6 +1304,31 @@ def _guarded_generation(
         decision = replace(decision, detail={**decision.detail, **measured})
 
         if decision.passed:
+            # The safety guard has said this beat is *allowed*; this asks whether
+            # it is *coherent*. They are deliberately separate questions asked by
+            # separate code: a beat that asks a child to count to three over a
+            # picture of two frogs is perfectly safe, and perfectly broken.
+            problems = coherence.problems_for(contract, demand)
+            if problems:
+                logger.warning(
+                    "story.beat_incoherent adventure=%s seq=%d attempt=%d problems=%s",
+                    adventure.id,
+                    seq,
+                    attempt,
+                    ",".join(problems),
+                )
+            # Only a beat that disagrees with itself is worth a regeneration. A
+            # prompt that merely never said how many to draw is logged above and
+            # shipped: see `coherence.contradictions` for why those two are not
+            # the same defect.
+            if coherence.contradictions(problems):
+                if attempt < safety.max_rewrites():
+                    # Spending the same budget as a safety rewrite, and bounded for
+                    # the same reason (§19.6): the child is waiting on this, and a
+                    # writer that has contradicted itself twice will do it again.
+                    constraint = coherence.constraint_for(problems)
+                    continue
+                contract = _make_coherent(contract, problems, adventure=adventure, seq=seq)
             if refusal is not None:
                 decision = replace(
                     decision,
@@ -1333,6 +1368,61 @@ def _guarded_generation(
         ",".join(decision.categories) or "-",
     )
     return None, model, replace(decision, action=safety.BLOCK)
+
+
+def _make_coherent(
+    contract: BeatContract,
+    problems: Sequence[str],
+    *,
+    adventure: Adventure,
+    seq: int,
+) -> BeatContract:
+    """Make a beat stop contradicting itself, having failed to ask nicely.
+
+    Reached only when the rewrite budget is gone and the writer is still putting a
+    different number in the question than in the picture. Doing nothing is not on
+    the list of options: this is the one defect where shipping the beat means a
+    child is asked something they cannot answer from what is in front of them.
+
+    Two repairs, in order of how little they cost the child:
+
+    1. **Align the question to the picture.** The illustrator has been given a
+       number and will draw roughly that; the question is the movable part. The
+       beat stays a counting beat and the child stays able to answer it. What is
+       lost is that the ask lands at a slightly different quantity than the engine
+       chose — recorded honestly, because `learning_tag_for` stamps the demand's
+       difficulty rather than the delivered one, and a rewritten `expected` is
+       visible in the log line below.
+    2. **Drop the interaction.** Only when the illustration prompt commits to no
+       single number, so there is nothing to align to, or when the incoherence is
+       in a comparison's answer key rather than in a quantity. The beat becomes
+       one the child watches, which every client already renders.
+
+    Never a fallback beat. The pre-vetted pool exists for beats that are *unsafe*,
+    and swapping a child's story out for a stock one because a number disagreed
+    would be a much larger intervention than the defect warrants.
+    """
+    if contract.interaction.type == InteractionType.COUNT:
+        aligned = coherence.align_to_illustration(contract)
+        if aligned is not None:
+            logger.warning(
+                "story.beat_count_aligned adventure=%s seq=%d problems=%s was=%s now=%s",
+                adventure.id,
+                seq,
+                ",".join(problems),
+                contract.interaction.expected,
+                aligned.interaction.expected,
+            )
+            return aligned
+
+    logger.warning(
+        "story.beat_interaction_demoted adventure=%s seq=%d problems=%s was=%s",
+        adventure.id,
+        seq,
+        ",".join(problems),
+        contract.interaction.type,
+    )
+    return coherence.demote(contract)
 
 
 def _persist_fallback(

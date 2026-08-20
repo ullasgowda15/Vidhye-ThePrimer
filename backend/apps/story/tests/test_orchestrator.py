@@ -26,6 +26,7 @@ from asgiref.sync import async_to_sync
 from apps.companion import cast
 from apps.companion.service import create_companion
 from apps.learning import demands
+from apps.learning import engine as learning_engine
 from apps.media import prompts as media_prompts
 from apps.media import service as media_service
 from apps.profiles.models import Child
@@ -458,19 +459,31 @@ class TestPromptAudioIsNotTheNarrationAgain:
 
     def test_a_repeating_provider_cannot_reach_the_child(self, frog_lover, fake_ai, caplog) -> None:
         """End to end, through the real router and the real write path."""
+        adventure = orchestrator.create_adventure(frog_lover)
+        # The queued beat has to be *coherent* as well as repetitive. It asks for a
+        # number, so `story.coherence` checks that number against the one the
+        # engine demanded, and a beat that disagreed would be regenerated —
+        # consuming the single queued response, so the beat that reached the child
+        # would not be the one this test wrote. The repeat is what is under test,
+        # so the counting is made to agree with whatever the engine asked for.
+        demand = learning_engine.demand_for_adventure(adventure)
+        quantity = demand.quantity if demand is not None else 3
+
         beat_json = fake_ai.beat("loves frogs.")
         # Cards would be read out after the question, so `spoken_line` below could
         # not show what the child heard twice. A beat that asks for a number has
         # nothing between the narration and its invitation.
+        beat_json["scene"]["illustration_prompt"] = (
+            f"exactly {quantity} round green frogs sitting in a row on a mossy log"
+        )
         beat_json["interaction"] = {
             "type": "count",
             "prompt_audio": beat_json["narration"],
-            "expected": 3,
+            "expected": quantity,
             "choices": None,
         }
         fake_ai.queue_beat_response(json.dumps(beat_json))
 
-        adventure = orchestrator.create_adventure(frog_lover)
         with caplog.at_level(logging.INFO):
             beat = orchestrator.create_beat(adventure)
 
