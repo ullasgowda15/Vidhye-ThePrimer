@@ -69,7 +69,44 @@ CELERY_TASK_EAGER_PROPAGATES = True
 # settings, and their entire purpose is to call the real vendors and look at what
 # comes back. Without an opt-in they would silently render placeholders and
 # report success, which is worse than not having them.
-if env.bool("ALLOW_CLOUD_IMAGES", default=False):
+# ---------------------------------------------------------------------------
+# Voice: the same rule, and the reason it was missing
+# ---------------------------------------------------------------------------
+# The block above pinned images offline and left *voice* pointing at ElevenLabs
+# with a Google fallback. So a laptop that spent nothing on art still spent real
+# voice credits on every companion it built, and local development quietly
+# depended on two vendor keys staying valid.
+#
+# On 2026-08-20 both stopped being valid at once: the Google TTS key had expired
+# ("API key expired. Please renew the API key.") and ElevenLabs was down to 1
+# credit against the 39 the greeting needed. `build_assets` therefore drew all
+# six reference images, failed only on the greeting audio, recorded have=6/7 and
+# marked the companion FAILED. Nothing about it was archetype-specific, and
+# nothing about it was a code defect — it was a credentials outage wearing one.
+#
+# `LocalToneTTSProvider` ("local", rows labelled `local-chime`) already existed
+# for precisely this and nothing ever selected it. It is not speech and does not
+# pretend to be — two derived notes — but it exercises the whole audio half of
+# the pipeline: cache key, safety scan, storage, playback in the browser.
+#
+# **Voice has its own switch, `ALLOW_CLOUD_VOICE`, and images keep theirs.** The
+# two costs are not alike and should not be spent together. A greeting is one
+# short synthesis a child actually hears, and hearing the real voice is often the
+# whole point of running the thing locally; art is six FLUX renders per companion
+# and every beat after that, which is the spend that runs out the quota a child
+# was going to need. One combined flag could only offer "both real" or "both
+# fake", and "real voice over placeholder art" is the combination a developer
+# actually wants.
+#
+# `ALLOW_CLOUD_IMAGES` still turns voice on as well, so the four live targets that
+# already set it — `make smoke-media` (documents itself as needing ElevenLabs
+# keys), `make smoke-story` (covers voice), `make render-companion`,
+# `make render-consistency` — keep working untouched. It is a superset, not a
+# second copy of the rule.
+ALLOW_CLOUD_IMAGES = env.bool("ALLOW_CLOUD_IMAGES", default=False)
+ALLOW_CLOUD_VOICE = env.bool("ALLOW_CLOUD_VOICE", default=False) or ALLOW_CLOUD_IMAGES
+
+if ALLOW_CLOUD_IMAGES:
     IMAGE_PROVIDER = env("IMAGE_PROVIDER", default="cloudflare")
     IMAGE_FALLBACK_PROVIDERS = env.list("IMAGE_FALLBACK_PROVIDERS", default=["google"])
     IMAGE_MODERATION = env("IMAGE_MODERATION", default="auto")
@@ -77,6 +114,13 @@ else:
     IMAGE_PROVIDER = "local"
     IMAGE_FALLBACK_PROVIDERS = []
     IMAGE_MODERATION = "off"
+
+if ALLOW_CLOUD_VOICE:
+    TTS_PROVIDER = env("TTS_PROVIDER", default="elevenlabs")
+    TTS_FALLBACK_PROVIDERS = env.list("TTS_FALLBACK_PROVIDERS", default=["google"])
+else:
+    TTS_PROVIDER = "local"
+    TTS_FALLBACK_PROVIDERS = []
 
 # ---------------------------------------------------------------------------
 # Logging
