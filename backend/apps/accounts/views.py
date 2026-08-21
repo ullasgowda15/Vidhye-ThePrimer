@@ -21,6 +21,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
@@ -44,6 +45,7 @@ from apps.accounts.serializers import (
 from apps.accounts.verification import send_verification_email
 from apps.analytics import events
 from apps.analytics.models import Event
+from apps.common.renderers import ZipRenderer
 from apps.common.throttling import AuthAnonThrottle, AuthUserThrottle, SessionRefreshThrottle
 from apps.media import service as media_service
 from apps.reading import service as reading_service
@@ -360,6 +362,36 @@ class AccountExportView(APIView):
 
     permission_classes = [IsAuthenticated]
     throttle_classes = [AuthUserThrottle]
+    # Without `ZipRenderer` this endpoint answers **406** to the only client that
+    # calls it. DRF negotiates content in `initial()`, before the handler, and the
+    # frontend asks for `application/zip` (`client.ts`, `exportAccount`) — which
+    # the default renderers do not offer, so `post()` below never ran. See
+    # `apps.common.renderers` for the full account of it.
+    #
+    # One renderer, not two. Listing `JSONRenderer` alongside it made
+    # drf-spectacular advertise a `?format=json` query parameter that cannot do
+    # anything — the handler writes its own `HttpResponse`, so every format
+    # returns the same zip. A schema that documents a knob with no wire attached
+    # is worse than one that says this endpoint produces a zip and nothing else.
+    #
+    # Errors do not need it either: `finalize_response` below hands them
+    # `JSONRenderer` directly, and DRF does not require a renderer to be in this
+    # list to use it.
+    renderer_classes = [ZipRenderer]
+
+    def finalize_response(self, request: Request, response: Any, *args: Any, **kwargs: Any) -> Any:
+        """Serve errors as JSON even though the request negotiated a zip.
+
+        A 401, 403 or 429 here is a DRF `Response` carrying `{"detail": ...}`, and
+        by this point negotiation has already chosen `ZipRenderer` for it — so
+        without this the body would be JSON while the header claimed
+        `application/zip`. Harmless to our own client, which parses the text
+        either way, and confusing to everything else.
+        """
+        if response.status_code >= 400:
+            request.accepted_renderer = JSONRenderer()
+            request.accepted_media_type = "application/json"
+        return super().finalize_response(request, response, *args, **kwargs)
 
     @extend_schema(
         operation_id="account_export",

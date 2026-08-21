@@ -320,6 +320,38 @@ class TestTheExport:
         assert "attachment; filename=" in response["Content-Disposition"]
         assert ".zip" in response["Content-Disposition"]
 
+    def test_it_serves_the_accept_header_the_real_client_sends(self, auth, played) -> None:
+        """The regression, and the reason every other test here missed it.
+
+        `client.ts` asks for `application/zip`; these tests asked for nothing, so
+        DRF fell through to `JSONRenderer` and they all passed against an endpoint
+        that answered **406 "Could not satisfy the request Accept header."** to the
+        only caller in existence. Content negotiation happens in `APIView.initial()`
+        — before the handler — so the view never ran and logged nothing.
+
+        A parent could not download their own child's data, which is the one thing
+        §12.8 exists to guarantee.
+        """
+        response = auth.post(EXPORT_URL, headers={"Accept": "application/zip"})
+
+        assert response.status_code == 200, response.content[:200]
+        assert response["Content-Type"] == "application/zip"
+        assert zipfile.is_zipfile(io.BytesIO(response.content))
+
+    def test_an_error_under_that_header_is_still_readable_json(self, api) -> None:
+        """Negotiating a zip must not make the *failures* unreadable.
+
+        By the time a 401 is built, negotiation has already chosen the zip
+        renderer for it. Without the view's `finalize_response`, the body would be
+        JSON while the header claimed `application/zip` — which our own client
+        survives and nothing else should have to.
+        """
+        response = api.post(EXPORT_URL, headers={"Accept": "application/zip"})
+
+        assert response.status_code == 401
+        assert response["Content-Type"].startswith("application/json")
+        assert response.json()["detail"]
+
     def test_it_carries_the_account_and_a_folder_per_child(self, auth, played, parent) -> None:
         files = _bundle(auth.post(EXPORT_URL))
 
