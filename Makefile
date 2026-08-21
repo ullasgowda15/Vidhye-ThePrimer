@@ -171,30 +171,33 @@ prompts: ## Show or roll back a prompt version: make prompts ARGS="rollback syst
 # Shell — and, unlike editing files in the Cloud Shell editor, they act on the
 # real box (Docs/Runbooks/Production-Facts.md).
 
-ZONE ?= asia-south1-a
-INSTANCE ?= app-server
-SSH = gcloud compute ssh $(INSTANCE) --zone=$(ZONE) --command
-# Streams a local script to the box over stdin rather than copying it there —
-# the pattern infra/prod-facts.sh documents.
-SSHIN = gcloud compute ssh $(INSTANCE) --zone=$(ZONE) --command='bash -s'
+# Everything goes through infra/remote.sh, which picks a transport that works on
+# this machine. It is not a wrapper for the sake of one: `gcloud compute ssh` on
+# Windows drives PuTTY, and plink's host-key prompt cannot survive a script
+# arriving on stdin — which is how half of these targets talk to the box. See the
+# header of that file.
+#
+# It also gets the *username* right. `gcloud compute ssh app-server` logs in as
+# your local user, which on a Windows laptop is not `ullasgowda3523`.
+REMOTE = bash infra/remote.sh
 
 deploy-setup: ## Wire GitHub Actions to the box. Run once; then pushing to main deploys
 	bash infra/deploy-key-setup.sh
 
 deploy: ## Deploy HEAD by hand, bypassing CI. For when CI is down — not routine
 	@echo "This skips the eval gate. Pushing to main is the supported path."
-	@echo "Deploying $$(git rev-parse HEAD) to $(INSTANCE)..."
-	$(SSH) 'cd ~/app && DEPLOY_SHA=$(shell git rev-parse HEAD) bash infra/deploy.sh'
+	@echo "Deploying $$(git rev-parse HEAD) to $$(bash infra/remote.sh --target)..."
+	$(REMOTE) 'cd ~/app && DEPLOY_SHA=$(shell git rev-parse HEAD) bash infra/deploy.sh'
 
 deploy-status: ## What commit is production actually running, and is it answering
-	$(SSHIN) < infra/deploy-status.sh
+	$(REMOTE) < infra/deploy-status.sh
 
 deploy-rollback: ## Put the previous commit back: make deploy-rollback SHA=<sha>
 	@test -n "$(SHA)" || { echo "SHA= is required. Find it with: make deploy-status"; exit 2; }
-	$(SSH) 'cd ~/app && DEPLOY_SHA=$(SHA) FORCE=1 bash infra/deploy.sh'
+	$(REMOTE) 'cd ~/app && DEPLOY_SHA=$(SHA) FORCE=1 bash infra/deploy.sh'
 
 deploy-logs: ## Tail the web container on the box
-	$(SSH) 'docker logs --tail 200 -f primer-web-1'
+	$(REMOTE) 'docker logs --tail 200 -f primer-web-1'
 
 lint: lint-backend lint-frontend ## Lint + format-check everything
 

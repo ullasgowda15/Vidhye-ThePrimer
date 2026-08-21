@@ -68,7 +68,10 @@ fi
 
 echo
 echo "  containers:"
-docker ps --filter name=primer --format '    {{.Names}}  {{.Status}}' 2>/dev/null \
+# Indented with sed rather than in the format string: docker strips leading
+# whitespace out of --format, so the alignment silently disappears.
+docker ps --filter name=primer --format '{{.Names}}  {{.Status}}' 2>/dev/null \
+    | sed 's/^/    /' \
     || echo "    (docker not reachable as this user)"
 
 echo

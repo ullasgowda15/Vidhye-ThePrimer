@@ -2,7 +2,8 @@
 #
 # Wire GitHub Actions to app-server. Run this **once**, from anywhere `gcloud` is
 # authenticated — your laptop or Cloud Shell, either is fine, because everything
-# it does to the box it does over `gcloud compute ssh`.
+# it does to the box goes through `infra/remote.sh`, which picks a transport that
+# works on this machine.
 #
 #     bash infra/deploy-key-setup.sh
 #
@@ -36,8 +37,20 @@ say()  { printf '    %s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf '\nSETUP FAILED: %s\n' "$*" >&2; exit 1; }
 
-command -v gcloud >/dev/null 2>&1 \
-    || die "gcloud is not on PATH. Run this from Cloud Shell, or install the SDK."
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+REMOTE="$HERE/remote.sh"
+[ -f "$REMOTE" ] || die "infra/remote.sh is missing; it is how this reaches the box"
+
+# The Windows installer puts gcloud on the *user* PATH, which a shell started
+# before the install will not have — the same lookup remote.sh does, for the
+# same reason.
+if command -v gcloud >/dev/null 2>&1; then
+    GCLOUD=gcloud
+elif [ -f "${LOCALAPPDATA:-}/Google/Cloud SDK/google-cloud-sdk/bin/gcloud.cmd" ]; then
+    GCLOUD="$LOCALAPPDATA/Google/Cloud SDK/google-cloud-sdk/bin/gcloud.cmd"
+else
+    die "gcloud is not installed. Run this from Cloud Shell, or install the SDK."
+fi
 command -v ssh-keygen >/dev/null 2>&1 \
     || die "ssh-keygen is not on PATH (Git Bash has it; cmd.exe does not)."
 
@@ -49,20 +62,26 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 # 1. Find the box
 # ---------------------------------------------------------------------------
 step "looking up $INSTANCE in $ZONE"
-IP="$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
-        --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null)" \
-    || die "cannot describe $INSTANCE in $ZONE — is gcloud pointed at project 'vidhye'?"
+# remote.sh already knows how to find the IP and how to derive the remote
+# username — which is *not* your local one, and getting that wrong is how a key
+# ends up authorising a user the app does not run as.
+TARGET="$(QUIET=1 bash "$REMOTE" --target 2>/dev/null | tr -d '\r\n')" \
+    || die "cannot reach $INSTANCE — is gcloud pointed at project 'vidhye'?"
+REMOTE_USER="${TARGET%@*}"
+IP="${TARGET#*@}"
 [ -n "$IP" ] || die "$INSTANCE has no external IP; GitHub's runners cannot reach it"
 say "external IP  $IP"
-
-REMOTE_USER="$(gcloud compute ssh "$INSTANCE" --zone "$ZONE" --command='whoami' 2>/dev/null | tr -d '\r\n')"
-[ -n "$REMOTE_USER" ] || die "could not ssh to $INSTANCE — fix that first, this needs it"
 say "ssh user     $REMOTE_USER"
+
+# Prove the login before changing anything on the box.
+ACTUAL="$(bash "$REMOTE" 'whoami' 2>/dev/null | tr -d '\r\n')"
+[ "$ACTUAL" = "$REMOTE_USER" ] \
+    || die "expected to log in as $REMOTE_USER but got '${ACTUAL:-nothing}'"
 
 # OS Login rewrites authorized_keys from directory metadata, so a line appended
 # by hand can be silently reverted. Better to say so now than to have the first
 # deploy fail with 'Permission denied (publickey)' and no clue why.
-OSLOGIN="$(gcloud compute instances describe "$INSTANCE" --zone "$ZONE" \
+OSLOGIN="$("$GCLOUD" compute instances describe "$INSTANCE" --zone "$ZONE" \
     --format='value(metadata.items.filter("key:enable-oslogin").extract("value"))' 2>/dev/null || true)"
 case "$OSLOGIN" in
     *TRUE*|*true*)
@@ -91,7 +110,7 @@ step "authorising it on $INSTANCE"
 PUB="$(cat "$WORK/key.pub")"
 # Over stdin, and idempotent: re-running this script replaces the previous line
 # for the same comment rather than growing the file.
-gcloud compute ssh "$INSTANCE" --zone "$ZONE" --command='bash -s' <<REMOTE >/dev/null
+bash "$REMOTE" <<REMOTE_SCRIPT >/dev/null
 set -eu
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
@@ -99,7 +118,7 @@ grep -v ' $KEY_NAME\$' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.next || t
 echo '$PUB' >> ~/.ssh/authorized_keys.next
 mv ~/.ssh/authorized_keys.next ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
-REMOTE
+REMOTE_SCRIPT
 say "added to $REMOTE_USER@$INSTANCE:~/.ssh/authorized_keys"
 
 step "checking the key actually logs in"
@@ -131,6 +150,14 @@ fi
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && [ -n "$REPO" ]; then
     say "using the gh CLI on $REPO"
+    # Create the environment first. `gh secret set --env production` 404s against
+    # an environment that does not exist yet, and this is a fresh repository as
+    # far as environments go — the workflow references `production` but nothing
+    # has ever created it. Idempotent: PUT on an existing environment is a no-op,
+    # and it sets no protection rules, so it does not quietly add an approval
+    # step nobody asked for.
+    gh api -X PUT "repos/$REPO/environments/production" >/dev/null 2>&1         || say "!! could not create the 'production' environment; secrets may fail"
+
     # `--env production` rather than a repository secret. An environment secret is
     # only readable by a job that declares `environment: production`, which is the
     # release job and nothing else — so a workflow added later, or one running from
@@ -171,8 +198,7 @@ Done. What now exists:
 
 To revoke this key later — it is one line, identified by its comment:
 
-    gcloud compute ssh $INSTANCE --zone $ZONE --command \\
-      "sed -i '/ $KEY_NAME\$/d' ~/.ssh/authorized_keys"
+    bash infra/remote.sh "sed -i '/ $KEY_NAME\$/d' ~/.ssh/authorized_keys"
 
 Your own SSH access is untouched by that.
 CLOSING

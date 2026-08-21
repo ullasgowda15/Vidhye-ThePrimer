@@ -34,6 +34,45 @@ Safe to re-run — it replaces its own line in `authorized_keys` rather than
 growing the file. Revoking it is one line, which the script prints when it
 finishes; your own SSH access is unaffected.
 
+### On Windows, everything goes through `infra/remote.sh`
+
+`gcloud compute ssh` on Windows does not use OpenSSH — it drives **PuTTY**
+(`plink.exe`). Plink's uncached-host-key prompt wants a real console, and every
+script here talks to the box by piping a script into `bash -s`. A pipe is not a
+console, so the prompt consumes the script off stdin and the connection is
+abandoned: what you see is a command that exits instantly having done nothing.
+
+`infra/remote.sh` is the answer. It prefers plain OpenSSH with the key gcloud
+already wrote to `~/.ssh/google_compute_engine`, falls back to `gcloud compute
+ssh`, and prints which it chose. Every `make deploy-*` target goes through it.
+
+It also fixes the username trap: **`gcloud compute ssh app-server` logs in as
+your *local* username**, which on this laptop is `DELL`. Its first run therefore
+registered the new key in project metadata as `DELL:ssh-rsa …`, while the app
+lives in `/home/ullasgowda3523` — so the login is refused and the error says
+nothing about why. `remote.sh` derives the remote user from the gcloud *account*
+(`ullasgowda3523@gmail.com` → `ullasgowda3523`), which is GCE's own convention;
+`REMOTE_USER=` overrides it.
+
+On a fresh machine the laptop's own key has to be authorised for the right user.
+Add it as **instance** metadata, not project metadata — that keeps it contained
+to `app-server` and leaves the Cloud Shell key alone:
+
+```bash
+printf 'ullasgowda3523:%s\n' "$(cat ~/.ssh/google_compute_engine.pub)" > keys.txt
+gcloud compute instances add-metadata app-server --zone=asia-south1-a \
+  --metadata-from-file ssh-keys=keys.txt
+```
+
+Undo it with `gcloud compute instances remove-metadata app-server
+--zone=asia-south1-a --keys=ssh-keys`.
+
+One more Windows trap, for whoever edits these scripts next: **write them LF.**
+`.gitattributes` normalises `*.sh` on commit, so CI and the box always get LF —
+but a CRLF *working copy* is what `make deploy-status` pipes to the box, and bash
+answers with `$'\r': command not found`. Python's `write_text` introduces CRLF by
+default on Windows; pass `newline='\n'`.
+
 ### The four secrets
 
 On **Settings → Environments → production → Environment secrets**, not repository
