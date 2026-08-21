@@ -129,6 +129,12 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/dist-ssr/
+# The three directories `infra/deploy.sh` shuffles when it swaps the PWA: the
+# incoming build, the one it replaced (kept so a rollback is a rename), and the
+# one a failed deploy set aside. They only ever exist on the box.
+frontend/dist.incoming/
+frontend/dist.previous/
+frontend/dist.broken/
 frontend/.vite/
 frontend/coverage/
 frontend/stats.html
@@ -186,3 +192,8 @@ export.zip
 !docs/
 !docs/**
 
+
+# Deploy bookkeeping, written on the box by infra/deploy.sh: the concurrency
+# lock, the last-deploy record, and patches of anything that had been hand-edited
+# there before a deploy reset it.
+/.deploy/

@@ -1,6 +1,11 @@
 # Deploying The Primer
 
-Local development is covered in [README.md](README.md). This is the staging path.
+Local development is covered in [README.md](README.md). This is the staging path
+— how to stand a **new** host up from nothing.
+
+**It is not how you ship a change to the host that already exists.** That is
+`Docs/Runbooks/Auto-Deploy.md`, and it is one step: push to `main`. The checklist
+below is provisioning, and you run it once per environment.
 
 Everything here that can be prepared in code **is** prepared. What remains needs
 founder credentials — a cloud account, a Stripe key, a Vertex AI service account —

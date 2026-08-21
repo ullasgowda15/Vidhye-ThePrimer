@@ -568,18 +568,17 @@ Recorded rather than assumed. Each blocks a specific phase, not the programme.
 
 ## 13. Deployment note — read before Phase 1
 
-**This repo does not auto-deploy.** Confirmed by reading
-`.github/workflows/deploy.yml`:
+**This repo auto-deploys, as of 21 August 2026.** The paragraph that was here
+said the opposite and was correct when written; `deploy.yml`'s release step was a
+placeholder that echoed "Hosting target is not wired yet".
 
-- It triggers on a **tag** (`v*`), not on push to `main` — deliberately. Its own
-  comment: *"Deploying every green commit would make the gate the only thing
-  between a Tuesday afternoon refactor and a four-year-old."*
-- The `release` job's final step is a **placeholder**. It echoes "Hosting target
-  is not wired yet" and does nothing.
-- The box is a plain GCE VM running `docker compose`. Nothing on it watches the
-  repository.
+It is now real: a push to `main` runs `ci.yml` as the gate, and a green gate runs
+`infra/deploy.sh` on the box over SSH — which rebuilds only what changed,
+migrates before recreating, probes `/api/health/`, and reverts itself if the
+probe fails. Tags still deploy too. See `Docs/Runbooks/Auto-Deploy.md`.
 
-So shipping is manual today: SSH in, `git pull`, rebuild, `migrate`, restart.
+What has *not* changed is the gate: `release` still `needs: [gate]`, and a red
+eval still means the deploy job is skipped rather than passed.
 
 **One thing to fix before adding services.** `infra/docker-compose.yml` in the
 repo defines only `db` and `redis`, but `infra/push-credentials.sh` runs

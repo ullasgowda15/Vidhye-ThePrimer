@@ -1,12 +1,17 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
-  # `deploy.yml` calls this workflow so the gating jobs are re-run on the tagged
-  # commit itself, rather than the deploy trusting that some ancestor was green.
+  # `deploy.yml` calls this workflow so the gating jobs are re-run on the commit
+  # being shipped, rather than the deploy trusting that some ancestor was green.
   # A tag can point anywhere, including at a commit that was never on main.
+  #
+  # **There is deliberately no `push:` trigger for main.** `deploy.yml` runs on
+  # every push to main and its first act is to call this workflow, so main is
+  # still covered on every commit — by exactly one run instead of two. Adding
+  # `push: branches: [main]` back would double every push: five jobs here plus
+  # the same five again inside the deploy run, including the full eval suite,
+  # for no extra information.
   workflow_call:
 
 concurrency:
@@ -299,6 +304,18 @@ jobs:
       - name: Build
         working-directory: frontend
         run: npm run build
+
+      # Kept, so that `deploy.yml` can ship this exact directory rather than
+      # rebuilding it — production then serves the bytes these tests ran against,
+      # and `app-server` (3.8 GiB, shared with Postgres and Celery) never has to
+      # run a Vite build. Seven days is well past any deploy that would want it.
+      - name: Keep the build for the deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+          if-no-files-found: error
 
   docker:
     name: Backend image

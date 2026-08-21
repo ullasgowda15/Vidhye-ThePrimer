@@ -6,45 +6,78 @@ name: Deploy
 # > cannot deploy."*
 #
 # This workflow is where that sentence becomes true. The `needs:` below is the
-# whole mechanism: GitHub will not start `release` until all four jobs in `CI`
-# have succeeded on this exact commit, and a failed eval is a failed job. There is
-# no path through this file that reaches a deploy with a red eval. The flag that
+# whole mechanism: GitHub will not start `release` until every job in `CI` has
+# succeeded on this exact commit, and a failed eval is a failed job. There is no
+# path through this file that reaches a deploy with a red eval. The flag that
 # would soften a failing job into a passing one is deliberately absent from this
 # file entirely — `evals/test_gate.py` asserts its absence by name, which is why
 # it is not written out here.
 #
-# **It runs on a tag, not on a push to main.** Deploying every green commit would
-# make the gate the only thing between a Tuesday afternoon refactor and a
-# four-year-old, and §19.7's "ship behind a flag" wants a deliberate act in
-# between. Tag a release and this runs; merge to main and it does not.
+# ---------------------------------------------------------------------------
+# It now runs on a push to main, and that is a reversal
+# ---------------------------------------------------------------------------
+# This file used to trigger on `v*` tags only, and said so at length: deploying
+# every green commit "would make the gate the only thing between a Tuesday
+# afternoon refactor and a four-year-old."
 #
-# **The release step is deliberately a placeholder.** The founder's hosting
-# decision lands with the production provision (DEPLOY.md, Docs/Hosting.md), and
-# a workflow that guessed at it would either be wrong or would sit here holding a
-# credential nobody had issued yet. What is *not* a placeholder is the gate: the
-# ordering, the required checks and the preflight below are the parts that have to
-# be right before there is anything to deploy, and they are real now.
+# That argument was about *risk*, and it was answered by paying the risk down
+# somewhere else rather than by refusing to automate:
+#
+# * the gate still runs, unchanged and on this exact commit — nothing below can
+#   start until it is green;
+# * `infra/deploy.sh` probes the deployment after the swap and **reverts by
+#   itself** if the app does not answer, which the hand-typed procedure never
+#   did;
+# * it deploys the SHA the gate graded, not `origin/main` at the moment somebody
+#   got round to typing `git pull` — so what shipped is what passed.
+#
+# What it buys is that the manual procedure stops being manual. A procedure a
+# solo founder runs ten times a day from a phone-sized terminal is a procedure
+# that eventually gets run with a step missed, and the step that gets missed is
+# the one at the end.
+#
+# **If you want the human back**, add a required reviewer to the `production`
+# environment in the repository settings. The job below already targets it, so
+# every deploy would then wait for one tap of Approve and nothing here needs to
+# change. Tags still deploy too, so `make release` remains a way to ship a
+# considered version.
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      confirm:
-        description: 'Type the tag you intend to deploy'
-        required: true
+      force:
+        description: 'Rebuild and restart everything, even if nothing changed'
+        type: boolean
+        default: false
 
+# One deploy at a time, and never interrupt one that has started. A second push
+# queues behind the first rather than cancelling it — `cancel-in-progress: true`
+# here could kill a run between `migrate` and `up -d`, which is the one moment
+# where stopping halfway is worse than either finishing or never starting.
+#
+# Superseded commits are cheap: `infra/deploy.sh` refuses to deploy a commit that
+# is an ancestor of what is already running, so a queue that has fallen behind
+# reconciles itself instead of un-shipping the newest work.
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-production
   cancel-in-progress: false
 
 permissions:
   contents: read
+  # For pulling the PWA that the `gate` job built. Reusable workflows inherit the
+  # caller's permissions, so this is also the whole grant `ci.yml` runs under when
+  # it runs as the gate — read the repository, read this run's artifacts, and
+  # nothing else. Notably not `contents: write`: a deploy has no business pushing.
+  actions: read
 
 jobs:
-  # Re-runs the gating suites on the tagged commit rather than trusting that some
+  # Re-runs the gating suites on this exact commit rather than trusting that some
   # ancestor was green. A tag can point anywhere, including at a commit that was
-  # never on main.
+  # never on main — and on a push to main this is the only run of CI, because
+  # `ci.yml` no longer triggers on main by itself.
   gate:
     name: Gate
     uses: ./.github/workflows/ci.yml
@@ -53,15 +86,14 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     # THE LINE. `gate` is the whole of `ci.yml` — Evals, Backend, Dependencies,
-    # Frontend and the image build — re-run on this tag's own commit, and GitHub
-    # will not start
-    # a job whose `needs` has failed. A red eval therefore means this job is
+    # Frontend and the image build — re-run on this commit, and GitHub will not
+    # start a job whose `needs` has failed. A red eval therefore means this job is
     # *skipped*, not passed. Removing or weakening this line is the change a
     # reviewer should stop, and `evals/test_gate.py` fails if it is.
     needs: [gate]
-    # Requires a GitHub environment named `production`. Deliberate: it is where a
-    # required reviewer or a deployment secret goes, and it is the one place left
-    # to put a human between a tag and a four-year-old.
+    # The GitHub environment named `production`. It is where the deploy secrets
+    # live, and it is the one place to put a required reviewer back if the
+    # push-to-deploy above ever turns out to be too fast.
     environment: production
 
     steps:
@@ -77,9 +109,128 @@ jobs:
           echo "The eval gate did not pass. Deploy blocked (PRODUCT.md §19.7)." >&2
           exit 1
 
-      - name: Release
+      - name: Check the deploy credentials are configured
+        # A deploy job that cannot reach the box must go red here with the fix in
+        # its own output. The failure this replaces was worse than an error: the
+        # previous version of this step echoed "hosting target is not wired yet"
+        # and exited 0, so every release for weeks was green and shipped nothing.
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          echo "Gate green for ${{ github.ref_name }}."
-          echo "Hosting target is not wired yet — see DEPLOY.md and Docs/Runbooks/Launch.md."
-          echo "Run the launch preflight against production before promoting:"
-          echo "  python manage.py launch_check --strict"
+          missing=""
+          [ -n "$SSH_KEY" ] || missing="$missing DEPLOY_SSH_KEY"
+          [ -n "$HOST" ]    || missing="$missing DEPLOY_HOST"
+          [ -n "$USER" ]    || missing="$missing DEPLOY_USER"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing deploy secrets:$missing" >&2
+            echo "" >&2
+            echo "Set them on the 'production' environment (Settings -> Environments)." >&2
+            echo "Docs/Runbooks/Auto-Deploy.md walks through generating the key pair" >&2
+            echo "and installing the public half on app-server — about five minutes," >&2
+            echo "once." >&2
+            exit 1
+          fi
+
+      # The PWA, built on the runner. `app-server` is an e2-medium with 3.8 GiB
+      # of RAM shared with Postgres, Redis, Celery and the web tier; a Vite build
+      # there is slow at best and an OOM at worst. It is also the wrong place on
+      # principle — this is the artifact `ci.yml`'s Frontend job already built and
+      # tested on this commit, so shipping that exact directory means production
+      # serves what the tests ran against.
+      - name: Take the PWA that CI built
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+
+      - name: Pack it
+        run: |
+          test -f dist/index.html || {
+            echo "::error::the frontend-dist artifact has no index.html" >&2
+            exit 1
+          }
+          tar -czf frontend-dist.tar.gz -C dist .
+          echo "packed $(du -h frontend-dist.tar.gz | cut -f1)"
+
+      - name: Open an SSH session to the box
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+            echo "pinned the host key from DEPLOY_KNOWN_HOSTS"
+          else
+            # Trust-on-first-use, every time, which is not the same as trust.
+            # It works, and it is the one part of this pipeline a network
+            # attacker could stand in the middle of, so it says so out loud
+            # rather than being quietly fine.
+            echo "::warning::DEPLOY_KNOWN_HOSTS is not set — accepting whatever host key answers."
+            echo "::warning::Pin it: ssh-keyscan $HOST, then paste the output into that secret."
+            ssh-keyscan -H "$HOST" > ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          APP_DIR: ${{ vars.DEPLOY_APP_DIR || 'app' }}
+          FORCE: ${{ inputs.force && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i $HOME/.ssh/id_deploy -o BatchMode=yes -o ConnectTimeout=15"
+          TARGET="$USER@$HOST"
+
+          echo "::group::Sending the build to $TARGET"
+          scp -i "$HOME/.ssh/id_deploy" -o BatchMode=yes \
+              frontend-dist.tar.gz "$TARGET:/tmp/frontend-dist.tar.gz"
+          # The script goes over too, rather than being run from the box's own
+          # checkout. The checkout is about to be reset to this commit — running
+          # the copy that is already there would mean the *old* deploy script
+          # performs the deploy that installs the new one, and a fix to this
+          # script would take two deploys to take effect.
+          scp -i "$HOME/.ssh/id_deploy" -o BatchMode=yes \
+              infra/deploy.sh "$TARGET:/tmp/deploy.sh"
+          echo "::endgroup::"
+
+          $SSH "$TARGET" \
+            "APP_DIR=\"\$HOME/$APP_DIR\" \
+             DEPLOY_SHA='${{ github.sha }}' \
+             DEPLOY_REF='${{ github.ref_type == 'tag' && 'main' || github.ref_name }}' \
+             DIST_TARBALL=/tmp/frontend-dist.tar.gz \
+             DEPLOY_ACTOR='${{ github.actor }} via ${{ github.workflow }}' \
+             FORCE='$FORCE' \
+             bash /tmp/deploy.sh"
+
+      - name: Say what is live
+        env:
+          SUBJECT: ${{ github.event.head_commit.message }}
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Subject | $(printf '%s' "$SUBJECT" | head -n 1) |"
+            echo "| Pushed by | @${{ github.actor }} |"
+            echo ""
+            echo "The eval gate passed on this commit, and the app answered"
+            echo "\`/api/health/\` after the swap — otherwise the deploy would have"
+            echo "reverted itself and this job would be red."
+            echo ""
+            echo "To undo by hand:"
+            echo ""
+            echo '```'
+            echo "gcloud compute ssh app-server --zone=asia-south1-a \\"
+            echo "  --command='cd ~/app && DEPLOY_SHA=<previous-sha> FORCE=1 bash infra/deploy.sh'"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

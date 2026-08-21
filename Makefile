@@ -161,6 +161,41 @@ quota: ## Which media providers are resting on a quota cooldown: make quota ARGS
 prompts: ## Show or roll back a prompt version: make prompts ARGS="rollback system_identity 1.0.0"
 	cd backend && $(ABS_PY) manage.py prompts $(ARGS)
 
+# --- deploys (§19.7) --------------------------------------------------------
+#
+# Pushing to main is the deploy. These targets are the escape hatches: the one
+# you use when CI is the thing that is broken, and the two you use to find out
+# what production is actually running.
+#
+# They shell to `gcloud compute ssh`, so they work from a laptop or from Cloud
+# Shell — and, unlike editing files in the Cloud Shell editor, they act on the
+# real box (Docs/Runbooks/Production-Facts.md).
+
+ZONE ?= asia-south1-a
+INSTANCE ?= app-server
+SSH = gcloud compute ssh $(INSTANCE) --zone=$(ZONE) --command
+# Streams a local script to the box over stdin rather than copying it there —
+# the pattern infra/prod-facts.sh documents.
+SSHIN = gcloud compute ssh $(INSTANCE) --zone=$(ZONE) --command='bash -s'
+
+deploy-setup: ## Wire GitHub Actions to the box. Run once; then pushing to main deploys
+	bash infra/deploy-key-setup.sh
+
+deploy: ## Deploy HEAD by hand, bypassing CI. For when CI is down — not routine
+	@echo "This skips the eval gate. Pushing to main is the supported path."
+	@echo "Deploying $$(git rev-parse HEAD) to $(INSTANCE)..."
+	$(SSH) 'cd ~/app && DEPLOY_SHA=$(shell git rev-parse HEAD) bash infra/deploy.sh'
+
+deploy-status: ## What commit is production actually running, and is it answering
+	$(SSHIN) < infra/deploy-status.sh
+
+deploy-rollback: ## Put the previous commit back: make deploy-rollback SHA=<sha>
+	@test -n "$(SHA)" || { echo "SHA= is required. Find it with: make deploy-status"; exit 2; }
+	$(SSH) 'cd ~/app && DEPLOY_SHA=$(SHA) FORCE=1 bash infra/deploy.sh'
+
+deploy-logs: ## Tail the web container on the box
+	$(SSH) 'docker logs --tail 200 -f primer-web-1'
+
 lint: lint-backend lint-frontend ## Lint + format-check everything
 
 lint-backend:

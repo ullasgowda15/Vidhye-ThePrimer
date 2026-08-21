@@ -70,16 +70,35 @@ Note `docker compose exec` is *also* unreliable from `~/app`: compose derives it
 project name from the invoking directory (`app`), but the containers were created
 under the project name `primer`, so it finds nothing. Address containers by name.
 
-### Deploys are `git pull` on the box
+### Deploys are automatic, as of 21 August 2026
+
+**Pushing to `main` deploys.** `deploy.yml` runs `ci.yml` as the gate and then, if
+it is green, runs `infra/deploy.sh` on this box over SSH. The paragraph that used
+to be here — "nothing auto-deploys, `deploy.yml`'s release step is still a
+placeholder" — was true until that date and is not now.
 
 `~/app` is a real clone — remote `git@github.com:ullasgowda15/Vidhye-ThePrimer.git`
-over **SSH, authenticated on the VM** (Cloud Shell has no key; the VM does). So:
+over **SSH, authenticated on the VM** (Cloud Shell has no key; the VM does),
+which is why the pipeline can move it with a fetch and a reset rather than
+copying a tree in.
+
+What is live, and whether it is answering:
 
 ```bash
-gcloud compute ssh app-server --zone=asia-south1-a --command='cd ~/app && git pull'
+make deploy-status
 ```
 
-Nothing auto-deploys — `deploy.yml`'s release step is still a placeholder.
+The full pipeline, the one-time setup, and what to do when it fails:
+**`Docs/Runbooks/Auto-Deploy.md`**.
+
+Deploying by hand still works and is unchanged in spirit, but go through the
+script rather than `git pull` — it is the thing that knows about the atomic
+`dist` swap, the migrate-before-recreate ordering, and the health probe that
+cannot lie:
+
+```bash
+gcloud compute ssh app-server --zone=asia-south1-a   --command='cd ~/app && bash infra/deploy.sh'
+```
 
 ---
 
