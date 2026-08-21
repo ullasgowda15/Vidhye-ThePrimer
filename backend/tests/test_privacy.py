@@ -338,6 +338,60 @@ class TestTheExport:
         assert response["Content-Type"] == "application/zip"
         assert zipfile.is_zipfile(io.BytesIO(response.content))
 
+    @pytest.mark.parametrize(
+        "name",
+        ["../../escaped", "a/b", "a" + chr(92) + "b", "Jo:Jo", "what?", "star*", "pipe|", ".."],
+    )
+    def test_a_childs_name_cannot_shape_the_path_inside_the_zip(self, auth, parent, name) -> None:
+        """`first_name` is free text, and it was interpolated into the zip entry
+        unchanged.
+
+        The dangerous half is `../../x`, whose entry a naive extractor writes
+        *outside* the directory it was pointed at. The half that will actually
+        happen is `Jo:Jo` — an ordinary nickname that produces a bundle Windows
+        cannot extract at all, in the one feature that has to work on the day a
+        family stops trusting us.
+
+        All that stands between a name and this file is `validate_first_name`,
+        and all it does is strip whitespace.
+        """
+        Child.objects.create(parent=parent, first_name=name, birthdate=datetime.date(2020, 1, 1))
+
+        names = zipfile.ZipFile(io.BytesIO(auth.post(EXPORT_URL).content)).namelist()
+
+        assert any(entry.startswith("children/") for entry in names)
+        for entry in names:
+            segments = entry.split("/")
+            # The archive is exactly two levels deep — `children/<folder>/<file>`
+            # — and a name carrying a separator would quietly add a third. That
+            # is not dangerous the way `..` is, but it means the bundle no longer
+            # has the shape the manifest describes.
+            if entry.startswith("children/"):
+                assert len(segments) == 3, entry
+            assert ".." not in segments, entry
+            assert not entry.startswith("/"), entry
+            assert chr(92) not in entry, entry
+            for segment in segments:
+                assert not set(segment) & set(':*?"<>|'), entry
+                assert segment == segment.strip(" ."), entry
+
+    def test_two_names_that_sanitise_to_nothing_still_get_separate_folders(
+        self, auth, parent
+    ) -> None:
+        """The id suffix is appended *after* sanitising precisely so that two
+        names which reduce to the same string cannot collide and overwrite each
+        other inside the archive."""
+        for unusable in ("..", "."):
+            Child.objects.create(
+                parent=parent, first_name=unusable, birthdate=datetime.date(2020, 1, 1)
+            )
+
+        names = zipfile.ZipFile(io.BytesIO(auth.post(EXPORT_URL).content)).namelist()
+        folders = {e.split("/")[1] for e in names if e.startswith("children/")}
+
+        assert len(folders) == 2, folders
+        assert all(f.startswith("child-") for f in folders), folders
+
     def test_an_error_under_that_header_is_still_readable_json(self, api) -> None:
         """Negotiating a zip must not make the *failures* unreadable.
 

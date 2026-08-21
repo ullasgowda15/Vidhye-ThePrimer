@@ -43,6 +43,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import zipfile
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -356,6 +357,41 @@ def _incidents(child: Child) -> list[dict[str, Any]]:
     ]
 
 
+#: Characters a child's name must not contribute to a zip entry. `/` and `\`
+#: would make the name a *path* rather than a path segment; the rest (`:*?"<>|`
+#: and the control codes) are illegal in Windows filenames, where the bundle is
+#: most likely to be opened.
+_UNSAFE_IN_A_PATH_SEGMENT = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _folder_for(child: Child) -> str:
+    """`children/<name>-<id8>`, with the name made safe to be part of a path.
+
+    `first_name` is free text: the serializer strips whitespace and requires it
+    to be non-empty, and imposes nothing else. Interpolated straight into a zip
+    entry — which is what this did — it is a path-injection primitive.
+
+    Two things go wrong, and they are not equally likely. A child called
+    `../../x` yields an entry that a naive extractor writes *outside* the
+    directory it was pointed at; that one needs a parent to attack their own
+    download, so it is a real class of bug and a small risk. A child called
+    `Jo:Jo`, or a nickname with a slash in it, yields a bundle that Windows
+    simply cannot extract — and that one is an ordinary family, on an ordinary
+    name, in the single feature that has to work on the day they stop trusting
+    us.
+
+    The `-<id8>` suffix is appended *after* sanitising and is not itself
+    sanitised, so two children whose names reduce to the same string still get
+    separate folders. A name that reduces to nothing at all falls back to
+    `child`, which with the suffix is still unique and still readable.
+    """
+    name = _UNSAFE_IN_A_PATH_SEGMENT.sub("-", child.first_name)
+    # Trailing dots and spaces are also illegal on Windows, and a name of `..`
+    # is a traversal that survives the substitution above untouched.
+    name = name.strip(" .")
+    return f"children/{name or 'child'}-{str(child.pk)[:8]}"
+
+
 def build_bundle(parent: User) -> tuple[bytes, str]:
     """`(zip bytes, filename)` — everything this parent owns (§12.8).
 
@@ -369,7 +405,7 @@ def build_bundle(parent: User) -> tuple[bytes, str]:
     files: dict[str, Any] = {"account.json": _account(parent)}
 
     for child in children:
-        folder = f"children/{child.first_name}-{str(child.pk)[:8]}"
+        folder = _folder_for(child)
         adventures, hit_cap = _adventures(child)
         if hit_cap:
             truncated.append(f"{folder}/adventures.json")
