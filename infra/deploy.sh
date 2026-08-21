@@ -55,7 +55,6 @@ DRY_RUN="${DRY_RUN:-0}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 
 STATE_DIR="$APP_DIR/.deploy"
-LOG_DIR="$STATE_DIR/log"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
 # `-p primer`, explicitly. The containers were created under the project name
@@ -81,7 +80,7 @@ cd "$APP_DIR" 2>/dev/null || die "no app directory at $APP_DIR"
 git rev-parse --git-dir >/dev/null 2>&1 || die "$APP_DIR is not a git clone; deploys assume one"
 command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
 
-mkdir -p "$STATE_DIR" "$LOG_DIR"
+mkdir -p "$STATE_DIR"
 
 # One deploy at a time. Two overlapping image builds on a 2-vCPU box is how you
 # get a half-built image serving traffic. `-w` rather than `-n`: a queued deploy
@@ -93,7 +92,8 @@ mkdir -p "$STATE_DIR" "$LOG_DIR"
 # "another deploy holds the lock" on a machine that has never deployed anything.
 if command -v flock >/dev/null 2>&1; then
     exec 9>"$STATE_DIR/lock"
-    flock -w 900 9 || die "another deploy has held the lock for 15 minutes; look in $LOG_DIR"
+    flock -w 900 9 || die "another deploy has held the lock for 15 minutes; check the
+    Actions run that is still going, or docker ps on the box"
 else
     warn "no flock on this machine — running without the concurrency lock"
 fi
@@ -209,7 +209,11 @@ if [ "$SKIP_TO_HEALTH" = "0" ]; then
         say "frontend: $([ "$frontend_changed" = 1 ] && echo 'rebuild + swap' || echo 'untouched')"
     fi
 
-    # A tarball handed to us by CI is the frontend changing, whatever the diff says.
+    # A tarball handed to us by CI means swap it, whatever the diff says. The
+    # extract-and-rename costs about a second — far less than the cost of being
+    # wrong — and it makes the swap self-healing: if `dist` ever drifts from the
+    # deployed commit, the next deploy of any kind puts it right. Only the image
+    # rebuild, the expensive half, is left to the diff.
     [ -n "$DIST_TARBALL" ] && frontend_changed=1
 
     # -----------------------------------------------------------------------
@@ -272,7 +276,10 @@ step "health"
 
 # The first entry of ALLOWED_HOSTS, because the probe has to send a Host header
 # the app will accept, or it gets a 400 that looks exactly like a dead app.
-HOST_HEADER="$(sed -n 's/^ALLOWED_HOSTS=//p' .env 2>/dev/null | tail -n 1 | cut -d, -f1)"
+# `|| true` for the same reason as the cleanup below: a missing .env makes sed
+# exit non-zero, pipefail hands that to the assignment, and set -e would abort
+# the run at the health check rather than falling back to the default.
+HOST_HEADER="$(sed -n 's/^ALLOWED_HOSTS=//p' .env 2>/dev/null | tail -n 1 | cut -d, -f1 || true)"
 [ -n "$HOST_HEADER" ] || HOST_HEADER="primer.yourcaly.com"
 
 probe() {
@@ -355,16 +362,12 @@ fi
 if [ "$DRY_RUN" != "1" ]; then
     step "housekeeping"
 
-    # An image per deploy on a 29 GB disk fills it in a couple of months, and the
-    # database is on the same disk. Dangling only — never `-a`, which would
-    # cheerfully delete the pgvector and redis images this box is running on.
-    docker image prune -f >/dev/null 2>&1 || true
-    say "pruned dangling images; $(df -h / | awk 'NR==2{print $4" free of "$2}')"
-
-    # Keep the last thirty of each and no more.
-    ls -1t "$LOG_DIR"/*.log 2>/dev/null | tail -n +31 | xargs -r rm -f
-    ls -1t "$STATE_DIR"/local-changes-*.patch 2>/dev/null | tail -n +31 | xargs -r rm -f
-
+    # The record goes down **first**, before any tidying. The first real deploy
+    # (e6c8585, 21 Aug 2026) shipped perfectly, answered its health probe, and
+    # then died here at exit 2 — after which this file was never written, so
+    # `deploy-status` reported a box that had "not been deployed by the pipeline
+    # yet" while running exactly what the pipeline had put there. Bookkeeping
+    # that runs after the risky part is bookkeeping you lose.
     {
         printf '{\n'
         printf '  "sha": "%s",\n' "$DEPLOY_SHA"
@@ -373,6 +376,22 @@ if [ "$DRY_RUN" != "1" ]; then
         printf '  "by": "%s"\n' "${DEPLOY_ACTOR:-$(whoami)}"
         printf '}\n'
     } > "$STATE_DIR/last-deploy.json"
+
+    # An image per deploy on a 29 GB disk fills it in a couple of months, and the
+    # database is on the same disk. Dangling only — never `-a`, which would
+    # cheerfully delete the pgvector and redis images this box is running on.
+    docker image prune -f >/dev/null 2>&1 || true
+    say "pruned dangling images; $(df -h / | awk 'NR==2{print $4" free of "$2}')"
+
+    # Keep the last thirty patches and no more.
+    #
+    # `|| true` is not defensive padding — it is the fix for what killed that
+    # first deploy. A glob that matches nothing is passed through literally, `ls`
+    # exits 2, and `set -o pipefail` hands that 2 to the pipeline even though
+    # `xargs` succeeded; `set -e` then aborts the script. Since a clean box has no
+    # patches to expire, the *normal* case was the failing one — which is the
+    # worst shape for a bug, because it cannot be hit by testing the happy path.
+    ls -1t "$STATE_DIR"/local-changes-*.patch 2>/dev/null | tail -n +31 | xargs -r rm -f || true
 fi
 
 step "live"
