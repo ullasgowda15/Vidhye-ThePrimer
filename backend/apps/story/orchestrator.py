@@ -127,7 +127,7 @@ from apps.safety import pipeline as safety
 from apps.safety.models import Action, Severity
 from apps.safety.prompting import assembler
 from apps.safety.prompting.layers import render as render_layers
-from apps.story import coherence, wellbeing, worlds
+from apps.story import coherence, duration, wellbeing, worlds
 from apps.story.ai import router as ai_router
 from apps.story.ai.prompts import story as story_prompts
 from apps.story.ai.schemas import Beat as BeatContract
@@ -2709,7 +2709,10 @@ def _finalise_session(adventure: Adventure, reason: str) -> None:
         return
 
     session.ended_at = timezone.now()
-    session.duration_s = max(0, int((session.ended_at - session.started_at).total_seconds()))
+    # Measured to the last thing the child did, not to the moment this row was
+    # closed — a sitting is often finalised long after a child wandered off, and
+    # wall clock then reports the walking away as playing. See `story.duration`.
+    session.duration_s = duration.played_seconds(session, ended_at=session.ended_at)
     session.ended_reason = reason
     session.save(update_fields=["ended_at", "duration_s", "ended_reason", "updated_at"])
 

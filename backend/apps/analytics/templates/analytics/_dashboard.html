@@ -120,10 +120,11 @@ page follows, and the one that stops an hour-old product reading as a failing on
         <span class="pv">{{ row.value }}</span>
         <span class="pl">{{ row.label }}</span>
         <span class="pn">{{ row.note }}</span>
+        {# Only ever a chip with a word in it. The `elif` here used to draw an
+           empty one, which rendered as a bare circle next to "none serious" and
+           meant nothing to anybody. #}
         {% if row.verdict %}
           <span class="chip {{ row.chip }}">{{ row.verdict }}</span>
-        {% elif row.chip %}
-          <span class="chip {{ row.chip }}">&nbsp;</span>
         {% endif %}
       </li>
     {% endfor %}
@@ -1441,7 +1442,16 @@ never asked".
     </div>
   </div>
   <div class="panel">
-    <div class="kv"><span>how sittings ended <b>{{ snapshot.guardrails.ended_reasons|default:"—" }}</b></span></div>
+    {# `ended_reasons` is a dict, and printing it printed its `repr` — the page
+       read `how sittings ended {'cap': 3, 'completed': 2}`. Iterated instead, in
+       the same `kv` shape the rest of the page uses. #}
+    <div class="kv">
+      {% for reason, count in snapshot.guardrails.ended_reasons.items %}
+        <span>{{ reason }} <b>{{ count }}</b></span>
+      {% empty %}
+        <span class="muted">no sitting has ended in this window</span>
+      {% endfor %}
+    </div>
     <details class="why">
       <summary>Why these sit on the same page as the growth numbers</summary>
       <p>
