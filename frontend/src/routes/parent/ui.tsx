@@ -14,7 +14,7 @@
  * the twelfth page will not have.
  */
 
-import { cloneElement, useId, type ReactElement, type ReactNode } from 'react';
+import { cloneElement, useId, useState, type ReactElement, type ReactNode } from 'react';
 import { Link, type LinkProps } from 'react-router-dom';
 
 import { STATUS_LABEL, STATUS_STYLE } from './dashboard';
@@ -226,12 +226,91 @@ export function Field({
   );
 }
 
-export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
+const INPUT_BASE = `w-full rounded-md border border-border bg-surface px-3 py-2 text-3 focus:border-primary ${FOCUS_RING}`;
+
+/**
+ * `className` is appended rather than replaced. A caller can add to the box —
+ * `PasswordInput` reserves room on the right for its toggle — but cannot drop
+ * the border, the sizing or the focus ring, which is the same bargain
+ * `LinkButton` strikes.
+ */
+export function TextInput({
+  className = '',
+  ...props
+}: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input {...props} className={`${INPUT_BASE} ${className}`} />;
+}
+
+/**
+ * A password field with a reveal toggle (Feather's eye / eye-off, inline because
+ * this app ships no icon dependency).
+ *
+ * Typing a password you cannot see is a guess, and the parent surface is where a
+ * mistyped one costs the most: a parent who cannot get back in cannot reach their
+ * own child's data. So this is a usability fix rather than a convenience, and it
+ * lives here rather than on three pages for the reason at the top of this file —
+ * a control written per page is a control the fourth page gets wrong.
+ *
+ * **The button's accessible name changes; `aria-pressed` is deliberately absent.**
+ * Carrying both makes a screen reader announce "Hide password, pressed", which
+ * states the same fact twice and in opposite directions. A name that says what
+ * the next press does is the pattern users already know, and because the button
+ * is focused when it changes, the change is announced.
+ *
+ * `type="button"` is load bearing: a bare `<button>` inside a `<form>` defaults
+ * to `submit`, so revealing the password would post the login form instead.
+ *
+ * `id` and `aria-describedby` arrive from `Field` via `cloneElement` and are
+ * spread onto the `<input>`, not this wrapper, so the label still names the field
+ * and the hint still describes it.
+ */
+export function PasswordInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  const [revealed, setRevealed] = useState(false);
+
   return (
-    <input
-      {...props}
-      className={`w-full rounded-md border border-border bg-surface px-3 py-2 text-3 focus:border-primary ${FOCUS_RING}`}
-    />
+    <div className="relative">
+      {/* `pr` clears the toggle so a long password never runs underneath it. */}
+      <TextInput {...props} type={revealed ? 'text' : 'password'} className="pr-[--target-min]" />
+      <button
+        type="button"
+        onClick={() => setRevealed((shown) => !shown)}
+        aria-label={revealed ? 'Hide password' : 'Show password'}
+        className={`absolute inset-y-0 right-0 flex w-[--target-min] items-center justify-center rounded-md text-text-muted ${FOCUS_RING}`}
+      >
+        {/* Decorative: the button is already named above, so announcing the icon
+            too would say the same thing twice. */}
+        <EyeIcon crossedOut={revealed} />
+      </button>
+    </div>
+  );
+}
+
+function EyeIcon({ crossedOut }: { crossedOut: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {crossedOut ? (
+        <>
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+          <line x1="1" y1="1" x2="23" y2="23" />
+        </>
+      ) : (
+        <>
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+          <circle cx="12" cy="12" r="3" />
+        </>
+      )}
+    </svg>
   );
 }
 

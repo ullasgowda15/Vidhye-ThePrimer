@@ -11,7 +11,17 @@ import {
 } from '@/lib/api/queries';
 
 import { DashboardShell } from './DashboardShell';
-import { LINK, Card, Field, Notice, PrimaryButton, QuietButton, Section, TextInput } from './ui';
+import {
+  LINK,
+  Card,
+  Field,
+  Notice,
+  PasswordInput,
+  PrimaryButton,
+  QuietButton,
+  Section,
+  TextInput,
+} from './ui';
 
 /**
  * The privacy centre (PRODUCT.md §12.8, §13.7, §13.8).
@@ -218,8 +228,7 @@ function DeleteAccountCard() {
               label="Your password"
               hint="Asked for because a signed-in device on a kitchen table should not be enough to erase this."
             >
-              <TextInput
-                type="password"
+              <PasswordInput
                 value={password}
                 autoFocus
                 autoComplete="current-password"

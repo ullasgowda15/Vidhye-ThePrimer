@@ -16,10 +16,12 @@ from typing import Any
 
 import pytest
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.profiles.models import Child
 from apps.reading import service
 from apps.reading.models import ReadingAttempt
+from apps.story.models import PlaySession
 
 pytestmark = pytest.mark.django_db
 
@@ -200,6 +202,91 @@ class TestTheResponse:
 # ---------------------------------------------------------------------------
 # The child's voice
 # ---------------------------------------------------------------------------
+class TestWhichSittingItBelongsTo:
+    """The reading has to land on a session, and the client cannot say which.
+
+    `sessionId` has been in the request serializer since Phase 1 and nothing has
+    ever sent one — no session id is exposed to the child surface at all — so
+    every attempt was written with `session=None` and "what happened in this
+    sitting" could not include reading. The server resolves it instead.
+    """
+
+    def test_it_lands_on_the_sitting_the_child_is_in(
+        self, auth_client: Any, reader: Child, audio: Any
+    ) -> None:
+        session = PlaySession.objects.create(child=reader)
+        line = a_line(reader)
+
+        auth_client.post(
+            url_for(reader),
+            {"passageId": line["id"], "audio": audio, "durationMs": 2400},
+            format="multipart",
+        )
+
+        attempt = ReadingAttempt.objects.get()
+        assert attempt.session_id == session.pk
+
+    def test_a_sitting_that_just_ended_still_claims_it(
+        self, auth_client: Any, reader: Child, audio: Any
+    ) -> None:
+        # The reading moment sits on the warm close; a child who tapped "All done"
+        # first and then went back to read is the case this covers.
+        session = PlaySession.objects.create(child=reader)
+        session.ended_at = timezone.now() - datetime.timedelta(minutes=1)
+        session.save()
+        line = a_line(reader)
+
+        auth_client.post(
+            url_for(reader),
+            {"passageId": line["id"], "audio": audio, "durationMs": 2400},
+            format="multipart",
+        )
+
+        assert ReadingAttempt.objects.get().session_id == session.pk
+
+    def test_a_stale_sitting_does_not_claim_it(
+        self, auth_client: Any, reader: Child, audio: Any
+    ) -> None:
+        # Yesterday's sitting is not this reading's sitting, and saying it is
+        # would put a line into a report about an afternoon it did not happen in.
+        session = PlaySession.objects.create(child=reader)
+        session.ended_at = timezone.now() - datetime.timedelta(hours=6)
+        session.save()
+        line = a_line(reader)
+
+        auth_client.post(
+            url_for(reader),
+            {"passageId": line["id"], "audio": audio, "durationMs": 2400},
+            format="multipart",
+        )
+
+        assert ReadingAttempt.objects.get().session_id is None
+
+    def test_it_never_lands_on_another_family_s_sitting(
+        self, auth_client: Any, reader: Child, audio: Any, django_user_model: Any
+    ) -> None:
+        # The claimed id is scoped to the child. Without that, a request could
+        # file a reading against a sitting belonging to somebody else's child.
+        other_parent = django_user_model.objects.create_user(
+            email="other@example.com", password="not-a-real-password"
+        )
+        other_child = Child.objects.create(
+            parent=other_parent,
+            first_name="Someone",
+            birthdate=datetime.date(datetime.date.today().year - 6, 1, 1),
+        )
+        theirs = PlaySession.objects.create(child=other_child)
+        line = a_line(reader)
+
+        auth_client.post(
+            url_for(reader),
+            {"passageId": line["id"], "audio": audio, "sessionId": str(theirs.pk)},
+            format="multipart",
+        )
+
+        assert ReadingAttempt.objects.get().session_id is None
+
+
 class TestConsent:
     def test_keeping_the_recording_is_the_default(self, reader: Child) -> None:
         """A founder's decision, taken deliberately, and pinned here so it cannot

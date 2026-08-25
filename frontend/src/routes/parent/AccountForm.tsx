@@ -8,7 +8,7 @@ import { useState } from 'react';
 import { errorMessage } from '@/lib/api/client';
 import { useAuthStore } from '@/store/auth';
 
-import { Field, Notice, PrimaryButton, TextInput } from './ui';
+import { Field, Notice, PasswordInput, PrimaryButton, TextInput } from './ui';
 
 export default function AccountForm({ onDone }: { onDone: () => void }) {
   const signup = useAuthStore((state) => state.signup);
@@ -56,9 +56,8 @@ export default function AccountForm({ onDone }: { onDone: () => void }) {
       </Field>
 
       <Field label="Password" hint="At least eight characters, and not a common one.">
-        <TextInput
+        <PasswordInput
           name="password"
-          type="password"
           required
           autoComplete="new-password"
           value={password}

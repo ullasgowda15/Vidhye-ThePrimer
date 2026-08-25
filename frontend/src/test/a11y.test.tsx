@@ -23,6 +23,7 @@
  */
 
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { MemoryRouter } from 'react-router-dom';
@@ -38,6 +39,7 @@ import {
 import {
   Field,
   LinkButton,
+  PasswordInput,
   PrimaryButton,
   QuietButton,
   Section,
@@ -221,6 +223,41 @@ describe('the parent controls are usable from a keyboard', () => {
     // The target floor and the focus ring cannot be opted out of by a caller.
     expect(link.className).toContain('min-h-[--target-min]');
     expect(link.className).toContain('focus-visible:outline-primary');
+  });
+
+  it('reveals a password without losing the field its label', async () => {
+    // Typing a password you cannot see is a guess, and on this surface a mistyped
+    // one locks a parent out of their own child's data. The toggle has to do that
+    // without costing the field anything it already had: `Field` names the input
+    // through `cloneElement`, so an `id` landing on the wrapper instead of the
+    // `<input>` would leave the label pointing at nothing.
+    const user = userEvent.setup();
+    render(
+      <Field label="Password" hint="At least eight characters.">
+        <PasswordInput name="password" />
+      </Field>,
+    );
+
+    // Hidden: no `textbox` role, so it has to be found by its label.
+    const input = screen.getByLabelText('Password');
+    expect(input.tagName).toBe('INPUT');
+    expect(input).toHaveAttribute('type', 'password');
+    expect(input).toHaveAccessibleDescription('At least eight characters.');
+
+    // `type="button"`, or revealing the password submits the form it sits in.
+    const toggle = screen.getByRole('button', { name: 'Show password' });
+    expect(toggle).toHaveAttribute('type', 'button');
+
+    await user.click(toggle);
+    expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'text');
+    // The name says what the next press does, and it is the only place the state
+    // is announced — `aria-pressed` as well would say it twice, in opposite
+    // directions ("Hide password, pressed").
+    expect(toggle).toHaveAccessibleName('Hide password');
+    expect(toggle).not.toHaveAttribute('aria-pressed');
+
+    await user.click(toggle);
+    expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password');
   });
 
   it('names a field without swallowing its hint into the accessible name', () => {

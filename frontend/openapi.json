@@ -3247,6 +3247,11 @@
                         "items": {
                             "$ref": "#/components/schemas/SkillEvidence"
                         }
+                    },
+                    "linesRead": {
+                        "type": "integer",
+                        "description": "Lines the child read aloud to their companion in this sitting. A count only: nothing has listened to the recordings, so there is no accuracy figure to report and none is implied.",
+                        "readOnly": true
                     }
                 },
                 "required": [
@@ -3259,6 +3264,7 @@
                     "highlight_source",
                     "how_it_went",
                     "key_choice",
+                    "linesRead",
                     "milestone_name",
                     "objective_code",
                     "occurred_at",

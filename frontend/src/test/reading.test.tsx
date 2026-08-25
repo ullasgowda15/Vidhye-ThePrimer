@@ -180,11 +180,69 @@ describe('reading it', () => {
     expect(await screen.findByTestId('reading-reply')).toBeInTheDocument();
   });
 
-  it('offers no control at all on a browser that cannot record', async () => {
+  it('still lets the child read on a browser that cannot record', async () => {
+    /* Rule 3, and the case this screen gets wrong most often in the field: an
+       insecure origin makes `navigator.mediaDevices` undefined, so every phone
+       pointed at a LAN dev server lands here. The old behaviour disabled the
+       button — a dead grey control under a goodbye, which a child taps and taps.
+
+       Without a recorder the invitation still stands: they read the line to their
+       companion, tap "All done", and are thanked. The turn goes up with no audio,
+       which is `spoke: false` server-side and exactly what happened. */
+    const user = userEvent.setup();
     vi.spyOn(recorder, 'canRecord').mockReturnValue(false);
+    const record = vi.spyOn(recorder, 'record');
+    const submit = vi
+      .spyOn(api, 'submitReading')
+      .mockResolvedValue({ attemptId: 'a1', say: 'Thank you for reading to me.', kept: false });
 
     renderMoment();
 
-    expect(await screen.findByTestId('reading-start')).toBeDisabled();
+    const start = await screen.findByTestId('reading-start');
+    expect(start).toBeEnabled();
+    await user.click(start);
+
+    // Never asked for a microphone it was told it could not have.
+    expect(record).not.toHaveBeenCalled();
+
+    await user.click(await screen.findByTestId('reading-done'));
+
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(submit.mock.calls[0][1].audio).toBeNull();
+    expect(await screen.findByTestId('reading-reply')).toHaveTextContent(/thank you/i);
+  });
+
+  it('ends the turn when the child finishes before the microphone prompt is answered', async () => {
+    /* The permission sheet can sit on screen for seconds. A child who has read
+       the line behind it and tapped "All done" has said they are finished, and
+       the recorder must not keep the turn open once it finally arrives. */
+    const user = userEvent.setup();
+    let handOver: (session: recorder.ActiveRecording) => void = () => undefined;
+    const pending = new Promise<recorder.ActiveRecording>((resolve) => {
+      handOver = resolve;
+    });
+    let finish: (value: { audio: Blob | null; durationMs: number }) => void = () => undefined;
+    const session = {
+      done: new Promise<{ audio: Blob | null; durationMs: number }>((resolve) => {
+        finish = resolve;
+      }),
+      stop: vi.fn(() => finish({ audio: null, durationMs: 1200 })),
+      level: () => 0,
+    };
+    vi.spyOn(recorder, 'canRecord').mockReturnValue(true);
+    vi.spyOn(recorder, 'record').mockReturnValue(pending);
+    const submit = vi
+      .spyOn(api, 'submitReading')
+      .mockResolvedValue({ attemptId: 'a1', say: 'Thank you for reading to me.', kept: false });
+
+    renderMoment();
+    await user.click(await screen.findByTestId('reading-start'));
+    // Finished while the prompt was still up, then permission lands.
+    await user.click(await screen.findByTestId('reading-done'));
+    handOver(session);
+
+    await waitFor(() => expect(session.stop).toHaveBeenCalled());
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(await screen.findByTestId('reading-reply')).toBeInTheDocument();
   });
 });

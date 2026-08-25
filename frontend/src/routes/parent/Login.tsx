@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { errorMessage } from '@/lib/api/client';
 import { useAuthStore } from '@/store/auth';
 
-import { LINK, Field, Notice, ParentShell, PrimaryButton, TextInput } from './ui';
+import { LINK, Field, Notice, ParentShell, PasswordInput, PrimaryButton, TextInput } from './ui';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -48,9 +48,8 @@ export default function Login() {
         </Field>
 
         <Field label="Password">
-          <TextInput
+          <PasswordInput
             name="password"
-            type="password"
             required
             autoComplete="current-password"
             value={password}

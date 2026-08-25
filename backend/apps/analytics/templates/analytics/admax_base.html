@@ -171,6 +171,25 @@ form controls and scrollbars follow.
              margin: 0 0 .6rem; padding-bottom: .4rem; border-bottom: 1px solid var(--grid); }
     .shead .n { font-size: .8125rem; color: var(--muted); }
 
+    /* The plain-English summary. Deliberately the only block on the page with a
+       tinted ground: it is the one thing somebody who does not read dashboards
+       should find, and it has to be findable without being told where it is. */
+    .plain { background: var(--surface); border: 1px solid var(--ring);
+             border-left: 4px solid var(--s1); border-radius: .6rem;
+             padding: 1rem 1.15rem 1.15rem; margin: 0 0 1.5rem; }
+    .plain h2 { margin: 0 0 .15rem; font-size: 1.05rem; }
+    .plain > p.sub { margin: 0 0 .85rem; font-size: .8125rem; color: var(--muted); }
+    .plain ul { margin: 0; padding: 0; list-style: none; display: grid;
+                gap: .5rem; }
+    .plain li { display: flex; flex-wrap: wrap; align-items: baseline;
+                gap: .25rem .6rem; padding-bottom: .5rem;
+                border-bottom: 1px solid var(--grid); }
+    .plain li:last-child { border-bottom: 0; padding-bottom: 0; }
+    .plain .pv { font-variant-numeric: tabular-nums; font-weight: 650;
+                 font-size: 1.35rem; min-width: 3.5ch; }
+    .plain .pl { font-weight: 550; }
+    .plain .pn { font-size: .8125rem; color: var(--muted); }
+
     /* "How to read this" — present, never in the way. The prose is part of the
        deliverable; a dashboard is not. */
     details.why { margin-top: .75rem; font-size: .8125rem; color: var(--ink-2); }

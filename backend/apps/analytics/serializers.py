@@ -16,7 +16,11 @@ wire.
 
 from __future__ import annotations
 
+from typing import Any
+
 from rest_framework import serializers
+
+from apps.reading.models import ReadingAttempt
 
 
 class SkillEvidenceSerializer(serializers.Serializer):
@@ -72,6 +76,28 @@ class SessionReportSerializer(serializers.Serializer):
         ),
     )
     skills = SkillEvidenceSerializer(many=True)
+
+    linesRead = serializers.SerializerMethodField(
+        help_text=(
+            "Lines the child read aloud to their companion in this sitting. A "
+            "count only: nothing has listened to the recordings, so there is no "
+            "accuracy figure to report and none is implied."
+        ),
+    )
+
+    def get_linesRead(self, report: Any) -> int:
+        """Counted live rather than stored on the report.
+
+        `SessionReport` is written when the sitting ends, and the reading moment
+        sits on the warm close *inside* it — so a stored count would race the
+        thing it counts and would sometimes be one short of what the parent was
+        told on the same page. There is one query per report detail and no list
+        view uses this serializer.
+
+        `spoke=True` on purpose: this is "read aloud to their companion", and a
+        turn where no audio ever arrived is not evidence that it happened.
+        """
+        return ReadingAttempt.objects.filter(session_id=report.session_key, spoke=True).count()
 
 
 class SessionReportSummarySerializer(serializers.Serializer):

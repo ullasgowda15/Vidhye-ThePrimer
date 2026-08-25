@@ -47,6 +47,17 @@ export default function WeeklyReport() {
                 {played} {played === 1 ? 'story' : 'stories'} · {finished} played to the end
               </p>
               {week.highlight ? <p className="mt-3 text-4">{week.highlight}</p> : null}
+              {/* `linesRead` has been computed and served since Phase 1 and was
+                  never rendered, so the one honest reading number the product
+                  has reached nobody. Shown only when it happened: a "0 lines
+                  read" under a story count reads as a child falling short, and
+                  most children are pre-readers who are never asked at all. */}
+              {week.linesRead > 0 ? (
+                <p className="mt-3 text-2 text-text-muted">
+                  Read {week.linesRead} {week.linesRead === 1 ? 'line' : 'lines'} aloud to their
+                  companion.
+                </p>
+              ) : null}
             </Card>
 
             {week.milestone ? (

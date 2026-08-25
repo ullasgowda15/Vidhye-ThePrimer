@@ -309,6 +309,7 @@ class TestThePageExplainsItself:
             "How children answer",
             "Who these families are",
             "What the machine served",
+            "Reading aloud",
             # The §22 half.
             "The metrics the product is judged on",
             "Where families stop",
@@ -334,6 +335,57 @@ class TestThePageExplainsItself:
         assert "rolling" in body.lower()  # what the window actually means
         # The page states what it *cannot* answer, rather than quietly omitting it.
         assert "where it sat" in body
+
+    def test_it_opens_with_the_page_in_plain_english(self, client: Any, operator: Any) -> None:
+        """The summary is for the reader who does not read dashboards.
+
+        Asserted on the *rows*, not just the heading: Django templates fail
+        silently on a missing context key, so a heading with an empty list under
+        it is exactly what a broken `plain` looks like.
+        """
+        _sign_in(client, operator)
+        body = client.get(DASHBOARD).content.decode()
+
+        assert "How the product is doing" in body
+        for row in (
+            "Families signed up",
+            "Got a child playing",
+            "Came back the next day",
+            "Time children spent playing",
+            "Read a line aloud",
+            "Safety incidents",
+        ):
+            assert row in body, row
+
+    def test_the_clock_is_the_families_own_and_cannot_be_changed(
+        self, client: Any, operator: Any
+    ) -> None:
+        """One zone, no picker.
+
+        The page defaulted to UTC and offered seven, so every hour reading was
+        five and a half hours out unless somebody remembered a dropdown — and a
+        screenshot did not record how it had been set.
+        """
+        _sign_in(client, operator)
+        body = client.get(DASHBOARD).content.decode()
+
+        assert "Asia/Kolkata" in body
+        assert 'name="tz"' not in body
+        assert "America/New_York" not in body
+        # Still honest about which clock produced the hour readings.
+        assert "Clock" in body
+
+    def test_both_ends_of_the_window_are_marked_partial(self, client: Any, operator: Any) -> None:
+        """The window is rolling, so the first day is as partial as today.
+
+        The page warned about one and not the other, which made the opening bar of
+        every chart read as a quiet day rather than a clipped one.
+        """
+        _sign_in(client, operator)
+        body = client.get(DASHBOARD).content.decode()
+
+        assert "Both ends are partial days" in body
+        assert "Only part of this day is inside the window" in body
 
     def test_it_says_what_data_the_product_collects(self, client: Any, operator: Any) -> None:
         """The data dictionary is on the page, not in a doc somebody has to find.

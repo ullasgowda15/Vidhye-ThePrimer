@@ -16,12 +16,14 @@ text on screen before the microphone is ever touched.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import random
 from typing import Any, cast
 
 from django.conf import settings
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
@@ -72,6 +74,48 @@ QUIET = (
     "That's alright. Another time.",
     "No worries. Shall we go?",
 )
+
+
+#: How long after a sitting ends a reading still belongs to it.
+#:
+#: The reading moment lives on the warm close, so the ordinary case is a session
+#: that is still open. This covers the other order: a child who tapped "All done"
+#: — which ends the sitting — and then went back and read the line. Ten minutes is
+#: far longer than that takes and far shorter than the gap to the next sitting.
+SESSION_GRACE = datetime.timedelta(minutes=10)
+
+
+def _session_for(child: Child, claimed: Any) -> PlaySession | None:
+    """Which sitting this reading belongs to.
+
+    **The client cannot answer this, which is why the server does.** `sessionId`
+    has been in the request serializer since Phase 1 and nothing has ever sent
+    one: no session id is exposed to the child surface at all — not on the
+    adventure, not on the beat stream — so every `ReadingAttempt` ever written has
+    had `session=None`, and "lines read in this sitting" was unanswerable.
+
+    A claimed id still wins, scoped to the child so one family cannot file a
+    reading against another's sitting. With none, the child's own open sitting is
+    the answer, and a just-closed one inside `SESSION_GRACE` is the fallback.
+    Ordering by `started_at` rather than `ended_at` so a session that never
+    ended cleanly does not outrank the one the child is actually in.
+    """
+    if claimed:
+        return PlaySession.objects.filter(pk=claimed, child=child).first()
+
+    open_now = (
+        PlaySession.objects.filter(child=child, ended_at__isnull=True)
+        .order_by("-started_at")
+        .first()
+    )
+    if open_now is not None:
+        return open_now
+
+    return (
+        PlaySession.objects.filter(child=child, ended_at__gte=timezone.now() - SESSION_GRACE)
+        .order_by("-started_at")
+        .first()
+    )
 
 
 class ReadingView(GenericAPIView):
@@ -136,9 +180,7 @@ class ReadingView(GenericAPIView):
             logger.warning("reading.upload_too_large child=%s bytes=%d", child.pk, audio.size)
             audio = None
 
-        session = None
-        if data.get("sessionId"):
-            session = PlaySession.objects.filter(pk=data["sessionId"], child=child).first()
+        session = _session_for(child, data.get("sessionId"))
 
         attempt = service.record(
             child=child,

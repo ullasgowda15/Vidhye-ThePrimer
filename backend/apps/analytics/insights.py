@@ -5,7 +5,7 @@ four diagnostics that explain them. This module answers the next question, the o
 you ask once those numbers stop being a surprise: **what are families actually
 doing, and when.**
 
-Nine readings, each aimed at a decision:
+Ten readings, each aimed at a decision:
 
 | Reading | The question | What it changes |
 |---|---|---|
@@ -18,11 +18,13 @@ Nine readings, each aimed at a decision:
 | `interaction` | How do children answer? | Whether the choices are readable to a four-year-old |
 | `audience` | Who are these children? | Who we are actually building for |
 | `content_health` | What is the machine serving? | Whether quality is holding as volume grows |
+| `reading` | Who read a line aloud, and which lines? | Whether Phase 1 is producing a corpus |
 
 **Everything here reads `Event`, for the reason `metrics` does** (§5.6): one
-pipeline, one source, so two sections of one dashboard cannot disagree. The single
-exception is `accounts`, which follows `Event.parent` to read an account's email —
-and that exception is the point of it, discussed on the function.
+pipeline, one source, so two sections of one dashboard cannot disagree. There are
+two deliberate exceptions, each argued on its own function: `accounts` follows
+`Event.parent` to read an account's email, and `reading` reads
+`reading.ReadingAttempt` because a reading attempt emits no event at all.
 
 **On the privacy line.** §13.8 is data minimisation on *child* data, and this
 module holds that line exactly where the rest of the app does: no child is named
@@ -55,6 +57,7 @@ from django.db import models
 
 from apps.analytics.metrics import Rate, Window
 from apps.analytics.models import Event
+from apps.reading.models import ReadingAttempt
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -70,20 +73,22 @@ if TYPE_CHECKING:
 #: **It is the wrong call for a clock.** "When do children play" is the one
 #: question on this dashboard whose answer is *destroyed* by the wrong zone — a
 #: bedtime product used in India peaks at 16:00 UTC, which reads as an
-#: after-lunch product and is a completely false picture of the same families. So
-#: the clock readings take a zone, the page offers a picker, and the zone is
-#: printed next to every hour it produced. Nothing is silently localised.
-ZONES: tuple[str, ...] = (
-    "UTC",
-    "Asia/Kolkata",
-    "Europe/London",
-    "Europe/Berlin",
-    "America/New_York",
-    "America/Los_Angeles",
-    "Australia/Sydney",
-)
+#: after-lunch product and is a completely false picture of the same families.
+#:
+#: **So there is one zone, and it is the families'.** This offered a picker of
+#: seven and defaulted to UTC, which meant the honest thing on the page — every
+#: hour reading — was wrong by five and a half hours until somebody remembered to
+#: change a dropdown, and was quoted from screenshots that did not record which
+#: way it had been set. A default nobody should ever accept is a bug with a
+#: workaround, not a feature.
+#:
+#: The zone changes *only* which local hour and calendar day a moment is filed
+#: under. Every rate, funnel, cohort and retention figure is computed on the
+#: server's own UTC days and cannot move because of anything here — that split is
+#: what makes those numbers quotable, and it is unchanged.
+ZONES: tuple[str, ...] = ("Asia/Kolkata",)
 
-DEFAULT_ZONE = "UTC"
+DEFAULT_ZONE = "Asia/Kolkata"
 
 WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -415,10 +420,17 @@ def daily(window: Window, *, zone: zoneinfo.ZoneInfo) -> dict[str, Any]:
             if duration is not None and duration >= 0:
                 seconds[day] = seconds.get(day, 0.0) + duration
 
+    # **Both ends of the window are partial, not just today.** The window is
+    # rolling — `now - N days` to `now` — so the first local day is only covered
+    # from the hour the window opens, exactly as the last is only covered up to
+    # now. The page warned about one and not the other, which made the opening bar
+    # of every chart read as a quiet day that never happened. Flagged rather than
+    # dropped: the events in it are real and belong in the totals.
     series = [
         {
             "date": day,
             "weekend": day.weekday() >= 5,
+            "partial": day in (start, finish),
             "signups": signups.get(day, 0),
             "children": len(children.get(day, set())),
             "started": started.get(day, 0),
@@ -1307,6 +1319,68 @@ CATALOGUE: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+def reading(window: Window) -> dict[str, Any]:
+    """What came of asking children to read a line aloud.
+
+    **The only reading in this module that does not come from the event log.**
+    Everything else here folds `Event` rows; a reading attempt is a row in
+    `reading.ReadingAttempt` and there is no event for it. That is a deliberate
+    crossing, like `accounts` reaching through `Event.parent` for an email, and it
+    is made for the same reason: the fact is not in the log and the question is
+    worth answering. Whether reading should also emit an event is a Phase 2
+    decision — it wants the score alongside it.
+
+    **Nothing here is a grade, because nothing has listened.** `spoke` is whether
+    a device sent us audio, which is a fact about a microphone and a child's
+    willingness, not about how well they read. There is no accuracy figure in the
+    schema to report and none is implied — Phase 2 builds the first one.
+
+    `invited` counts rows, so it is "asked and answered", not "offered": a child
+    who saw the invitation and tapped past it never reaches the endpoint and is
+    not here. The gap between this and the eligible population is not knowable
+    from these rows and is not guessed at.
+    """
+    rows = list(
+        ReadingAttempt.objects.filter(
+            created_at__gte=window.since, created_at__lt=window.until
+        ).values_list(
+            "child_id", "passage_id", "passage_text", "spoke", "duration_ms", "audio_kept"
+        )
+    )
+
+    invited = len(rows)
+    spoke = [row for row in rows if row[3]]
+    children = {row[0] for row in rows}
+    durations = [float(row[4]) for row in spoke if row[4] is not None]
+
+    # Which sentences actually get read, so a line nobody will attempt is
+    # findable. Keyed by id, labelled by the text the child saw.
+    by_line: dict[str, dict[str, Any]] = {}
+    for _child, passage_id, text, said, _ms, _kept in rows:
+        line = by_line.setdefault(
+            passage_id, {"passage_id": passage_id, "text": text, "invited": 0, "spoke": 0}
+        )
+        line["invited"] += 1
+        if said:
+            line["spoke"] += 1
+
+    lines = sorted(by_line.values(), key=lambda row: (-row["invited"], row["passage_id"]))
+    for line in lines:
+        line["share"] = Rate(line["spoke"], line["invited"])
+
+    return {
+        "invited": invited,
+        "spoke": len(spoke),
+        "quiet": invited - len(spoke),
+        "children": len(children),
+        "kept": sum(1 for row in rows if row[5]),
+        "spoke_share": Rate(len(spoke), invited),
+        "seconds": _distribution([value / 1000 for value in durations]),
+        "lines": lines,
+        "max_invited": max((line["invited"] for line in lines), default=0),
+    }
+
+
 def catalogue(window: Window) -> list[dict[str, Any]]:
     """The data dictionary, with each event's live count in this window.
 
@@ -1369,5 +1443,6 @@ def snapshot(window: Window, *, zone: zoneinfo.ZoneInfo) -> dict[str, Any]:
         "interaction": interaction(window),
         "audience": audience(window),
         "content": content_health(window),
+        "reading": reading(window),
         "catalogue": catalogue(window),
     }

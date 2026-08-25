@@ -65,6 +65,17 @@ export default function SessionReport() {
                 {Math.max(1, Math.round(report.duration_s / 60))} min ·{' '}
                 {ENDING[report.ended_reason] ?? report.ended_reason}
               </p>
+              {/* Only when it happened. Reading is offered to a minority of
+                  children — five and over, not a pre-reader, words on screen —
+                  so a zero here would be a line about a thing that was never
+                  asked. Counted, never graded: nothing has listened to the
+                  recording and there is no accuracy figure to show. */}
+              {report.linesRead > 0 ? (
+                <p className="mt-2 text-1 text-text-muted">
+                  Read {report.linesRead} {report.linesRead === 1 ? 'line' : 'lines'} aloud to their
+                  companion.
+                </p>
+              ) : null}
               {report.adventure_id ? (
                 <p className="mt-3">
                   <Link

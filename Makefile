@@ -108,8 +108,14 @@ ping: ## Round-trip a task through Celery to prove the worker is live
 
 # --- frontend --------------------------------------------------------------
 
-front: ## Start the Vite dev server
-	cd frontend && $(NPM) run dev
+# The `--` before `--host` is load bearing. Without it npm treats `--host` as one
+# of its own config flags and never forwards it to Vite, so the dev server binds
+# loopback only: no Network URL is printed and a phone on the same Wi-Fi cannot
+# reach it. `/api` and `/media` still work from the phone because Vite proxies
+# them to Django itself; only `/admax` won't, as it forwards the LAN Host through
+# and Django's ALLOWED_HOSTS rejects it. That page is desktop-only anyway.
+front: ## Start the Vite dev server, on the LAN too (test on a phone)
+	cd frontend && $(NPM) run dev -- --host
 
 build: ## Production build of the PWA
 	cd frontend && $(NPM) run build

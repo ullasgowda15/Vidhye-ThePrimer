@@ -104,16 +104,19 @@ def dashboard_context(days: int, *, zone: zoneinfo.ZoneInfo | None = None) -> di
     """
     window = metrics.Window.last(days)
     clock = zone or insights.resolve_zone(None)
+    snap = metrics.snapshot(window)
+    ins = insights.snapshot(window, zone=clock)
+    spend = cost.cost_per_session(since=window.since, until=window.until)
     return {
         "days": days,
         "windows": WINDOWS,
         "window": window,
-        "snapshot": metrics.snapshot(window),
+        "snapshot": snap,
         # The behavioural half: when families are here, who they are, where the
         # time goes and where a story loses them (`apps.analytics.insights`).
         # Everything §22 judges the product on is in `snapshot`; everything that
         # explains *why* a §22 number reads the way it does is in here.
-        "insights": insights.snapshot(window, zone=clock),
+        "insights": ins,
         "zone": str(clock),
         "zones": insights.ZONES,
         "targets": TARGETS,
@@ -122,12 +125,119 @@ def dashboard_context(days: int, *, zone: zoneinfo.ZoneInfo | None = None) -> di
         # hard-coded `W1 W2 W3 W4` would silently stop matching the cells the
         # day `COHORT_WEEKS` changes.
         "cohort_offsets": range(1, metrics.COHORT_WEEKS + 1),
-        "spend": cost.cost_per_session(since=window.since, until=window.until),
+        "spend": spend,
         "cost_rows": _recent_spans(),
         "breaker": budget.state(),
         "silent": sorted(Event.NAMES - set(metrics.names_emitted())),
         "generated_at": timezone.now(),
+        # Read last, because it reads everything above it.
+        "plain": _plain_english(snap, ins, spend, days),
     }
+
+
+def _verdict(pct: float | None, target: float) -> tuple[str, str]:
+    """A number against its target, as a word and a chip class.
+
+    Three steps, not five. A dashboard read once a day by one person needs to
+    answer "is this fine, or do I look at it" — and a finer scale invites the
+    difference between "fair" and "poor" to be argued about instead of the
+    product. `None` is "no data yet" and is never dressed as a bad result: the
+    whole page's rule is that what has not happened reads as nothing, not zero.
+    """
+    if pct is None:
+        return "not yet", ""
+    if pct >= target:
+        return "on target", "good"
+    if pct >= target * 0.6:
+        return "below target", "warning"
+    return "well below", "serious"
+
+
+def _plain_english(
+    snap: dict[str, Any], ins: dict[str, Any], spend: dict[str, Any], days: int
+) -> list[dict[str, Any]]:
+    """The whole page in six sentences, for somebody who does not read dashboards.
+
+    **This adds no arithmetic.** Every figure here is lifted from `snapshot` or
+    `insights` exactly as the sections below render it, and the only thing this
+    function contributes is an English sentence and a verdict word. That is the
+    property to preserve if you edit it: the moment this computes a number of its
+    own, the top of the page and the middle of the page can disagree, and the
+    person this section exists for is the least equipped to notice.
+
+    Ordered as the questions get asked: did anyone arrive, did they start, did
+    they come back, did they stay, did they read, was anyone hurt.
+    """
+    activation = snap["activation"]
+    day2 = snap["day2_return"]
+    accounts = ins["accounts"]
+    reading = ins["reading"]
+    guardrails = snap["guardrails"]
+    incidents = guardrails["safety_incidents"]
+    serious = guardrails["serious_safety_incidents"]
+
+    activation_word, activation_tone = _verdict(activation.pct, TARGETS["activation"])
+    day2_word, day2_tone = _verdict(day2.pct, TARGETS["day2_return"])
+
+    return [
+        {
+            "label": "Families signed up",
+            "value": accounts["total"],
+            "note": f"in the last {days} days",
+            "chip": "",
+            "verdict": "",
+        },
+        {
+            "label": "Got a child playing",
+            "value": activation.numerator,
+            "note": (
+                f"of {activation.denominator} who signed up"
+                if activation.denominator
+                else "nobody has signed up yet"
+            ),
+            "chip": activation_tone,
+            "verdict": activation_word,
+        },
+        {
+            "label": "Came back the next day",
+            "value": day2.numerator,
+            "note": (
+                f"of {day2.denominator} old enough to have had a next day"
+                if day2.denominator
+                else "no signup is a day old yet"
+            ),
+            "chip": day2_tone,
+            "verdict": day2_word,
+        },
+        {
+            "label": "Time children spent playing",
+            "value": ins["attention"]["minutes_total"],
+            "note": f"minutes, over {ins['attention']['sittings']} sittings",
+            "chip": "",
+            "verdict": "",
+        },
+        {
+            "label": "Read a line aloud",
+            "value": reading["spoke"],
+            "note": (
+                f"of {reading['invited']} asked · {reading['children']} "
+                f"{'child' if reading['children'] == 1 else 'children'}"
+                if reading["invited"]
+                else "nobody has been asked to read yet"
+            ),
+            "chip": "",
+            "verdict": "",
+        },
+        {
+            "label": "Safety incidents",
+            "value": incidents,
+            "note": (
+                f"{serious} serious" if serious else "none serious" if incidents else "none at all"
+            ),
+            "chip": "critical" if serious else "warning" if incidents else "good",
+            "verdict": "",
+        },
+    ]
 
 
 #: §22.3's early targets, so a number is read against the thing it is supposed to

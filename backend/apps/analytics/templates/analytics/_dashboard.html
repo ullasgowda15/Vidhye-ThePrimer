@@ -30,20 +30,19 @@ Nothing here is per-child (§13.8); the one table that names anybody names the
   <span class="lab">Window</span>
   <span class="seg">
     {% for option in windows %}
-      <a href="?days={{ option }}&amp;tz={{ zone|urlencode }}"
+      <a href="?days={{ option }}"
          {% if option == days %}aria-current="page"{% endif %}>{{ option }}d</a>
     {% endfor %}
   </span>
-  <form method="get" style="display:flex;gap:.4rem;align-items:center">
-    <input type="hidden" name="days" value="{{ days }}">
-    <label for="tz" class="lab" style="margin:0">Clock</label>
-    <select id="tz" name="tz" style="width:auto;padding:.25rem .5rem;font-size:.8125rem">
-      {% for option in zones %}
-        <option value="{{ option }}"{% if option == zone %} selected{% endif %}>{{ option }}</option>
-      {% endfor %}
-    </select>
-    <button type="submit" style="padding:.28rem .7rem;font-size:.8125rem">Apply</button>
-  </form>
+  {% comment %}
+  The clock picker is gone. It offered seven zones and defaulted to UTC, so the
+  hour readings on this page were wrong by five and a half hours unless somebody
+  remembered to set it — and a screenshot did not record how it had been set.
+  There is one zone now, the families', printed here so nobody has to wonder.
+  See `insights.ZONES`.
+  {% endcomment %}
+  <span class="lab">Clock</span>
+  <span class="n">{{ zone }}</span>
 </div>
 
 <details class="why" style="margin:-.75rem 0 1.25rem">
@@ -57,10 +56,11 @@ Nothing here is per-child (§13.8); the one table that names anybody names the
     of this moment” and that is how it should be quoted.
   </p>
   <p>
-    Two consequences worth knowing. <strong>Today is a partial day</strong> — the most recent bar in
-    “Day by day” covers only the hours that have happened, so it is always short and is not a
-    downturn. And <strong>a metric can change without anyone doing anything</strong>: events aging
-    out of the far end of the window move it just as new events do.
+    Two consequences worth knowing. <strong>Both ends are partial days</strong> — the window opens
+    part-way through its first day and closes part-way through today, so the first and last bars in
+    “Day by day” cover only some hours and are always short. Neither is a downturn; both are marked
+    <em>part</em> in the table. And <strong>a metric can change without anyone doing anything</strong>:
+    events aging out of the far end of the window move it just as new events do.
   </p>
   <p>
     <strong>The clock is a display setting only.</strong> It decides which local hour and which
@@ -85,12 +85,50 @@ its own text onto the page.
   <a href="#storyflow">Where stories lose them</a>
   <a href="#answers">How children answer</a>
   <a href="#families">Who they are</a>
+  <a href="#reading">Reading aloud</a>
   <a href="#content">What we served</a>
   <a href="#metrics">§22 metrics</a>
   <a href="#money">Money</a>
   <a href="#wellbeing">Wellbeing</a>
   <a href="#data">What we collect</a>
 </nav>
+
+{# ==================================================================== #}
+{# 0 · The page in six sentences                                         #}
+{# ==================================================================== #}
+{% comment %}
+For the reader who does not read dashboards — which, on a two-person product, is
+most of the people who will open this.
+
+It adds no arithmetic of its own: every figure is the one the section below it
+renders, lifted in `internal._plain_english`. If this and the tiles ever disagree
+that is a bug in the lift, not a second opinion.
+
+The verdict words come from `_verdict` and are three-valued on purpose. "not yet"
+is printed where nothing has happened, never 0% — the same rule the rest of the
+page follows, and the one that stops an hour-old product reading as a failing one.
+{% endcomment %}
+<section class="plain" id="plain" aria-label="Summary in plain English">
+  <h2>How the product is doing</h2>
+  <p class="sub">
+    The last {{ days }} days, in plain words. Every number here is repeated in
+    detail further down; this is the same page, said shortly.
+  </p>
+  <ul>
+    {% for row in plain %}
+      <li>
+        <span class="pv">{{ row.value }}</span>
+        <span class="pl">{{ row.label }}</span>
+        <span class="pn">{{ row.note }}</span>
+        {% if row.verdict %}
+          <span class="chip {{ row.chip }}">{{ row.verdict }}</span>
+        {% elif row.chip %}
+          <span class="chip {{ row.chip }}">&nbsp;</span>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+</section>
 
 {# ==================================================================== #}
 {# A · The tiles — everything worth knowing in one screenful            #}
@@ -406,11 +444,11 @@ its own text onto the page.
   <div class="panels wide">
     <div class="panel">
       <h3>Adventures started</h3>
-      <p class="peak">peak {{ insights.daily.max_started }} in a day · weekends shaded lighter</p>
+      <p class="peak">peak {{ insights.daily.max_started }} in a day · weekends shaded lighter · first and last bars are partial days</p>
       <div class="cols">
         {% for row in insights.daily.series %}
           <div class="{% if row.weekend %}wk {% endif %}{% if not row.started %}zero{% endif %}"
-               title="{{ row.date|date:'D j M' }} — {{ row.started }} started, {{ row.completed }} finished, {{ row.children }} children">
+               title="{{ row.date|date:'D j M' }} — {{ row.started }} started, {{ row.completed }} finished, {{ row.children }} children{% if row.partial %} (partial day){% endif %}">
             <i style="height:{% widthratio row.started insights.daily.max_started 100 %}%"></i>
           </div>
         {% endfor %}
@@ -425,7 +463,7 @@ its own text onto the page.
       <div class="cols">
         {% for row in insights.daily.series %}
           <div class="{% if row.weekend %}wk {% endif %}{% if not row.minutes %}zero{% endif %}"
-               title="{{ row.date|date:'D j M' }} — {{ row.minutes }} min over {{ row.sittings }} sittings">
+               title="{{ row.date|date:'D j M' }} — {{ row.minutes }} min over {{ row.sittings }} sittings{% if row.partial %} (partial day){% endif %}">
             <i class="s3" style="height:{% widthratio row.minutes insights.daily.max_minutes 100 %}%"></i>
           </div>
         {% endfor %}
@@ -446,7 +484,11 @@ its own text onto the page.
         <tbody>
           {% for row in insights.daily.series %}
             <tr>
-              <td>{{ row.date|date:"D j M" }}{% if row.weekend %} <span class="muted">wknd</span>{% endif %}</td>
+              <td>
+                {{ row.date|date:"D j M" }}
+                {% if row.weekend %}<span class="muted">wknd</span>{% endif %}
+                {% if row.partial %}<span class="chip warning" title="Only part of this day is inside the window">part</span>{% endif %}
+              </td>
               <td class="n">{{ row.signups|default:"—" }}</td>
               <td class="n">{{ row.children|default:"—" }}</td>
               <td class="n">{{ row.started|default:"—" }}</td>
@@ -954,6 +996,103 @@ its own text onto the page.
       </p>
     </details>
   </div>
+</section>
+
+{# ==================================================================== #}
+{# H2 · Reading aloud                                                    #}
+{# ==================================================================== #}
+{% comment %}
+Phase 1 of the reading engine (`Docs/Build/Reading-Integration.md` §8).
+
+**Nothing here is a score, because nothing has listened.** `spoke` means a device
+sent us audio — a fact about a microphone and about a child's willingness, not
+about how well they read. There is no accuracy number in the schema and none is
+implied; Phase 2 builds the first one. Reading a "spoke" share as a reading
+ability would be exactly the guess this phase exists to avoid.
+
+Read `quiet` as information, not failure: a child who was asked and said nothing
+is a real answer, and it is the difference between "they won't do this" and "we
+never asked".
+{% endcomment %}
+<section id="reading">
+  <div class="shead">
+    <h2>Reading aloud <span class="muted" style="font-weight:400">Phase 1</span></h2>
+    <span class="n">
+      {{ insights.reading.children }} child{{ insights.reading.children|pluralize:"ren" }} ·
+      {{ insights.reading.invited }} invitation{{ insights.reading.invited|pluralize }} answered
+    </span>
+  </div>
+
+  {% if insights.reading.invited %}
+    <div class="tiles">
+      <div class="tile">
+        <span class="k">Lines read aloud</span>
+        <span class="v">{{ insights.reading.spoke }}</span>
+        <span class="n">
+          {% if insights.reading.spoke_share.pct is None %}—{% else %}{{ insights.reading.spoke_share.pct|floatformat:0 }}%{% endif %}
+          of {{ insights.reading.invited }} asked
+        </span>
+      </div>
+      <div class="tile">
+        <span class="k">Asked, stayed quiet</span>
+        <span class="v">{{ insights.reading.quiet }}</span>
+        <span class="n">a real answer, not a failure</span>
+      </div>
+      <div class="tile">
+        <span class="k">Children reading</span>
+        <span class="v">{{ insights.reading.children }}</span>
+        <span class="n">distinct, in this window</span>
+      </div>
+      <div class="tile">
+        <span class="k">Median read</span>
+        <span class="v">{% if insights.reading.seconds.median is None %}—{% else %}{{ insights.reading.seconds.median|floatformat:1 }}<span class="muted" style="font-size:.9rem">s</span>{% endif %}</span>
+        <span class="n">over {{ insights.reading.seconds.measured }} measured</span>
+      </div>
+      <div class="tile">
+        <span class="k">Recordings kept</span>
+        <span class="v">{{ insights.reading.kept }}</span>
+        <span class="n">only where a grown-up opted in</span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:1rem">
+      <h3>Which lines they are given, and which get read</h3>
+      <div class="hb">
+        {% for row in insights.reading.lines %}
+          <span class="l" title="{{ row.text }}">{{ row.text }}</span>
+          <span class="t"><i class="s3" style="width:{% widthratio row.invited insights.reading.max_invited 100 %}%"></i></span>
+          <span class="v">
+            {{ row.spoke }}/{{ row.invited }}
+            <span class="muted">{% if row.share.pct is None %}—{% else %}{{ row.share.pct|floatformat:0 }}%{% endif %}</span>
+          </span>
+        {% endfor %}
+      </div>
+      <details class="why">
+        <summary>Why a line nobody reads is the useful row here</summary>
+        <p>
+          The bank is thirteen hand-written decodable sentences and the engine picks
+          from it. A sentence that is offered often and read rarely is either too
+          hard for the band it is going to or reads badly aloud — and both are fixed
+          by editing one string, which is the cheapest fix on this whole page.
+        </p>
+        <p>
+          <strong>The share is not an accuracy.</strong> It is how often a device
+          sent us audio. A child who read it perfectly with a refused microphone
+          counts here exactly as one who said nothing, because from the server's
+          side those two are the same event.
+        </p>
+      </details>
+    </div>
+  {% else %}
+    <div class="panel">
+      <p class="empty">
+        No child has been asked to read in this window. Four gates have to be open
+        first — <code>READING_ENABLED</code>, age five or over, the parent's
+        <code>pre_reader</code> switch off, and words on screen — so an empty
+        section here usually means the gates, not the children.
+      </p>
+    </div>
+  {% endif %}
 </section>
 
 {# ==================================================================== #}

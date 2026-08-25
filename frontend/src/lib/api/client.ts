@@ -41,6 +41,15 @@ export interface ReadingSubmission {
   durationMs?: number | null;
   sessionId?: string | null;
 }
+
+/** A filename whose extension matches what the browser actually recorded. */
+function readingFilename(audio: Blob): string {
+  const type = audio.type.toLowerCase();
+  if (type.includes('mp4') || type.includes('aac')) return 'reading.m4a';
+  if (type.includes('ogg')) return 'reading.ogg';
+  if (type.includes('wav')) return 'reading.wav';
+  return 'reading.webm';
+}
 export type ChildRequest = components['schemas']['ChildRequest'];
 export type PatchedChildRequest = components['schemas']['PatchedChildRequest'];
 /** The parent's controls for one child (§7.13, §12.7). */
@@ -570,7 +579,11 @@ export const api = {
   submitReading: (childId: string, payload: ReadingSubmission) => {
     const form = new FormData();
     form.append('passageId', payload.passageId);
-    if (payload.audio) form.append('audio', payload.audio, 'reading.webm');
+    // Named from the blob's own type, not from a guess. Safari's `MediaRecorder`
+    // only ever produces `audio/mp4`, so the hard-coded `.webm` this used to send
+    // mislabelled every recording made on an iPhone — the one device most of
+    // these will be made on — and Phase 2 tunes a detector against this corpus.
+    if (payload.audio) form.append('audio', payload.audio, readingFilename(payload.audio));
     if (payload.durationMs != null) form.append('durationMs', String(payload.durationMs));
     if (payload.sessionId) form.append('sessionId', payload.sessionId);
     return request<ReadingResult>(`${V1}/children/${childId}/reading`, {

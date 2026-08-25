@@ -1525,6 +1525,8 @@ export interface components {
             /** @description `model` — written by a model and checked against this session; `data` — assembled from what the child actually did; `quiet` — nothing notable happened and we said so (§13.9). */
             highlight_source: string;
             skills: components["schemas"]["SkillEvidence"][];
+            /** @description Lines the child read aloud to their companion in this sitting. A count only: nothing has listened to the recordings, so there is no accuracy figure to report and none is implied. */
+            readonly linesRead: number;
         };
         /** @description One row of the reports index (§12.10). */
         SessionReportSummary: {
