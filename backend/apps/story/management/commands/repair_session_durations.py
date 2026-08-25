@@ -13,6 +13,13 @@ stored, so this recomputes the old rows with the same function the orchestrator
 now uses. It is **dry by default** — it prints what it would change and touches
 nothing until `--apply`.
 
+**It corrects the `session.ended` event as well as the row, and it has to.** Every
+duration on the dashboard is read from that event's `props["duration_s"]`, not
+from `PlaySession` — so repairing only the row fixes the source of truth and
+changes nothing anybody looks at. This is not rewriting history: the event
+recorded a number that was computed wrongly at the moment it was written, and the
+correction is to that arithmetic, not to what happened.
+
 Only shrinks, never grows. A row whose recomputed value is larger is left alone
 and reported: that would mean the new rule credits more time than the old one
 did, which it is not supposed to be able to do, and quietly writing it would hide
@@ -25,6 +32,7 @@ from typing import Any
 
 from django.core.management.base import BaseCommand
 
+from apps.analytics.models import Event
 from apps.story import duration
 from apps.story.models import PlaySession
 
@@ -44,7 +52,9 @@ class Command(BaseCommand):
             default=30,
             help=(
                 "Only examine sittings longer than this. The default skips the "
-                "ordinary ones, which cannot be wrong by much."
+                "ordinary ones, which cannot be wrong by much. Pass 0 to sweep "
+                "everything — needed to reach a row an earlier run already "
+                "shrank while its event was left behind."
             ),
         )
 
@@ -53,7 +63,7 @@ class Command(BaseCommand):
         floor: int = options["min_minutes"] * 60
 
         candidates = PlaySession.objects.filter(
-            ended_at__isnull=False, duration_s__gt=floor
+            ended_at__isnull=False, duration_s__gte=floor
         ).order_by("-duration_s")
 
         examined = corrected = skipped = 0
@@ -63,22 +73,44 @@ class Command(BaseCommand):
             examined += 1
             was = session.duration_s or 0
             now = duration.played_seconds(session)
+            row_is_stale = now < was
 
-            if now >= was:
+            # Judged against the recomputed value, not against whether the row
+            # changed. A row repaired by an earlier run is already correct while
+            # its event is still carrying the old number — and the event is the
+            # one the dashboard reads, so tying this to `row_is_stale` would
+            # leave the visible figure wrong forever.
+            stale_events = [
+                event
+                for event in Event.objects.filter(name=Event.SESSION_ENDED, session_id=session.pk)
+                if isinstance((event.props or {}).get("duration_s"), int | float)
+                and event.props["duration_s"] > now
+            ]
+
+            if not row_is_stale and not stale_events:
                 skipped += 1
-                self.stdout.write(
-                    f"  skip  {session.pk}  {was // 60}min -> {now // 60}min "
-                    "(not shorter; left alone)"
-                )
                 continue
 
-            reclaimed += was - now
-            corrected += 1
-            self.stdout.write(f"  fix   {session.pk}  {was // 60}min -> {now // 60}min")
+            if row_is_stale:
+                reclaimed += was - now
+                corrected += 1
+                self.stdout.write(f"  fix   {session.pk}  {was // 60}min -> {now // 60}min")
+            else:
+                self.stdout.write(f"  fix   {session.pk}  row already correct at {now // 60}min")
+
+            if stale_events:
+                self.stdout.write(
+                    f"        + {len(stale_events)} session.ended event(s) "
+                    "— what the dashboard actually reads"
+                )
 
             if apply:
-                session.duration_s = now
-                session.save(update_fields=["duration_s", "updated_at"])
+                if row_is_stale:
+                    session.duration_s = now
+                    session.save(update_fields=["duration_s", "updated_at"])
+                for event in stale_events:
+                    event.props["duration_s"] = now
+                    event.save(update_fields=["props"])
 
         self.stdout.write("")
         self.stdout.write(
